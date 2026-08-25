@@ -1,4 +1,7 @@
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { GmgnCliError, GmgnRateLimitError, GmgnResponseError } from './errors.js';
 import { LIMITER_CAPACITY, LIMITER_REFILL_PER_SECOND, ROUTE_WEIGHTS, type RouteKey } from './routes.js';
@@ -6,13 +9,32 @@ import { TokenBucket } from './rateLimiter.js';
 
 const execFileAsync = promisify(execFile);
 
+// src/gmgn/ -> project root -> node_modules/.bin/  (ίδιο βάθος για dist/gmgn/, βλ. migrate.ts)
+// Exported ώστε ένα test να επιβεβαιώνει ότι το binary υπάρχει ΠΑΝΤΑ μετά από `npm install` —
+// αν κάποιος αφαιρέσει κατά λάθος το `gmgn-cli` από τα package.json dependencies, να σκάσει
+// εδώ, όχι σιωπηλά σε ένα Railway deploy.
+export const LOCAL_CLI_BIN = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../node_modules/.bin/gmgn-cli',
+);
+
 /**
- * Το binary είναι global npm install· override μέσω `GMGN_CLI_BIN` (tests, ή διαφορετικό
- * path στο Railway image). Διαβάζεται σε κάθε κλήση και όχι σε module load, ώστε να μη
- * παγώνει η τιμή πριν στηθεί το environment.
+ * `gmgn-cli` είναι project dependency (`package.json`), όχι global install — έτσι
+ * δουλεύει το ίδιο τοπικά και στο Railway build, χωρίς κανένα χειροκίνητο `npm install -g`
+ * βήμα στο production image.
+ *
+ * Δε βασιζόμαστε στο PATH: αν το process ξεκινήσει χωρίς να περάσει από `npm run`/`npm
+ * start` (π.χ. απευθείας `node dist/main.js`), το `node_modules/.bin` δεν είναι
+ * εγγυημένο εκεί. Αντ' αυτού λύνουμε το path module-relative — ίδιο pattern με το
+ * `migrations/` στο `db/migrate.ts` — και πέφτουμε πίσω σε bare `gmgn-cli` μόνο αν το
+ * τοπικό binary δε βρεθεί (π.χ. ασυνήθιστο install layout).
+ *
+ * `GMGN_CLI_BIN` παραμένει override για tests ή ρητά διαφορετικό path. Διαβάζεται σε
+ * κάθε κλήση, όχι σε module load, ώστε να μη παγώνει πριν στηθεί το environment.
  */
 function cliBin(): string {
-  return process.env.GMGN_CLI_BIN ?? 'gmgn-cli';
+  if (process.env.GMGN_CLI_BIN) return process.env.GMGN_CLI_BIN;
+  return existsSync(LOCAL_CLI_BIN) ? LOCAL_CLI_BIN : 'gmgn-cli';
 }
 
 /**

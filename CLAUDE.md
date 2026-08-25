@@ -342,18 +342,35 @@ triggers, συμπληρωματικό στο GMGN).
 
 ## Runtime & environment variables (ΕΠΙΒΕΒΑΙΩΜΕΝΑ 2026-08-25)
 - **Runtime**: Node.js/TypeScript, ESM, strict. Επιβεβαιώθηκε. Deps σκόπιμα ελάχιστα:
-  `pg` + `dotenv` μόνο. **Tests: `node:test`** (built-in, μηδέν deps) — όχι vitest/jest.
+  `pg` + `dotenv` + **`gmgn-cli`** (pinned exact `1.5.8`, όχι `^` — το contract του
+  "Verified CLI contract" πιο πάνω είναι δεμένο σε αυτή την έκδοση, οπότε auto-upgrade
+  θα μπορούσε να αλλάξει σιωπηλά συμπεριφορά που έχουμε ήδη τεκμηριώσει). **Tests:
+  `node:test`** (built-in, μηδέν deps) — όχι vitest/jest.
+  ⚠️ Το `gmgn-cli` είναι **regular dependency, ΟΧΙ global install** (διορθώθηκε
+  2026-08-26 — ήταν global στο dev μηχάνημα, που θα έσπαγε σε Railway build χωρίς global
+  npm state). Ο adapter (`src/gmgn/exec.ts`) λύνει το binary path module-relative
+  (`node_modules/.bin/gmgn-cli`), όχι μέσω PATH — γιατί αν το process ξεκινήσει χωρίς
+  `npm run`/`npm start` (π.χ. απευθείας `node dist/main.js`), το `node_modules/.bin` δεν
+  είναι εγγυημένα στο PATH. Test κλειδώνει ότι το binary υπάρχει μετά `npm install`.
 - **Process topology**: **ένα** Node process με internal scheduler για όλα (pollers, bot),
   όχι ξεχωριστά Railway services. Το σπάμε όταν υπάρξει πραγματικός λόγος κλιμάκωσης.
 - **Deploy**: GitHub push στο `master` → Railway auto-deploy. Pre-deploy command
   `npm run migrate:prod` (compiled `dist/`, γιατί το `tsx` είναι devDependency και
   κόβεται στο production install). Commits **απευθείας στο master**, χωρίς branches.
-- **Project `.env`**: `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `GMGN_ALLOW_AUTOMATED_TRADES`
-  (unset/false by default — αυτό είναι το paper/live switch).
-- **ΟΧΙ στο project `.env`**: το `GMGN_API_KEY` δε ζει εκεί. Το `gmgn-cli` διαχειρίζεται
-  το δικό του config global, στο `~/.config/gmgn/.env`, μέσω `config --apply <key>` —
-  ανεξάρτητο από το project. Αν αργότερα κληθεί το GMGN REST απευθείας αντί για το CLI
-  (βλ. σημείωση στο layer "Εκτέλεση"), τότε θα χρειαστεί ΚΑΙ στο project `.env`.
+- **Project `.env`** (τοπικά): `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`,
+  `GMGN_ALLOW_AUTOMATED_TRADES` (unset/false by default — αυτό είναι το paper/live
+  switch). Το `GMGN_API_KEY`/`GMGN_PRIVATE_KEY` ΔΕΝ μπαίνουν εδώ τοπικά — το `gmgn-cli`
+  διαχειρίζεται δικό του config global, στο `~/.config/gmgn/.env`, μέσω
+  `config --apply <key>`, ανεξάρτητο από το project.
+- ⚠️ **Railway variables (διορθώθηκε 2026-08-26 — παλαιότερα εδώ έλεγε ότι δε
+  χρειάζονται ποτέ στο project env, λάθος για production):** `GMGN_API_KEY` και
+  `GMGN_PRIVATE_KEY` ΠΡΕΠΕΙ να μπουν ως Railway environment variables. Ένα ephemeral
+  container δεν έχει persistent `~/.config`, και δεν υπάρχει interactive βήμα εκεί για
+  `config --apply`. Επιβεβαιωμένο με άδειο `HOME`: το `gmgn-cli` διαβάζει αυτές τις δύο
+  μεταβλητές απευθείας από process env αν υπάρχουν, και το `execFile` του adapter
+  περνάει όλο το parent env στο child process by default — άρα αρκεί να οριστούν στο
+  Railway dashboard, καμία αλλαγή κώδικα. Αν αργότερα κληθεί το GMGN REST απευθείας
+  αντί για το CLI (βλ. layer "Εκτέλεση"), ήδη θα υπάρχουν εκεί.
 - **Telegram bot**: **νέο bot**, ΟΧΙ reuse του υπάρχοντος pump.fun (επιβεβαιωμένο
   2026-08-25) — ανάμειξη alerts από δύο συστήματα στο ίδιο chat γίνεται αχρείαστα θολή.
   Το token δεν έχει δημιουργηθεί ακόμα (BotFather).

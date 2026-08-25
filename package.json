@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "dotenv": "^16.4.0",
+    "gmgn-cli": "1.5.8",
     "pg": "^8.13.0"
   },
   "devDependencies": {

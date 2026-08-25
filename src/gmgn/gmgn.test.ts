@@ -5,14 +5,14 @@
  * `transaction_hash`, ποσά ως strings στο activity αλλά numbers στο trenches).
  */
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
 import { buildActivityArgs, parseActivityResponse } from './activity.js';
 import { GmgnCliError, GmgnRateLimitError, GmgnResponseError } from './errors.js';
-import { runCli } from './exec.js';
+import { LOCAL_CLI_BIN, runCli } from './exec.js';
 import { TokenBucket, type Clock } from './rateLimiter.js';
 import { buildTrenchesArgs, parseTrenchesResponse } from './trenches.js';
 import { toNumber } from './validate.js';
@@ -147,6 +147,16 @@ test('buildActivityArgs repeats --type and passes the cursor through', () => {
     buildActivityArgs({ wallet: 'W1', types: ['buy', 'sell'], limit: 20, cursor: 'CUR' }),
     ['portfolio', 'activity', '--chain', 'sol', '--wallet', 'W1',
       '--type', 'buy', '--type', 'sell', '--limit', '20', '--cursor', 'CUR'],
+  );
+});
+
+test('gmgn-cli is a packaged project dependency, not a global install', () => {
+  // Το Railway build δεν έχει global npm installs — αν κάποιος αφαιρέσει το `gmgn-cli`
+  // από τα package.json dependencies, αυτό το test σκάει τοπικά/στο CI, όχι σιωπηλά σε
+  // ένα production deploy όπου κάθε collector call θα αποτύχει με "command not found".
+  assert.ok(
+    existsSync(LOCAL_CLI_BIN),
+    `node_modules/.bin/gmgn-cli δε βρέθηκε στο ${LOCAL_CLI_BIN} — λείπει από τα dependencies;`,
   );
 });
 

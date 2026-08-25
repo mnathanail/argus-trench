@@ -83,12 +83,25 @@ Push στο `master` → Railway auto-deploy. Στο Railway project:
 
 1. **Postgres plugin** — δίνει το `DATABASE_URL` μόνο του, μέσω reference variable.
    Μην το γράφεις χειροκίνητα. Κράτα τον major version ίδιο με το compose (16).
-2. **Pre-deploy command**: `npm run migrate:prod` — τρέχει το compiled
-   `dist/db/migrate.js`, όχι το `tsx` script, γιατί τα devDependencies κόβονται στο
-   production install. Προϋποθέτει ότι το build έχει τρέξει (`npm run build`).
-3. **Variables**: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+2. **Build & start**: build command `npm run build`, start command `npm start`.
+   Pre-deploy command: `npm run migrate:prod` — τρέχει το compiled `dist/db/migrate.js`,
+   όχι το `tsx` script, γιατί τα devDependencies κόβονται στο production install.
+   Προϋποθέτει ότι το build έχει τρέξει πριν.
+3. **Variables**: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `GMGN_API_KEY`,
+   `GMGN_PRIVATE_KEY` (βλ. παρακάτω).
 4. **`GMGN_ALLOW_AUTOMATED_TRADES`**: μένει **unset** μέχρι τη Φάση 5. Είναι το
    paper/live switch — μόνο η τιμή `1` ενεργοποιεί αυτόματες συναλλαγές.
 
-Το `GMGN_API_KEY` δε ζει στο project env: το `gmgn-cli` κρατά δικό του global config
-(`~/.config/gmgn/.env`) μέσω `gmgn-cli config --apply <key>`.
+**`GMGN_API_KEY` / `GMGN_PRIVATE_KEY` ΠΡΕΠΕΙ να μπουν ως Railway variables** —
+αντίθετα με το dev workflow (`gmgn-cli config --apply <key>`, γράφει στο
+`~/.config/gmgn/.env`), ένα ephemeral Railway container δεν έχει persistent `~/.config`
+και δεν υπάρχει interactive βήμα εκεί για να τρέξει το `config --apply`. Επιβεβαιωμένο
+(2026-08-26, με άδειο `HOME`) ότι το `gmgn-cli` διαβάζει αυτές τις δύο μεταβλητές
+απευθείας από το process environment αν υπάρχουν — και το δικό μας `execFile` περνάει
+όλο το parent env στο child process αυτόματα, άρα δε χρειάζεται καμία αλλαγή κώδικα,
+μόνο να οριστούν στο Railway dashboard. Τιμές από `~/.config/gmgn/.env` τοπικά.
+
+**`gmgn-cli` είναι project dependency** (`package.json`), όχι global install — το
+build το εγκαθιστά μόνο του μέσω `npm install`. Ένα test (`gmgn.test.ts`) επιβεβαιώνει
+ότι το `node_modules/.bin/gmgn-cli` υπάρχει μετά το install, ώστε μια κατά λάθος
+αφαίρεσή του να σκάσει στο CI, όχι σιωπηλά σε production.
