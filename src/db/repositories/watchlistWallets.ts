@@ -13,6 +13,9 @@ export interface WatchlistWallet {
   active: boolean;
   addedAt: Date;
   lastReviewedAt: Date | null;
+  /** Cursor του activity polling — βλ. `updateActivityCursor`. */
+  lastSeenTxHash: string | null;
+  lastSeenActivityAt: Date | null;
 }
 
 interface WalletRow {
@@ -26,10 +29,13 @@ interface WalletRow {
   active: boolean;
   added_at: Date;
   last_reviewed_at: Date | null;
+  last_seen_tx_hash: string | null;
+  last_seen_activity_at: Date | null;
 }
 
 const COLUMNS = `id, address, chain, source, win_rate, pnl_multiplier, trade_count,
-                 active, added_at, last_reviewed_at`;
+                 active, added_at, last_reviewed_at, last_seen_tx_hash,
+                 last_seen_activity_at`;
 
 function mapWallet(row: WalletRow): WatchlistWallet {
   return {
@@ -44,6 +50,8 @@ function mapWallet(row: WalletRow): WatchlistWallet {
     active: row.active,
     addedAt: row.added_at,
     lastReviewedAt: row.last_reviewed_at,
+    lastSeenTxHash: row.last_seen_tx_hash,
+    lastSeenActivityAt: row.last_seen_activity_at,
   };
 }
 
@@ -123,6 +131,42 @@ export async function listWalletsBySource(
     [source],
   );
   return rows.map(mapWallet);
+}
+
+/**
+ * Ο cursor του activity polling. Χωρίς αυτόν, κάθε κύκλος θα ξανα-παρήγαγε τα ίδια buys
+ * ως νέα triggers, αφού το `portfolio activity` επιστρέφει πάντα τα πιο πρόσφατα trades.
+ */
+export async function updateActivityCursor(
+  address: string,
+  txHash: string,
+  activityAt: Date,
+  conn?: Queryable,
+): Promise<void> {
+  await db(conn).query(
+    `UPDATE watchlist_wallets
+        SET last_seen_tx_hash = $2, last_seen_activity_at = $3
+      WHERE address = $1`,
+    [address, txHash, activityAt],
+  );
+}
+
+export async function getActivityCursor(
+  address: string,
+  conn?: Queryable,
+): Promise<{ txHash: string | null; activityAt: Date | null }> {
+  const { rows } = await db(conn).query<{
+    last_seen_tx_hash: string | null;
+    last_seen_activity_at: Date | null;
+  }>(
+    `SELECT last_seen_tx_hash, last_seen_activity_at FROM watchlist_wallets WHERE address = $1`,
+    [address],
+  );
+  const row = rows[0];
+  return {
+    txHash: row?.last_seen_tx_hash ?? null,
+    activityAt: row?.last_seen_activity_at ?? null,
+  };
 }
 
 export interface WalletScoreUpdate {

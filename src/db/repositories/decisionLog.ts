@@ -100,6 +100,153 @@ export async function insertDecisions(
   return rows.map((r) => toNum(r.id));
 }
 
+export interface UpsertedDecision {
+  id: number;
+  tokenAddress: string;
+  /** 1 = πρώτη φορά που το είδαμε. >1 = το ξανα-αξιολογήσαμε. */
+  evaluationCount: number;
+}
+
+/**
+ * Bulk upsert για τους collector κύκλους: ένα row ανά (token, logic_version,
+ * candidate_source), όχι ανά poll tick.
+ *
+ * Δύο πράγματα αξίζουν προσοχή:
+ *
+ * 1. Το `WHERE decision_log.decision <> 'entered'` προστατεύει ιστορικό. Μόλις ένα
+ *    candidate γίνει `entered`, το row είναι δεμένο με πραγματικό trade μέσω
+ *    `linked_trade_id`· ένας επόμενος κύκλος δε πρέπει να το γυρίσει σε `skipped_*` και
+ *    να αφήσει ορφανό trade.
+ * 2. Τα rows που προστατεύτηκαν έτσι ΔΕΝ επιστρέφονται από το RETURNING — γι' αυτό ο
+ *    caller δε πρέπει να υποθέτει `result.length === inputs.length`.
+ */
+export async function upsertDecisions(
+  inputs: readonly NewDecisionLog[],
+  conn?: Queryable,
+): Promise<UpsertedDecision[]> {
+  if (inputs.length === 0) return [];
+  const { rows } = await db(conn).query<{
+    id: string;
+    token_address: string;
+    evaluation_count: number;
+  }>(
+    `
+    INSERT INTO decision_log (
+      token_address, chain, logic_version, candidate_source,
+      gate_snapshot_json, gate_passed, gate_fail_reason,
+      trigger_type, trigger_wallet_address, trigger_wallet_snapshot_json,
+      decision, decision_reason_text
+    )
+    SELECT * FROM UNNEST(
+      $1::text[], $2::text[], $3::text[], $4::text[],
+      $5::jsonb[], $6::boolean[], $7::text[],
+      $8::text[], $9::text[], $10::jsonb[],
+      $11::text[], $12::text[]
+    )
+    ON CONFLICT (token_address, logic_version, candidate_source) DO UPDATE SET
+      gate_snapshot_json   = EXCLUDED.gate_snapshot_json,
+      gate_passed          = EXCLUDED.gate_passed,
+      gate_fail_reason     = EXCLUDED.gate_fail_reason,
+      decision             = EXCLUDED.decision,
+      decision_reason_text = EXCLUDED.decision_reason_text,
+      last_evaluated_at    = now(),
+      evaluation_count     = decision_log.evaluation_count + 1
+    WHERE decision_log.decision <> 'entered'
+    RETURNING id, token_address, evaluation_count
+    `,
+    [
+      inputs.map((i) => i.tokenAddress),
+      inputs.map((i) => i.chain ?? 'sol'),
+      inputs.map((i) => i.logicVersion),
+      inputs.map((i) => i.candidateSource),
+      inputs.map((i) => JSON.stringify(i.gateSnapshot)),
+      inputs.map((i) => i.gatePassed),
+      inputs.map((i) => i.gateFailReason ?? null),
+      inputs.map((i) => i.triggerType ?? null),
+      inputs.map((i) => i.triggerWalletAddress ?? null),
+      inputs.map((i) => (i.triggerWalletSnapshot ? JSON.stringify(i.triggerWalletSnapshot) : null)),
+      inputs.map((i) => i.decision),
+      inputs.map((i) => i.decisionReasonText ?? null),
+    ],
+  );
+  return rows.map((row) => ({
+    id: toNum(row.id),
+    tokenAddress: row.token_address,
+    evaluationCount: row.evaluation_count,
+  }));
+}
+
+/**
+ * Ποια από αυτά τα tokens έχουν περάσει το gate κάτω από το τρέχον σετ κανόνων.
+ *
+ * Ο trigger του layer 3 είναι η ΤΟΜΗ δύο ρευμάτων, και το gate είναι η μία πλευρά της.
+ * Ρωτάμε ανά `logic_version` επίτηδες: ένα token που πέρασε με παλιά thresholds δεν
+ * μετράει ως gated σήμερα.
+ */
+export async function findPassedTokens(
+  tokenAddresses: readonly string[],
+  logicVersion: string,
+  conn?: Queryable,
+): Promise<Set<string>> {
+  if (tokenAddresses.length === 0) return new Set();
+  const { rows } = await db(conn).query<{ token_address: string }>(
+    `SELECT DISTINCT token_address
+       FROM decision_log
+      WHERE logic_version = $2 AND gate_passed AND token_address = ANY($1::text[])`,
+    [[...tokenAddresses], logicVersion],
+  );
+  return new Set(rows.map((row) => row.token_address));
+}
+
+export interface TriggerRecord {
+  tokenAddress: string;
+  logicVersion: string;
+  triggerType: TriggerType;
+  triggerWalletAddress: string;
+  triggerWalletSnapshot: Record<string, unknown>;
+  decision: Decision;
+  decisionReasonText: string;
+}
+
+/**
+ * Σφραγίζει τον trigger πάνω στο υπάρχον gated row του token.
+ *
+ * Δεν φτιάχνει νέο row: το candidate ήταν ήδη καταγεγραμμένο από τον discovery κύκλο, και
+ * ένα δεύτερο row θα διπλομέτραγε το ίδιο token στα pass-rate stats.
+ *
+ * Το `decision <> 'entered'` προστατεύει ιστορικό — μόλις ανοίξει πραγματική θέση, το row
+ * είναι δεμένο με trade και δε το ξαναγράφουμε. Το `gate_passed` στο WHERE είναι η δεύτερη
+ * μισή του κανόνα εισόδου: trigger σε token που δεν πέρασε το gate ΔΕΝ είναι signal.
+ */
+export async function recordTrigger(
+  input: TriggerRecord,
+  conn?: Queryable,
+): Promise<number> {
+  const result = await db(conn).query(
+    `UPDATE decision_log
+        SET trigger_type = $3,
+            trigger_wallet_address = $4,
+            trigger_wallet_snapshot_json = $5,
+            decision = $6,
+            decision_reason_text = $7,
+            last_evaluated_at = now()
+      WHERE token_address = $1
+        AND logic_version = $2
+        AND gate_passed
+        AND decision <> 'entered'`,
+    [
+      input.tokenAddress,
+      input.logicVersion,
+      input.triggerType,
+      input.triggerWalletAddress,
+      JSON.stringify(input.triggerWalletSnapshot),
+      input.decision,
+      input.decisionReasonText,
+    ],
+  );
+  return result.rowCount ?? 0;
+}
+
 /** Το βασικό ερώτημα του tuning: pass-rate ανά provenance, ΠΟΤΕ αναμεμιγμένο. */
 export async function gatePassRate(
   logicVersion: string,

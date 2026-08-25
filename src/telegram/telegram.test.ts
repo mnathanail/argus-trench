@@ -44,6 +44,17 @@ test('tokenCount is the winrate denominator, not buy+sell', () => {
 test('an empty allowlist authorises nobody (fail closed)', () => {
   assert.equal(authorize(123, []).allowed, false);
   assert.match(authorize(123, []).reason, /not set/);
+  // Το id πρέπει να εμφανίζεται: είναι ο τεκμηριωμένος τρόπος να το ανακαλύψεις.
+  assert.match(authorize(123, []).reason, /123/);
+});
+
+test('a rejection log always names the chat id', async () => {
+  const logged: string[] = [];
+  await handleUpdate(
+    { update_id: 1, message: { message_id: 1, chat: { id: 555, type: 'private' }, text: '/list' } },
+    { client: fakeClient([]), deps: stubDeps(), allowedChatIds: [], log: (m) => logged.push(m) },
+  );
+  assert.match(logged[0] ?? '', /555/);
 });
 
 test('only allowlisted chats are authorised', () => {
@@ -192,6 +203,8 @@ function wallet(address: string): WatchlistWallet {
     active: true,
     addedAt: new Date(0),
     lastReviewedAt: null,
+    lastSeenTxHash: null,
+    lastSeenActivityAt: null,
   };
 }
 

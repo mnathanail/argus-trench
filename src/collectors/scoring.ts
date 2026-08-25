@@ -1,0 +1,93 @@
+import { insertScores } from '../db/repositories/walletScoreHistory.js';
+import {
+  listWalletsBySource,
+  updateWalletScore,
+  type WatchlistWallet,
+} from '../db/repositories/watchlistWallets.js';
+import { fetchWalletStats } from '../gmgn/walletStats.js';
+import {
+  ADVISORY_TOKEN_COUNT_FLOOR,
+  ADVISORY_WIN_RATE_FLOOR,
+} from '../telegram/commands.js';
+
+/**
+ * Layer 2 — re-scoring. Τα manual wallets ξανα-σκοράρονται σε ΚΑΘΕ κύκλο (τα
+ * auto-discovered weekly, όχι εδώ).
+ *
+ * Κόστος: weight 3 **ανά wallet** — το `portfolio stats` δε κάνει batch παρά το help text
+ * (δοκιμασμένο). Είναι ανεκτό μόνο επειδή τα manual wallets είναι λίγα· αν η λίστα
+ * μεγαλώσει, το interval πρέπει να αραιώσει.
+ *
+ * Τα αδύναμα wallets **δεν απενεργοποιούνται** — ο χρήστης αποφασίζει για ό,τι πρόσθεσε
+ * ο ίδιος. Επιστρέφουμε τα alerts και τα στέλνει ο scheduler.
+ */
+export interface ScoringResult {
+  walletsScored: number;
+  failures: number;
+  alerts: string[];
+}
+
+export async function runManualScoringCycle(): Promise<ScoringResult> {
+  const wallets = await listWalletsBySource('manual');
+  const scores: {
+    walletAddress: string;
+    winRate: number | null;
+    pnlMultiplier: number | null;
+    tradeCount: number | null;
+  }[] = [];
+  const alerts: string[] = [];
+  let failures = 0;
+
+  for (const wallet of wallets) {
+    try {
+      const stats = await fetchWalletStats({ wallet: wallet.address });
+      const score = {
+        walletAddress: wallet.address,
+        winRate: stats.winRate,
+        // `realized_profit_pnl` είναι ratio, όχι multiplier — βλ. walletStats.ts.
+        pnlMultiplier: stats.realizedPnlRatio,
+        // token_num: ο παρονομαστής του winRate, ΟΧΙ buy+sell.
+        tradeCount: stats.tokenCount,
+      };
+      scores.push(score);
+      await updateWalletScore(wallet.address, score);
+
+      const alert = advisoryFor(wallet, score.winRate, score.tradeCount);
+      if (alert !== null) alerts.push(alert);
+    } catch {
+      // Ένα wallet που αποτυγχάνει δε πρέπει να ρίξει τον κύκλο για τα υπόλοιπα.
+      failures += 1;
+    }
+  }
+
+  // Ένα round-trip για όλο το ιστορικό.
+  await insertScores(scores);
+
+  return { walletsScored: scores.length, failures, alerts };
+}
+
+/**
+ * Alert μόνο στη **διάσχιση** του floor, όχι σε κάθε κύκλο όσο μένει κάτω — αλλιώς ένα
+ * wallet με win rate 0.45 θα έστελνε μήνυμα κάθε λίγα δευτερόλεπτα και το κανάλι θα
+ * γινόταν άχρηστο. Η προηγούμενη τιμή είναι αυτή που έχει το `watchlist_wallets`.
+ */
+function advisoryFor(
+  wallet: WatchlistWallet,
+  winRate: number | null,
+  tokenCount: number | null,
+): string | null {
+  if (winRate === null) return null;
+  const wasAbove = wallet.winRate === null || wallet.winRate >= ADVISORY_WIN_RATE_FLOOR;
+  const isBelow = winRate < ADVISORY_WIN_RATE_FLOOR;
+  if (!(wasAbove && isBelow)) return null;
+
+  const sample =
+    tokenCount !== null && tokenCount < ADVISORY_TOKEN_COUNT_FLOOR
+      ? ` (μόνο ${tokenCount} θέσεις — μικρό δείγμα)`
+      : '';
+  return (
+    `⚠️ ${wallet.address}\n` +
+    `win rate έπεσε στο ${(winRate * 100).toFixed(1)}%, κάτω από το ${(ADVISORY_WIN_RATE_FLOOR * 100).toFixed(0)}%${sample}.\n` +
+    'Άξιο review — δεν απενεργοποιήθηκε.'
+  );
+}

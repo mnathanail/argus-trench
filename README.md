@@ -33,8 +33,17 @@ npm run dev        # tsx watch, για development
 npm start          # node dist/main.js, μετά από npm run build
 ```
 
-Ένα process για όλα. Προς το παρόν σηκώνει μόνο το Telegram bot (manual wallet watching);
-οι collector loops του layer 1-2 θα μπουν στον ίδιο scheduler.
+Ένα process για όλα: το Telegram bot + τρία collector loops της Φάσης 1.
+
+| Loop | Interval | Τι κάνει |
+|---|---|---|
+| `discovery` | 30s | δύο `trenches` calls (gated + ungated), γράφει `decision_log` |
+| `wallet-activity` | 60s | `portfolio activity --type buy` ανά active wallet, βρίσκει triggers |
+| `manual-scoring` | 300s | ξανα-σκοράρει τα manual wallets, alert σε πτώση |
+
+Όλα σέβονται **κοινό cooldown**: ο rate limiter της GMGN είναι ανά API key, όχι ανά route,
+οπότε ένα 429 σε ένα loop παγώνει όλα τα υπόλοιπα μέχρι το `retryAt`. Αν συνέχιζαν, κάθε
+request τους θα επέκτεινε το ban κατά 5s (έως 5 λεπτά).
 
 **Βρες το chat id σου**: ξεκίνα το process με κενό `TELEGRAM_CHAT_ID`, στείλε μήνυμα στο
 bot, και το log θα γράψει `rejected: chat <id> is not in the allowlist`. Βάλε το id στο

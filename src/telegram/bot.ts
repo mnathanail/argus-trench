@@ -38,7 +38,12 @@ export interface AuthorizationResult {
  */
 export function authorize(chatId: number, allowed: readonly number[]): AuthorizationResult {
   if (allowed.length === 0) {
-    return { allowed: false, reason: 'TELEGRAM_CHAT_ID is not set — refusing all commands' };
+    // Το chat id μπαίνει ΚΑΙ εδώ: αυτό το log είναι ο τεκμηριωμένος τρόπος να το
+    // ανακαλύψεις (βλ. README), και χωρίς το id το μήνυμα ήταν άχρηστο.
+    return {
+      allowed: false,
+      reason: `TELEGRAM_CHAT_ID is not set — refusing all commands (this chat is ${chatId})`,
+    };
   }
   return allowed.includes(chatId)
     ? { allowed: true, reason: 'ok' }
@@ -64,7 +69,7 @@ export async function handleUpdate(update: TelegramUpdate, options: BotOptions):
   if (!auth.allowed) {
     // Δεν απαντάμε τίποτα σε μη εξουσιοδοτημένο chat: μια απάντηση επιβεβαιώνει ότι το
     // bot είναι ζωντανό και ποιος το έχει. Το καταγράφουμε όμως.
-    options.log?.(`[telegram] rejected: ${auth.reason}`);
+    options.log?.(`[telegram] rejected chat ${chatId}: ${auth.reason}`);
     return;
   }
 

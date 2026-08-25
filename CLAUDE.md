@@ -30,9 +30,13 @@ ecosystem (gmgn-cli), με στόχο: track wallets/tokens, entry/exit signals,
      εμφανίζονται σε >1 token βαραίνουν περισσότερο. Scoring μέσω `portfolio stats
      --wallet <addr>`, `active=true` μόνο αν `win_rate > 0.5 AND trade_count >= 15`
      (αποφεύγει false positives από 2-3 τυχερά trades). Weekly re-scoring.
-     Το scoring είναι φθηνό: το `portfolio profits` παίρνει **1–100 wallets σε ένα call**
-     και το `portfolio stats` υποστηρίζει batch — άρα το per-cycle re-scoring των manual
-     wallets είναι ρεαλιστικό, όχι ένα request ανά wallet.
+     ⚠️ **Το `portfolio stats` ΔΕΝ κάνει batch** (δοκιμασμένο 2026-08-25, και με
+     `--wallet A B` και με `--wallet A --wallet B`): επιστρέφει ένα object, μόνο για το
+     πρώτο wallet, παρά το help text "supports multiple wallets". Άρα το scoring κοστίζει
+     **3 weight ανά wallet**. Το `portfolio profits` όντως κάνει batch (`{list:[...]}`,
+     1–100 wallets, weight 3) αλλά **δεν** περιέχει `pnl_stat`, δηλαδή δεν δίνει win rate —
+     άρα δεν υποκαθιστά το `stats` για τον κανόνα μας. Το per-cycle re-scoring των manual
+     wallets είναι ρεαλιστικό επειδή είναι λίγα, όχι επειδή μπαίνουν σε ένα call.
    - *Χειροκίνητο*: ο χρήστης προσθέτει wallets που ήδη εμπιστεύεται — βλ. "Manual
      wallet watching" section παρακάτω.
    Και τα δύο αποθηκεύονται στο ίδιο `watchlist_wallets` table. ΔΕΝ εξαρτάται από
@@ -107,9 +111,12 @@ per-token. Layers 3-6 είναι το per-event pipeline.
 `kline` 2, `trending` 1, `search` 1, `portfolio activity` 3, `portfolio stats` 3,
 `portfolio profits` 3, `portfolio holdings` 5, `portfolio info` 1, `track smartmoney` 1,
 `track kol` 1, `track follow-wallet` 3.
-Το two-call discovery κοστίζει 6/κύκλο. Το ακριβό είναι το layer 3: `portfolio activity`
-είναι weight 3 **ανά wallet** — 50 wallets = 150 weight = 7.5s στο πλήρες rate. Αντίθετα
-το `portfolio profits` είναι 3 για **100 wallets μαζί**, γι' αυτό το scoring πάει batch. Στο 429: διάβασε `X-RateLimit-Reset` header ή `reset_at` στο body.
+Το two-call discovery κοστίζει 6/κύκλο. Ακριβά είναι τα per-wallet routes: `portfolio
+activity` **και** `portfolio stats` είναι weight 3 **ανά wallet** και κανένα από τα δύο δε
+κάνει batch. 50 wallets σε activity = 150 weight = 7.5s στο πλήρες rate· άλλα 150 αν
+σκοράρουμε τα ίδια. Μόνο το `portfolio profits` κάνει πραγματικά batch (100 wallets,
+weight 3) — αλλά δίνει P&L, όχι win rate.
+Πρακτικός κανόνας: το budget των 20/s το τρώνε τα wallets, όχι το discovery. Στο 429: διάβασε `X-RateLimit-Reset` header ή `reset_at` στο body.
 **ΜΗΝ κάνεις naive retry** — κάθε request μέσα στο cooldown επεκτείνει το ban κατά 5s,
 έως 5 λεπτά. Ο adapter θέλει token bucket, όχι retry loop.
 
@@ -182,7 +189,7 @@ decision_log(
   trigger_type,                           -- smart_money_buy / kol_call / none (kol_call: reserved για v2, ανενεργό στο v1 — KOL Call Signal είναι Deferred)
   trigger_wallet_address,
   trigger_wallet_snapshot_json,           -- win_rate/pnl_multiplier ΤΗ ΣΤΙΓΜΗ εκείνη, όχι σήμερα
-  decision,                               -- entered / skipped_gate / skipped_no_trigger / skipped_bankroll_limit
+  decision,                               -- entered / signal_logged / skipped_gate / skipped_no_trigger / skipped_bankroll_limit
   decision_reason_text,                   -- human-readable, για γρήγορο scan / Telegram alert
   linked_trade_id                         -- FK, μόνο αν decision = entered
 )
@@ -212,6 +219,26 @@ rejected_candidate_followup(
 candidates, ώστε το backtesting/tuning να βλέπει ολόκληρη την εικόνα από την πρώτη μέρα,
 όχι μόνο τη μεροληπτική όψη των όσων εκτελέστηκαν.
 
+**Το `decision` δεν έχει CHECK constraint** — είναι TEXT με σχόλιο. Γι' αυτό προστέθηκε η
+τιμή **`signal_logged`** χωρίς migration: στη Φάση 1 ο κανόνας εισόδου ενεργοποιείται
+(gate πέρασε ΚΑΙ trusted wallet αγόρασε) αλλά δεν εκτελείται συναλλαγή. Το
+`skipped_no_trigger` γίνεται ψευδές μόλις υπάρχει trigger, και το `entered` θα υπονοούσε
+θέση που δεν άνοιξε ποτέ. Στη Φάση 3 αυτά τα rows είναι ακριβώς το σύνολο που θα γινόταν
+`entered` με paper trade.
+
+**Migration 0004 (collector state):**
+- **Unique index `(token_address, logic_version, candidate_source)`** — ένα row ανά
+  candidate ανά πηγή παρατήρησης, ΟΧΙ ανά poll tick. Ένα token μένει στο trenches για ώρες,
+  άρα χωρίς dedup το `decision_log` θα μέτραγε poll ticks. Το `candidate_source` ανήκει στο
+  κλειδί: ένα token εμφανίζεται και στο gated και στο ungated call, και αν dedup-άραμε μόνο
+  σε (token, version) η μία παρατήρηση θα χανόταν, χαλώντας το pass-rate εκείνης της πηγής.
+- `last_evaluated_at` + `evaluation_count` — πόσες φορές το ξαναείδαμε, χωρίς πλήρη
+  χρονοσειρά. Το `evaluated_at` μένει «πρώτη φορά».
+- `watchlist_wallets.last_seen_tx_hash` / `last_seen_activity_at` — cursor του activity
+  polling. Χωρίς αυτό κάθε κύκλος ξανα-παράγει τα ίδια buys ως νέα triggers.
+- Ο upsert έχει `WHERE decision <> 'entered'`: μόλις ένα row δεθεί με πραγματικό trade,
+  επόμενος κύκλος δε πρέπει να το γυρίσει σε `skipped_*` και να αφήσει ορφανό trade.
+
 **Migration 0003 πρόσθεσε `candidate_source`** (`gated_pool` / `sample_window`, NOT NULL
 χωρίς default, με CHECK). Είναι απαραίτητο λόγω του two-call design του layer 1: τα δύο
 calls ΔΕΝ έχουν την ίδια στατιστική σημασία. Το `gated_pool` δίνει survivors από όλο το
@@ -223,7 +250,10 @@ calls ΔΕΝ έχουν την ίδια στατιστική σημασία. Τ�
 ## Manual wallet watching (χρήστης-provided, migration 0002)
 Πέρα από το αυτόματο discovery, ο χρήστης μπορεί να προσθέσει wallets που θέλει να
 παρακολουθεί απευθείας:
-- **Bot**: `@shitcoin_intel_bot` ("Shitcoin Intel"), νέο/ξεχωριστό από το pump.fun project.
+- **Bot**: `@shitcoin_intel_bot` ("Shitcoin Intel"). **Προϋπήρχε** — δεν φτιάχτηκε νέο, και
+  ο χρήστης επιβεβαίωσε 2026-08-25 ότι αυτό είναι το σωστό. Αναθεωρεί την προηγούμενη
+  απόφαση "νέο bot". Αν αργότερα μπερδεύονται alerts με άλλο σύστημα στο ίδιο chat, το
+  ξεχωρίζουμε τότε.
 - **Authorization — fail closed**: το `TELEGRAM_CHAT_ID` είναι allowlist (comma-separated)
   και **κενό σημαίνει κανείς, όχι όλοι**. Το bot username είναι ανακαλύψιμο, οποιοσδήποτε
   μπορεί να του γράψει, και τα `/watch`/`/unwatch` γράφουν στη watchlist που τροφοδοτεί τα
@@ -252,8 +282,10 @@ calls ΔΕΝ έχουν την ίδια στατιστική σημασία. Τ�
   streaming score.
 
 ## Phased rollout
-0. Setup & instrumentation (API key, plugin install, logging σκελετός)
-1. Read-only signal collection (καμία συναλλαγή, μόνο logging)
+0. ✅ Setup & instrumentation (API key, plugin install, logging σκελετός) — **έγινε**
+1. 🚧 Read-only signal collection (καμία συναλλαγή, μόνο logging) — **υλοποιημένο**:
+   3 collector loops (discovery 30s, wallet-activity 60s, manual-scoring 300s) σε ένα
+   process με κοινό cooldown, `logic_version = gate-v1-<hash των thresholds>`.
 2. Backtesting & threshold tuning πάνω σε πραγματικά logged δεδομένα
 3. Paper trading (πλήρες decision engine, simulated fills)
 4. Μικρό live κεφάλαιο (αυστηρό position sizing)

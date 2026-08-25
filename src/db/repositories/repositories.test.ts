@@ -74,11 +74,13 @@ test('candidate_source is required and CHECK-constrained', async () => {
 
 test('gatePassRate never mixes the two candidate sources', async () => {
   await inRollback(async (tx) => {
+    // Διαφορετικά tokens: το unique index (token, logic_version, candidate_source)
+    // επιτρέπει ένα row ανά candidate ανά πηγή παρατήρησης.
     await insertDecisions(
       [
-        { ...baseDecision, gatePassed: true, decision: 'skipped_no_trigger' },
-        { ...baseDecision, gatePassed: false, gateFailReason: 'rug_ratio 0.4 > max 0.2', decision: 'skipped_gate' },
-        { ...baseDecision, candidateSource: 'gated_pool', gatePassed: true, decision: 'skipped_no_trigger' },
+        { ...baseDecision, tokenAddress: 'TokenPass1', gatePassed: true, decision: 'skipped_no_trigger' },
+        { ...baseDecision, tokenAddress: 'TokenFail1', gatePassed: false, gateFailReason: 'rug_ratio 0.4 > max 0.2', decision: 'skipped_gate' },
+        { ...baseDecision, tokenAddress: 'TokenPass1', candidateSource: 'gated_pool', gatePassed: true, decision: 'skipped_no_trigger' },
       ],
       tx,
     );

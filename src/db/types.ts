@@ -17,7 +17,17 @@ export type Decision =
   | 'entered'
   | 'skipped_gate'
   | 'skipped_no_trigger'
-  | 'skipped_bankroll_limit';
+  | 'skipped_bankroll_limit'
+  /**
+   * Φάση 1 μόνο: το gate πέρασε ΚΑΙ trusted wallet αγόρασε — δηλαδή ο κανόνας εισόδου
+   * ενεργοποιήθηκε — αλλά η Φάση 1 είναι read-only, άρα δεν έγινε trade.
+   *
+   * Χρειάζεται ξεχωριστή τιμή γιατί το `skipped_no_trigger` γίνεται ψευδές μόλις υπάρχει
+   * trigger, και το `entered` θα υπονοούσε θέση που δεν άνοιξε ποτέ. Στη Φάση 3 αυτά τα
+   * rows είναι ακριβώς το σύνολο που θα γινόταν `entered` με paper trade.
+   * Το `decision` δεν έχει CHECK constraint, άρα δε χρειάστηκε migration.
+   */
+  | 'signal_logged';
 
 /** `kol_call` reserved για v2 — ανενεργό στο v1. */
 export type TriggerType = 'smart_money_buy' | 'kol_call' | 'none';
