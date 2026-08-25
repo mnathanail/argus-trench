@@ -1,0 +1,31 @@
+{
+  "name": "argus-trench",
+  "version": "0.0.1",
+  "private": true,
+  "description": "GMGN / pump.fun auto-trading system — phased rollout, log-only first",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "migrate": "tsx src/db/migrate.ts",
+    "migrate:status": "tsx src/db/migrate.ts --status",
+    "migrate:prod": "node dist/db/migrate.js",
+    "db:up": "docker compose up -d --wait db",
+    "db:down": "docker compose down",
+    "db:reset": "docker compose down -v && docker compose up -d --wait db",
+    "db:psql": "docker compose exec db psql -U argus -d argus_trench_dev"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
