@@ -1,0 +1,7 @@
+// Build config για το production output. Το `tsconfig.json` κρατά τα tests μέσα ώστε ο
+// `npm run typecheck` να τα ελέγχει· εδώ τα εξαιρούμε, γιατί δεν έχουν λόγο ύπαρξης στο
+// image που τρέχει στο Railway.
+{
+  "extends": "./tsconfig.json",
+  "exclude": ["src/**/*.test.ts"]
+}

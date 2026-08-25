@@ -26,6 +26,20 @@ npm run migrate:status     # τι έχει εφαρμοστεί / τι λείπ�
 Άλλα: `npm run db:down` (σταματά, κρατά τα δεδομένα) · `npm run db:reset`
 (**σβήνει το volume** και ξεκινά καθαρό) · `npm run db:psql` (psql shell).
 
+## Tests
+
+```bash
+npm run db:up && npm test      # χρειάζεται το container πάνω
+```
+
+`node:test` (built-in, χωρίς test framework dependency). Τα tests είναι **integration**
+πάνω στο dev Postgres, όχι unit με mocks: ό,τι επαληθεύουν — CHECK constraints, η κυκλική
+FK, οι τύποι που επιστρέφει ο driver — ζει στη βάση, και ένα mock θα τα έκρυβε όλα.
+
+Κάθε test τρέχει μέσα σε transaction που γίνεται πάντα rollback, άρα δεν αφήνει δεδομένα
+και δεν εξαρτάται από σειρά εκτέλεσης. Τα assertions για counts είναι delta-based, ώστε
+να μη σπάσουν όταν η Φάση 1 αρχίσει να γράφει πραγματικά δεδομένα στην ίδια βάση.
+
 ## Migrations
 
 Απλός forward-only runner (`src/db/migrate.ts`):
