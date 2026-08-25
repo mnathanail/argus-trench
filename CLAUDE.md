@@ -80,8 +80,15 @@ per-token. Layers 3-6 είναι το per-event pipeline.
 - **Το `--limit` αγνοείται** — ζήτησα 3, πήρα 60. Response ~250KB, 89 fields/item.
   Το payload size δεν είναι ελέγξιμο.
 - **`private_vault_hold_rate` είναι 0 σε όλα τα results** — άχρηστο ως filter.
-- Τα numeric fields στο `trenches` είναι JSON **numbers**. (Στο `kline` όμως τα prices
-  είναι **strings** — μη γενικεύεις.)
+- Τα numeric fields στο `trenches` είναι JSON **numbers**. Στο `portfolio activity` όμως
+  τα `token_amount` / `cost_usd` / `price_usd` είναι **strings**, και στο `kline` τα prices
+  επίσης strings. **Μη γενικεύεις ανά driver — είναι ανά endpoint.** Ο adapter έχει μία
+  `toNumber` που δέχεται και τα δύο.
+- Στο `portfolio activity` τα πεδία είναι **`event_type`** και **`tx_hash`** — το doc λέει
+  `type` και `transaction_hash`. Το `timestamp` είναι number (unix seconds).
+- **Ο αριθμός των fields δεν είναι σταθερός**: το ίδιο `trenches` call έδωσε 89 fields/item
+  και λίγο αργότερα 97. Γι' αυτό κρατάμε το `raw` αυτούσιο στο `gate_snapshot_json` και
+  επικυρώνουμε μόνο ό,τι χρησιμοποιούμε.
 
 **Flag → field mapping** (τα ονόματα ΔΕΝ ταιριάζουν, ο adapter θέλει ρητό table):
 
@@ -95,9 +102,14 @@ per-token. Layers 3-6 είναι το per-event pipeline.
 | `--max-creator-created-open-ratio` | `creator_created_open_ratio` |
 | `--max-twitter-rename-count` | `twitter_rename_count` |
 
-**Rate limits** — leaky bucket `rate=20 capacity=20`, weight ανά route: `trenches` 3,
-`signal` 3, `hot-searches` 3, `kline` 2, `trending` 1, `search` 1. Το two-call design
-κοστίζει 6/κύκλο. Στο 429: διάβασε `X-RateLimit-Reset` header ή `reset_at` στο body.
+**Rate limits** — leaky bucket `rate=20 capacity=20`, **κοινός σε όλα τα routes** (άρα ένα
+βαρύ poll κλέβει budget από τα άλλα). Weights: `trenches` 3, `signal` 3, `hot-searches` 3,
+`kline` 2, `trending` 1, `search` 1, `portfolio activity` 3, `portfolio stats` 3,
+`portfolio profits` 3, `portfolio holdings` 5, `portfolio info` 1, `track smartmoney` 1,
+`track kol` 1, `track follow-wallet` 3.
+Το two-call discovery κοστίζει 6/κύκλο. Το ακριβό είναι το layer 3: `portfolio activity`
+είναι weight 3 **ανά wallet** — 50 wallets = 150 weight = 7.5s στο πλήρες rate. Αντίθετα
+το `portfolio profits` είναι 3 για **100 wallets μαζί**, γι' αυτό το scoring πάει batch. Στο 429: διάβασε `X-RateLimit-Reset` header ή `reset_at` στο body.
 **ΜΗΝ κάνεις naive retry** — κάθε request μέσα στο cooldown επεκτείνει το ban κατά 5s,
 έως 5 λεπτά. Ο adapter θέλει token bucket, όχι retry loop.
 

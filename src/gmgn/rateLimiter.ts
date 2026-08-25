@@ -1,0 +1,70 @@
+/**
+ * Token bucket που αντικατοπτρίζει τον leaky-bucket limiter του GMGN: `rate=20`,
+ * `capacity=20`, με weight ανά route (βλ. `routes.ts`).
+ *
+ * Γιατί proactive limiting και όχι reactive retry: στο 429 η GMGN επεκτείνει το ban κατά
+ * 5s για κάθε request μέσα στο cooldown, έως 5 λεπτά. Ένα naive retry loop μετατρέπει ένα
+ * στιγμιαίο throttle σε πεντάλεπτο blackout. Άρα περιμένουμε ΠΡΙΝ στείλουμε.
+ */
+
+export interface Clock {
+  now(): number;
+  sleep(ms: number): Promise<void>;
+}
+
+export const systemClock: Clock = {
+  now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+export class TokenBucket {
+  #tokens: number;
+  #lastRefillAt: number;
+  /** Σειριοποιεί τα acquire ώστε δύο ταυτόχρονοι callers να μη διαβάσουν το ίδιο υπόλοιπο. */
+  #queue: Promise<unknown> = Promise.resolve();
+
+  constructor(
+    readonly capacity: number,
+    readonly refillPerSecond: number,
+    private readonly clock: Clock = systemClock,
+  ) {
+    this.#tokens = capacity;
+    this.#lastRefillAt = clock.now();
+  }
+
+  get available(): number {
+    this.#refill();
+    return this.#tokens;
+  }
+
+  async acquire(weight: number): Promise<void> {
+    if (weight <= 0) return;
+    if (weight > this.capacity) {
+      throw new Error(`weight ${weight} exceeds bucket capacity ${this.capacity}`);
+    }
+    const turn = this.#queue.then(() => this.#take(weight));
+    // Το queue δεν πρέπει να «κολλήσει» σε rejection προηγούμενου caller.
+    this.#queue = turn.catch(() => undefined);
+    return turn;
+  }
+
+  async #take(weight: number): Promise<void> {
+    for (;;) {
+      this.#refill();
+      if (this.#tokens >= weight) {
+        this.#tokens -= weight;
+        return;
+      }
+      const deficit = weight - this.#tokens;
+      await this.clock.sleep(Math.ceil((deficit / this.refillPerSecond) * 1000));
+    }
+  }
+
+  #refill(): void {
+    const now = this.clock.now();
+    const elapsedSeconds = (now - this.#lastRefillAt) / 1000;
+    if (elapsedSeconds <= 0) return;
+    this.#tokens = Math.min(this.capacity, this.#tokens + elapsedSeconds * this.refillPerSecond);
+    this.#lastRefillAt = now;
+  }
+}
