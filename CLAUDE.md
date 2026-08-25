@@ -116,6 +116,22 @@ per-token. Layers 3-6 είναι το per-event pipeline.
 **IPv6 δεν υποστηρίζεται** — δίνει 401/403 με σωστά credentials. Έλεγχος πριν το Railway
 deploy: αν το `https://ipv6.icanhazip.com` απαντά, το outbound βγαίνει από IPv6.
 
+**`portfolio stats` — η σημασιολογία του scoring (κρίσιμο, επιβεβαιωμένο 2026-08-25):**
+- Το win rate **ΔΕΝ** είναι top-level `win_rate`· είναι **`pnl_stat.winrate`**.
+- Υπολογίζεται πάνω σε **tokens/θέσεις, όχι σε trades**: τα buckets `pnl_lt_nd5_num`,
+  `pnl_nd5_0x_num`, `pnl_0x_2x_num`, `pnl_2x_5x_num`, `pnl_gt_5x_num` αθροίζουν ακριβώς
+  σε `pnl_stat.token_num` (μετρημένο: 0+497+549+16+4 = 1066 = token_num).
+- Άρα το `trade_count >= 15` του κανόνα μας δένει με **`pnl_stat.token_num`**, ΟΧΙ με
+  `buy + sell`. Στο ίδιο wallet: token_num 1066 vs buy+sell 5080. Αν βάζαμε το δεύτερο,
+  αριθμητής και παρονομαστής θα μέτραγαν διαφορετικά πράγματα και το threshold θα ήταν
+  ~5× χαλαρότερο απ' όσο νομίζουμε.
+- ⚠️ **Το `pnl_multiplier` του schema είναι misnomer**: η πηγή είναι `realized_profit_pnl`,
+  που είναι **ratio/ROI** (0.3264 = +32.6%), όχι πολλαπλασιαστής (θα ήταν 1.33). Το
+  αποθηκεύουμε ως έχει. Αν κάποτε το διαβάσει κώδικας ως multiplier, θα υποτιμήσει
+  δραματικά — δεν μετονομάστηκε για να μη σπάσει το υπάρχον schema, αλλά ΠΡΟΣΟΧΗ.
+- Χρήσιμο bonus: `pnl_stat.avg_holding_period` (δευτερόλεπτα) ξεχωρίζει sniper bot από
+  πραγματικό trader· τα pnl buckets δίνουν κατανομή, όχι μόνο μέσο όρο.
+
 **Fields που δεν ήταν στο αρχικό σχέδιο και αξίζουν σκέψη ως gate v2** (υπάρχουν και ως
 `--min-*`/`--max-*` flags): `entrapment_ratio`, `top70_sniper_hold_rate`,
 `fresh_wallet_rate`, `bot_degen_rate`/`bot_count`, `dev_team_hold_rate`, `progress`
@@ -207,9 +223,18 @@ calls ΔΕΝ έχουν την ίδια στατιστική σημασία. Τ�
 ## Manual wallet watching (χρήστης-provided, migration 0002)
 Πέρα από το αυτόματο discovery, ο χρήστης μπορεί να προσθέσει wallets που θέλει να
 παρακολουθεί απευθείας:
+- **Bot**: `@shitcoin_intel_bot` ("Shitcoin Intel"), νέο/ξεχωριστό από το pump.fun project.
+- **Authorization — fail closed**: το `TELEGRAM_CHAT_ID` είναι allowlist (comma-separated)
+  και **κενό σημαίνει κανείς, όχι όλοι**. Το bot username είναι ανακαλύψιμο, οποιοσδήποτε
+  μπορεί να του γράψει, και τα `/watch`/`/unwatch` γράφουν στη watchlist που τροφοδοτεί τα
+  entry signals — δηλαδή ένα ανοιχτό bot είναι μονοπάτι για να βάλει τρίτος τα wallets του
+  στη στρατηγική μας. Σε μη εξουσιοδοτημένο chat **δεν απαντάμε καθόλου** (μια απάντηση
+  επιβεβαιώνει ότι το bot υπάρχει και ποιος το έχει) — μόνο log.
 - **Πώς μπαίνουν**: Telegram bot commands `/watch <address>` (source='manual',
   active=true αμέσως — ΔΕΝ περνάει το αυτόματο threshold win_rate/trade_count,
-  εμπιστευόμαστε την κρίση του χρήστη) και `/unwatch <address>`.
+  εμπιστευόμαστε την κρίση του χρήστη) και `/unwatch <address>`. Το `/watch` κάνει πρώτα
+  το upsert και μετά το scoring: αν το GMGN είναι κάτω, το wallet μπαίνει παρά ταύτα —
+  το score είναι πληροφορία, όχι προϋπόθεση.
 - **Score πάντα από GMGN, όχι cached μόνιμα**: κάθε manual wallet ξανα-σκοράρεται
   (`portfolio stats`) σε ΚΑΘΕ polling κύκλο (όχι weekly όπως τα auto-discovered).
   Καταγράφεται σε νέο table `wallet_score_history` ώστε να φαίνεται τάση, όχι μόνο

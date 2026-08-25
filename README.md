@@ -26,6 +26,21 @@ npm run migrate:status     # τι έχει εφαρμοστεί / τι λείπ�
 Άλλα: `npm run db:down` (σταματά, κρατά τα δεδομένα) · `npm run db:reset`
 (**σβήνει το volume** και ξεκινά καθαρό) · `npm run db:psql` (psql shell).
 
+## Running
+
+```bash
+npm run dev        # tsx watch, για development
+npm start          # node dist/main.js, μετά από npm run build
+```
+
+Ένα process για όλα. Προς το παρόν σηκώνει μόνο το Telegram bot (manual wallet watching);
+οι collector loops του layer 1-2 θα μπουν στον ίδιο scheduler.
+
+**Βρες το chat id σου**: ξεκίνα το process με κενό `TELEGRAM_CHAT_ID`, στείλε μήνυμα στο
+bot, και το log θα γράψει `rejected: chat <id> is not in the allowlist`. Βάλε το id στο
+`.env` και ξαναξεκίνα. Κενή allowlist απορρίπτει **τα πάντα** — δες "Authorization" στο
+`CLAUDE.md`.
+
 ## Tests
 
 ```bash
