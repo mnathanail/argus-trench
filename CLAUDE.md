@@ -10,22 +10,45 @@ ecosystem (gmgn-cli), με στόχο: track wallets/tokens, entry/exit signals,
 ## Αρχιτεκτονική — 6 layers
 1. **Discovery & gate** — `gmgn-cli market trenches` με server-side min/max filters
    (rug_ratio, bundler_rate, insider_ratio, top_holder_rate, smart_degen_count,
-   creator_created_open_ratio, twitter_rename_count). Αυτό ΕΙΝΑΙ το hard-gate — δε
-   χτίζουμε δικό μας φιλτράρισμα πάνω από αυτό.
+   creator_created_open_ratio, twitter_rename_count). Όλα ΕΠΙΒΕΒΑΙΩΜΕΝΑ ως πραγματικά
+   flags — βλ. "Verified CLI contract". Αυτό ΕΙΝΑΙ το hard-gate.
+   **Δύο calls ανά κύκλο, όχι ένα** (μετρημένο 2026-08-25, `near_completion` / sol):
+   - *Gated call* → το actionable candidate set. Το server-side filtering φτάνει πολύ
+     βαθύτερα στο pool: 60 qualifying Pump.fun tokens, ενώ το ungated window περιείχε
+     μόνο 15 από αυτά. Χωρίς αυτό χάνουμε 4× candidates.
+   - *Ungated call* → η ΜΟΝΗ πηγή `skipped_gate` rows. Το gated response επιστρέφει
+     αποκλειστικά survivors· τα κομμένα tokens δεν εμφανίζονται πουθενά. Εφαρμόζουμε τα
+     ίδια thresholds client-side πάνω στο window και γράφουμε ΚΑΙ passes ΚΑΙ fails.
+
+   Άρα το "δε χτίζουμε δικό μας φιλτράρισμα" ισχύει για το τι **εκτελούμε**, όχι για το
+   τι **καταγράφουμε** — αλλιώς το `decision_log` δε γράφει ποτέ skipped_gate και το
+   tuning της Φάσης 2 μένει τυφλό (βλ. `candidate_source`, migration 0003).
+   Φάση 1: **`--launchpad-platform Pump.fun` μόνο** — ένα launchpad, καθαρότερο dataset.
 2. **Wallet curation** — standing, ανεξάρτητη διαδικασία, δύο παράλληλα μονοπάτια:
    - *Αυτόματο*: candidate wallets από `track smartmoney`/`kol` ή `token holders --tag
      smart_degen` πάνω σε ~20-30 πρόσφατα migrated/graduated tokens· wallets που
      εμφανίζονται σε >1 token βαραίνουν περισσότερο. Scoring μέσω `portfolio stats
      --wallet <addr>`, `active=true` μόνο αν `win_rate > 0.5 AND trade_count >= 15`
      (αποφεύγει false positives από 2-3 τυχερά trades). Weekly re-scoring.
+     Το scoring είναι φθηνό: το `portfolio profits` παίρνει **1–100 wallets σε ένα call**
+     και το `portfolio stats` υποστηρίζει batch — άρα το per-cycle re-scoring των manual
+     wallets είναι ρεαλιστικό, όχι ένα request ανά wallet.
    - *Χειροκίνητο*: ο χρήστης προσθέτει wallets που ήδη εμπιστεύεται — βλ. "Manual
      wallet watching" section παρακάτω.
    Και τα δύο αποθηκεύονται στο ίδιο `watchlist_wallets` table. ΔΕΝ εξαρτάται από
    "follow" μέσα στο GMGN UI.
 3. **Signal triggers** — τομή των δύο παραπάνω ρευμάτων: trusted wallet (από τη λίστα
-   μας) αγοράζει ένα token που έχει περάσει το gate. Πηγές: `track follow-wallet`
-   (poll-based) + PumpPortal WebSocket `subscribeAccountTrade` (push, χαμηλό latency,
-   συμπληρωματικό — όχι υποκατάστατο του GMGN).
+   μας) αγοράζει ένα token που έχει περάσει το gate.
+   ⚠️ **Το `track follow-wallet` ΔΕΝ κάνει γι' αυτό** (επιβεβαιωμένο 2026-08-25): το
+   resolve-άρει τη λίστα από τα follows του GMGN account που είναι δεμένο στο API key,
+   δηλαδή εξαρτάται από το GMGN UI — αυτό που ρητά απορρίπτουμε στο layer 2. Θέλει και
+   signed auth. Το `track smartmoney`/`kol` μένει χρήσιμο, αλλά για GMGN-tagged wallets,
+   όχι για τη λίστα μας.
+   Πηγή για ΤΑ ΔΙΚΑ ΜΑΣ wallets: **`portfolio activity --wallet <addr> --type buy`,
+   polled ανά wallet** (paginated, με `next` cursor). Κόστος 1 request/wallet/κύκλο αντί
+   για 1 συνολικά — μπαίνει στα μαθηματικά του rate limit, βλ. "Verified CLI contract".
+   Συμπληρωματικά: PumpPortal WebSocket `subscribeAccountTrade` (push, χαμηλό latency —
+   όχι υποκατάστατο του GMGN, και όχι πριν υπάρχει δουλεύον pipeline).
 4. **Exit decision** — δύο μηχανισμοί μαζί, όχι ένας:
    - Μηχανικό order τη στιγμή της αγοράς: `swap --condition-orders` με συνδυασμό
      `profit_stop` (fixed tier) + `profit_stop_trace` (trailing, με `drawdown_rate`).
@@ -39,6 +62,56 @@ ecosystem (gmgn-cli), με στόχο: track wallets/tokens, entry/exit signals,
 
 Σημείωση: layers 1-2 τρέχουν παράλληλα/συνεχώς ως background processes, όχι διαδοχικά
 per-token. Layers 3-6 είναι το per-event pipeline.
+
+## Verified CLI contract (gmgn-cli 1.5.8, επιβεβαιωμένο 2026-08-25)
+Ό,τι είναι εδώ έχει επαληθευτεί με πραγματικά calls, όχι διαβασμένο από docs. Τα skills
+(`.agents/skills/`) περιγράφουν το **raw API**· το CLI κανονικοποιεί αλλού.
+
+**Setup**: `npm install -g gmgn-cli` (global, όχι project dep) → `gmgn-cli config --check`
+(exit 0 = ok, 1 = unconfigured) → `gmgn-cli config` (γεννά Ed25519 keypair, δίνει URL) →
+`gmgn-cli config --apply <KEY>`. Γράφει `~/.config/gmgn/.env` (`GMGN_API_KEY` +
+`GMGN_PRIVATE_KEY`) και `~/.config/gmgn/keypair.pem`, perms 600.
+
+**Παγίδες όπου το documentation διαφωνεί με την πραγματικότητα:**
+- Το response key είναι **`near_completion`**, ΟΧΙ `pump`. Το skill doc δηλώνει
+  κατηγορηματικά το αντίθετο ("always returns this category under the key `pump`").
+  Κώδικας γραμμένος από το doc θα διάβαζε σιωπηλά `undefined`.
+- Top-level keys χωρίς `data` wrapper: `{ new_creation, near_completion, completed }`.
+- **Το `--limit` αγνοείται** — ζήτησα 3, πήρα 60. Response ~250KB, 89 fields/item.
+  Το payload size δεν είναι ελέγξιμο.
+- **`private_vault_hold_rate` είναι 0 σε όλα τα results** — άχρηστο ως filter.
+- Τα numeric fields στο `trenches` είναι JSON **numbers**. (Στο `kline` όμως τα prices
+  είναι **strings** — μη γενικεύεις.)
+
+**Flag → field mapping** (τα ονόματα ΔΕΝ ταιριάζουν, ο adapter θέλει ρητό table):
+
+| Filter flag | Field στο response |
+|---|---|
+| `--max-top-holder-rate` | `top_10_holder_rate` |
+| `--max-insider-ratio` | `suspected_insider_hold_rate` |
+| `--max-bundler-rate` | `bundler_trader_amount_rate` |
+| `--max-rug-ratio` | `rug_ratio` |
+| `--min-smart-degen-count` | `smart_degen_count` |
+| `--max-creator-created-open-ratio` | `creator_created_open_ratio` |
+| `--max-twitter-rename-count` | `twitter_rename_count` |
+
+**Rate limits** — leaky bucket `rate=20 capacity=20`, weight ανά route: `trenches` 3,
+`signal` 3, `hot-searches` 3, `kline` 2, `trending` 1, `search` 1. Το two-call design
+κοστίζει 6/κύκλο. Στο 429: διάβασε `X-RateLimit-Reset` header ή `reset_at` στο body.
+**ΜΗΝ κάνεις naive retry** — κάθε request μέσα στο cooldown επεκτείνει το ban κατά 5s,
+έως 5 λεπτά. Ο adapter θέλει token bucket, όχι retry loop.
+
+**IPv6 δεν υποστηρίζεται** — δίνει 401/403 με σωστά credentials. Έλεγχος πριν το Railway
+deploy: αν το `https://ipv6.icanhazip.com` απαντά, το outbound βγαίνει από IPv6.
+
+**Fields που δεν ήταν στο αρχικό σχέδιο και αξίζουν σκέψη ως gate v2** (υπάρχουν και ως
+`--min-*`/`--max-*` flags): `entrapment_ratio`, `top70_sniper_hold_rate`,
+`fresh_wallet_rate`, `bot_degen_rate`/`bot_count`, `dev_team_hold_rate`, `progress`
+(bonding curve), `--min-created`/`--max-created` (ηλικία token, unit suffix υποχρεωτικό:
+`30s`/`5m`). Copycat detection: `twitter_dup`, `website_dup`, `telegram_dup`, `image_dup`,
+`twitter_rename_count`, `twitter_del_post_token_count`. Dev reputation: `fund_from_address`
+(πηγή χρηματοδότησης creator), `creator_token_status`, `is_wash_trading`, `cto_flag`.
+Υπάρχει και `--filter-preset safe|smart-money|strict` — το `strict` είναι σχεδόν το gate μας.
 
 ## Decision philosophy (v1) — ΟΧΙ scoring/weighted model
 Αποφασίστηκε ρητά να ΜΗΝ χρησιμοποιηθεί weighted score (αυθαίρετα βάρη). Αντ' αυτού:
@@ -111,6 +184,14 @@ rejected_candidate_followup(
 candidates, ώστε το backtesting/tuning να βλέπει ολόκληρη την εικόνα από την πρώτη μέρα,
 όχι μόνο τη μεροληπτική όψη των όσων εκτελέστηκαν.
 
+**Migration 0003 πρόσθεσε `candidate_source`** (`gated_pool` / `sample_window`, NOT NULL
+χωρίς default, με CHECK). Είναι απαραίτητο λόγω του two-call design του layer 1: τα δύο
+calls ΔΕΝ έχουν την ίδια στατιστική σημασία. Το `gated_pool` δίνει survivors από όλο το
+βάθος του pool αλλά μηδενική ορατότητα στους rejects· το `sample_window` δίνει και τα δύο
+αλλά είναι sample, όχι πλήρης πληθυσμός. Χωρίς τη στήλη, η Φάση 2 θα υπολόγιζε pass-rate
+πάνω σε ανάμεικτα sampling frames και θα έβγαζε λάθος συμπέρασμα για το πόσο αυστηρά
+είναι τα gates.
+
 ## Manual wallet watching (χρήστης-provided, migration 0002)
 Πέρα από το αυτόματο discovery, ο χρήστης μπορεί να προσθέσει wallets που θέλει να
 παρακολουθεί απευθείας:
@@ -168,21 +249,31 @@ triggers, συμπληρωματικό στο GMGN).
 Τα υπόλοιπα (bankroll %, watchlist bootstrap, concurrent caps) επιβεβαιώθηκαν — βλ.
 "Bankroll management" και "Wallet curation" (layer 2) παραπάνω.
 
-## Runtime & environment variables (πρόταση προς επιβεβαίωση στην πρώτη session)
-- **Runtime**: Node.js/TypeScript — ταιριάζει με το gmgn-cli (npm package) και το δικό
-  σου υπάρχον skillset. ΔΕΝ έχει ρητά επιβεβαιωθεί μέσα στη συζήτηση — απλά η προφανής
-  προεπιλογή. Επιβεβαίωσε ή άλλαξέ το στην πρώτη Claude Code session.
+## Runtime & environment variables (ΕΠΙΒΕΒΑΙΩΜΕΝΑ 2026-08-25)
+- **Runtime**: Node.js/TypeScript, ESM, strict. Επιβεβαιώθηκε. Deps σκόπιμα ελάχιστα:
+  `pg` + `dotenv` μόνο. **Tests: `node:test`** (built-in, μηδέν deps) — όχι vitest/jest.
+- **Process topology**: **ένα** Node process με internal scheduler για όλα (pollers, bot),
+  όχι ξεχωριστά Railway services. Το σπάμε όταν υπάρξει πραγματικός λόγος κλιμάκωσης.
+- **Deploy**: GitHub push στο `master` → Railway auto-deploy. Pre-deploy command
+  `npm run migrate:prod` (compiled `dist/`, γιατί το `tsx` είναι devDependency και
+  κόβεται στο production install). Commits **απευθείας στο master**, χωρίς branches.
 - **Project `.env`**: `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `GMGN_ALLOW_AUTOMATED_TRADES`
   (unset/false by default — αυτό είναι το paper/live switch).
 - **ΟΧΙ στο project `.env`**: το `GMGN_API_KEY` δε ζει εκεί. Το `gmgn-cli` διαχειρίζεται
   το δικό του config global, στο `~/.config/gmgn/.env`, μέσω `config --apply <key>` —
   ανεξάρτητο από το project. Αν αργότερα κληθεί το GMGN REST απευθείας αντί για το CLI
   (βλ. σημείωση στο layer "Εκτέλεση"), τότε θα χρειαστεί ΚΑΙ στο project `.env`.
-- **Telegram bot**: να επιβεβαιωθεί αν επαναχρησιμοποιείται το bot/token του υπάρχοντος
-  pump.fun project ή αν φτιάχνεται νέο — ανάμειξη alerts από δύο projects στο ίδιο bot
-  μπορεί να μπερδεύει.
+- **Telegram bot**: **νέο bot**, ΟΧΙ reuse του υπάρχοντος pump.fun (επιβεβαιωμένο
+  2026-08-25) — ανάμειξη alerts από δύο συστήματα στο ίδιο chat γίνεται αχρείαστα θολή.
+  Το token δεν έχει δημιουργηθεί ακόμα (BotFather).
 
 ## Setup που μένει χειροκίνητο (μία φορά)
-Λογαριασμός GMGN → `gmgn-cli config` (Ed25519 keypair + link) → `config --apply <key>`
-→ binding trading wallet. Τίποτα άλλο δε χρειάζεται χειροκίνητο κλικ μέσα στο GMGN UI —
-το wallet curation ζει εξ ολοκλήρου στο δικό μας Postgres.
+✅ **Έγινε 2026-08-25**: λογαριασμός GMGN → `gmgn-cli config` (Ed25519 keypair) →
+`config --apply <key>`. Το `config --check` επιστρέφει 0.
+⬜ **Μένει**: binding trading wallet (χρειάζεται πριν τη Φάση 4, όχι για read-only) και
+δημιουργία του νέου Telegram bot στο BotFather.
+Το `portfolio info` επιστρέφει `{"wallets": []}` — **κανένα wallet δεμένο**. Αυτό είναι
+δεύτερο, ανεξάρτητο ασφαλιστικό πάνω από το `GMGN_ALLOW_AUTOMATED_TRADES`: ακόμα κι αν
+κάτι καλέσει `swap`, δεν υπάρχει wallet να συναλλάξει. Κρατάμε το έτσι μέχρι τη Φάση 4.
+Τίποτα άλλο δε χρειάζεται χειροκίνητο κλικ μέσα στο GMGN UI — το wallet curation ζει
+εξ ολοκλήρου στο δικό μας Postgres.

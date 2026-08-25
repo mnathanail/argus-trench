@@ -17,3 +17,6 @@ npm-debug.log*
 .idea/
 .vscode/
 .DS_Store
+
+# Claude Code — τα local settings είναι προσωπικά· τα skills/ και skills-lock.json ΟΧΙ
+.claude/settings.local.json
