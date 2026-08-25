@@ -1,6 +1,6 @@
 import { insertScores } from '../db/repositories/walletScoreHistory.js';
 import {
-  listWalletsBySource,
+  listActiveWallets,
   updateWalletScore,
   type WatchlistWallet,
 } from '../db/repositories/watchlistWallets.js';
@@ -11,15 +11,20 @@ import {
 } from '../telegram/commands.js';
 
 /**
- * Layer 2 — re-scoring. Τα manual wallets ξανα-σκοράρονται σε ΚΑΘΕ κύκλο (τα
- * auto-discovered weekly, όχι εδώ).
+ * Layer 2 — re-scoring. Σκοράρει ΟΛΑ τα active wallets σε κάθε κύκλο, ανεξαρτήτως
+ * `source` — `wallet_score_history` πρέπει να δείχνει την τάση κάθε wallet που
+ * παρακολουθούμε, όχι μόνο των manual. Καμία αλλαγή decision logic εδώ: το ποιο wallet
+ * μπαίνει `active` (auto-discovery threshold ή χειροκίνητο override) αποφασίζεται
+ * αλλού· εδώ απλά καταγράφουμε το τρέχον score του καθενός.
  *
  * Κόστος: weight 3 **ανά wallet** — το `portfolio stats` δε κάνει batch παρά το help text
- * (δοκιμασμένο). Είναι ανεκτό μόνο επειδή τα manual wallets είναι λίγα· αν η λίστα
- * μεγαλώσει, το interval πρέπει να αραιώσει.
+ * (δοκιμασμένο). Ανεκτό όσο η watchlist είναι μικρή· αν μεγαλώσει σημαντικά, το interval
+ * πρέπει να αραιώσει ή να χωριστεί σε ξεχωριστά loops ανά source.
  *
- * Τα αδύναμα wallets **δεν απενεργοποιούνται** — ο χρήστης αποφασίζει για ό,τι πρόσθεσε
- * ο ίδιος. Επιστρέφουμε τα alerts και τα στέλνει ο scheduler.
+ * Τα αδύναμα wallets **δεν απενεργοποιούνται** αυτόματα — για τα manual αποφασίζει ο
+ * χρήστης που τα πρόσθεσε ο ίδιος· για τα auto-discovered δεν υπάρχει ακόμα ξεχωριστή
+ * πολιτική αυτόματης απενεργοποίησης, άρα το ίδιο advisory-only μονοπάτι ισχύει και εδώ.
+ * Επιστρέφουμε τα alerts και τα στέλνει ο scheduler.
  */
 export interface ScoringResult {
   walletsScored: number;
@@ -27,8 +32,8 @@ export interface ScoringResult {
   alerts: string[];
 }
 
-export async function runManualScoringCycle(): Promise<ScoringResult> {
-  const wallets = await listWalletsBySource('manual');
+export async function runWalletScoringCycle(): Promise<ScoringResult> {
+  const wallets = await listActiveWallets();
   const scores: {
     walletAddress: string;
     winRate: number | null;

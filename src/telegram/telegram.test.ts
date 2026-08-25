@@ -171,9 +171,48 @@ test('/unwatch distinguishes a real deactivation from an unknown address', async
 
 test('commands tolerate the /cmd@BotName form and missing arguments', async () => {
   const deps = stubDeps();
-  assert.match(await handleCommand('/help', deps), /manual wallet watching/);
+  assert.match(await handleCommand('/help', deps), /wallet watching/);
   assert.match(await handleCommand('/watch@ArgusTrenchBot', deps), /Λείπει το address/);
   assert.match(await handleCommand('/nonsense', deps), /Άγνωστη εντολή/);
+});
+
+test('/watchlist lists every active wallet regardless of source, with win/pnl/positions', async () => {
+  const deps = stubDeps();
+  deps.listActiveWallets = () =>
+    Promise.resolve([
+      wallet(ADDRESS),
+      { ...wallet('AutoDiscoveredSmartMoneyAddr111111111111'), source: 'smart_money', winRate: 0.55, pnlMultiplier: -0.1, tradeCount: 20 },
+    ]);
+
+  const reply = await handleCommand('/watchlist', deps);
+  assert.match(reply, /Ενεργά wallets \(2\)/);
+  assert.match(reply, /manual \| win 60\.0% \| pnl \+33\.0% \| 40 θέσεις/);
+  assert.match(reply, /smart_money \| win 55\.0% \| pnl -10\.0% \| 20 θέσεις/);
+});
+
+test('/list is an alias of /watchlist', async () => {
+  const deps = stubDeps();
+  deps.listActiveWallets = () => Promise.resolve([wallet(ADDRESS)]);
+  const [viaList, viaWatchlist] = await Promise.all([
+    handleCommand('/list', deps),
+    handleCommand('/watchlist', deps),
+  ]);
+  assert.equal(viaList, viaWatchlist);
+});
+
+test('/unwatch vetoes an auto-discovered wallet that already passed the algorithmic threshold', async () => {
+  const deps = stubDeps();
+  const deactivated: string[] = [];
+  deps.setWalletActive = (address, active) => {
+    deactivated.push(address);
+    assert.equal(active, false);
+    return Promise.resolve(true);
+  };
+  // Ένα smart_money wallet με win_rate/trade_count πάνω από το auto-discovery threshold —
+  // δηλαδή θα ήταν active από το algorithmic gate, όχι από χειροκίνητη προσθήκη.
+  const reply = await handleCommand('/unwatch AutoDiscoveredSmartMoneyAddr111111111111', deps);
+  assert.deepEqual(deactivated, ['AutoDiscoveredSmartMoneyAddr111111111111']);
+  assert.match(reply, /Απενεργοποιήθηκε/);
 });
 
 // --- helpers ---------------------------------------------------------------------------

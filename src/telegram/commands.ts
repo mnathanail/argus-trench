@@ -6,10 +6,15 @@ import type { WalletScoreEntry } from '../db/repositories/walletScoreHistory.js'
  * Οι εντολές του manual wallet watching. Καθαρά συναρτήσεις πάνω σε injected deps, ώστε
  * να τεστάρονται χωρίς Telegram και χωρίς βάση.
  *
- * Τα manual wallets μπαίνουν `active=true` ΑΜΕΣΩΣ, χωρίς να περάσουν το threshold του
- * auto-discovery — εμπιστευόμαστε την κρίση του χρήστη (CLAUDE.md). Το threshold
- * χρησιμοποιείται εδώ **μόνο** ως συμβουλευτική προειδοποίηση· τίποτα δεν
+ * Το `/watch` προσθέτει με `source='manual'`, `active=true` ΑΜΕΣΩΣ, χωρίς να περάσει το
+ * threshold του auto-discovery — εμπιστευόμαστε την κρίση του χρήστη (CLAUDE.md). Το
+ * threshold χρησιμοποιείται εδώ **μόνο** ως συμβουλευτική προειδοποίηση· τίποτα δεν
  * απενεργοποιείται αυτόματα.
+ *
+ * Το `/unwatch`, `/score` και `/list`/`/watchlist` δεν περιορίζονται σε manual wallets:
+ * λειτουργούν σε ΟΠΟΙΟΔΗΠΟΤΕ wallet του `watchlist_wallets`. Το `/unwatch` συγκεκριμένα
+ * είναι χειροκίνητο veto πάνω σε ΟΠΟΙΟ wallet — ακόμα και ένα auto-discovered που πέρασε
+ * το algorithmic threshold μπορεί να απενεργοποιηθεί χειροκίνητα.
  */
 
 /** Το ίδιο floor με το auto-discovery, αλλά advisory-only για manual wallets. */
@@ -40,13 +45,14 @@ export interface CommandDeps {
 }
 
 const HELP = [
-  'ArgusTrench — manual wallet watching',
+  'ArgusTrench — wallet watching',
   '',
-  '/watch <address>    πρόσθεσε wallet στη watchlist (ενεργό αμέσως)',
-  '/unwatch <address>  απενεργοποίησε wallet',
-  '/score <address>    τρέχον score + τάση από το ιστορικό',
-  '/list               τα ενεργά wallets',
-  '/help               αυτό το μήνυμα',
+  '/watch <address>     πρόσθεσε wallet στη watchlist (ενεργό αμέσως)',
+  '/unwatch <address>   απενεργοποίησε wallet (οποιοδήποτε source — χειροκίνητο veto)',
+  '/score <address>     τρέχον score + τάση από το ιστορικό',
+  '/watchlist           όλα τα ενεργά wallets: source + τρέχον score',
+  '/list                alias του /watchlist',
+  '/help                αυτό το μήνυμα',
 ].join('\n');
 
 /** Solana base58: 32–44 χαρακτήρες, χωρίς 0 O I l. */
@@ -72,8 +78,9 @@ export async function handleCommand(text: string, deps: CommandDeps): Promise<st
       return withAddress(argument, (address) => unwatch(address, deps));
     case '/score':
       return withAddress(argument, (address) => score(address, deps));
+    case '/watchlist':
     case '/list':
-      return list(deps);
+      return watchlist(deps);
     default:
       return `Άγνωστη εντολή: ${command || '(κενό)'}\n\n${HELP}`;
   }
@@ -112,6 +119,7 @@ async function watch(address: string, deps: CommandDeps): Promise<string> {
     .join('\n');
 }
 
+/** Χειροκίνητο veto — δουλεύει σε ΟΠΟΙΟΔΗΠΟΤΕ wallet, ανεξαρτήτως source. */
 async function unwatch(address: string, deps: CommandDeps): Promise<string> {
   const existed = await deps.setWalletActive(address, false);
   return existed
@@ -152,13 +160,20 @@ async function score(address: string, deps: CommandDeps): Promise<string> {
   return lines.join('\n');
 }
 
-async function list(deps: CommandDeps): Promise<string> {
+/**
+ * Λιστάρει ΟΛΑ τα active wallets, οποιουδήποτε source, με το τελευταίο τους score — ώστε
+ * να ξέρεις τι υπάρχει πριν αποφασίσεις `/unwatch` σε κάτι (π.χ. ένα auto-discovered
+ * wallet που πέρασε το algorithmic threshold αλλά θέλεις να το βγάλεις χειροκίνητα).
+ */
+async function watchlist(deps: CommandDeps): Promise<string> {
   const wallets = await deps.listActiveWallets();
   if (wallets.length === 0) return 'Η watchlist είναι κενή.';
-  const rows = wallets.map(
-    (w) =>
-      `• ${w.address} — ${w.source}, win ${w.winRate == null ? '—' : formatPercent(w.winRate)}, ${w.tradeCount ?? '—'} θέσεις`,
-  );
+  const rows = wallets.map((w) => {
+    const win = w.winRate == null ? '—' : formatPercent(w.winRate);
+    const pnl = w.pnlMultiplier == null ? '—' : formatPercent(w.pnlMultiplier, true);
+    const positions = w.tradeCount ?? '—';
+    return `• ${w.address} — ${w.source} | win ${win} | pnl ${pnl} | ${positions} θέσεις`;
+  });
   return [`Ενεργά wallets (${wallets.length}):`, ...rows].join('\n');
 }
 

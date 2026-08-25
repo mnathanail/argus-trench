@@ -121,7 +121,7 @@ export async function listActiveWallets(conn?: Queryable): Promise<WatchlistWall
   return rows.map(mapWallet);
 }
 
-/** Τα manual ξανα-σκοράρονται σε ΚΑΘΕ κύκλο, τα auto-discovered weekly. */
+/** Γενικό query ανά `source` — π.χ. για μελλοντικό ξεχωριστό discovery/vetting loop. */
 export async function listWalletsBySource(
   source: WalletSource,
   conn?: Queryable,
@@ -193,9 +193,11 @@ export async function updateWalletScore(
 }
 
 /**
- * Χρησιμοποιείται από το `/unwatch` και από το auto-deactivation των auto-discovered.
- * ΔΕΝ καλείται αυτόματα για manual wallets όταν πέφτει το score — εκεί στέλνουμε alert
- * και αποφασίζει ο χρήστης (CLAUDE.md).
+ * Χρησιμοποιείται από το `/unwatch`. Χωρίς φίλτρο σε `source` επίτηδες: το `/unwatch`
+ * είναι χειροκίνητο veto πάνω σε ΟΠΟΙΟ wallet — ακόμα και auto-discovered που πέρασε το
+ * algorithmic threshold (`win_rate > 0.5 AND trade_count >= 15`). Δεν καλείται αυτόματα
+ * όταν πέφτει το score κανενός wallet· εκεί στέλνουμε alert και αποφασίζει ο χρήστης
+ * (CLAUDE.md).
  */
 export async function setWalletActive(
   address: string,

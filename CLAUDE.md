@@ -29,14 +29,21 @@ ecosystem (gmgn-cli), με στόχο: track wallets/tokens, entry/exit signals,
      smart_degen` πάνω σε ~20-30 πρόσφατα migrated/graduated tokens· wallets που
      εμφανίζονται σε >1 token βαραίνουν περισσότερο. Scoring μέσω `portfolio stats
      --wallet <addr>`, `active=true` μόνο αν `win_rate > 0.5 AND trade_count >= 15`
-     (αποφεύγει false positives από 2-3 τυχερά trades). Weekly re-scoring.
+     (αποφεύγει false positives από 2-3 τυχερά trades). Σχεδιασμός: weekly re-scoring
+     ειδικά για τα auto-discovered, ξεχωριστά/πιο αργά από τα manual — **δεν έχει
+     υλοποιηθεί ακόμα**, γιατί δεν υπάρχει καν collector που να παράγει auto-discovered
+     wallets σήμερα (το `track smartmoney`/`kol` discovery του παραπάνω παραγράφου
+     είναι ακόμα ανοιχτό). Μέχρι να χτιστεί, το ενιαίο scoring loop (βλ. "Manual wallet
+     watching" → `wallet_score_history`) σκοράρει ΟΠΟΙΟΔΗΠΟΤΕ active wallet, όποιου
+     source, στο ίδιο interval — άρα το table δεν είναι manual-only, ανεξάρτητα από
+     αυτό το ανοιχτό σχέδιο για διαφορετική cadence ανά source.
      ⚠️ **Το `portfolio stats` ΔΕΝ κάνει batch** (δοκιμασμένο 2026-08-25, και με
      `--wallet A B` και με `--wallet A --wallet B`): επιστρέφει ένα object, μόνο για το
      πρώτο wallet, παρά το help text "supports multiple wallets". Άρα το scoring κοστίζει
      **3 weight ανά wallet**. Το `portfolio profits` όντως κάνει batch (`{list:[...]}`,
      1–100 wallets, weight 3) αλλά **δεν** περιέχει `pnl_stat`, δηλαδή δεν δίνει win rate —
-     άρα δεν υποκαθιστά το `stats` για τον κανόνα μας. Το per-cycle re-scoring των manual
-     wallets είναι ρεαλιστικό επειδή είναι λίγα, όχι επειδή μπαίνουν σε ένα call.
+     άρα δεν υποκαθιστά το `stats` για τον κανόνα μας. Το per-cycle re-scoring είναι
+     ρεαλιστικό όσο η watchlist είναι μικρή, όχι επειδή μπαίνουν σε ένα call.
    - *Χειροκίνητο*: ο χρήστης προσθέτει wallets που ήδη εμπιστεύεται — βλ. "Manual
      wallet watching" section παρακάτω.
    Και τα δύο αποθηκεύονται στο ίδιο `watchlist_wallets` table. ΔΕΝ εξαρτάται από
@@ -260,23 +267,38 @@ calls ΔΕΝ έχουν την ίδια στατιστική σημασία. Τ�
   entry signals — δηλαδή ένα ανοιχτό bot είναι μονοπάτι για να βάλει τρίτος τα wallets του
   στη στρατηγική μας. Σε μη εξουσιοδοτημένο chat **δεν απαντάμε καθόλου** (μια απάντηση
   επιβεβαιώνει ότι το bot υπάρχει και ποιος το έχει) — μόνο log.
-- **Πώς μπαίνουν**: Telegram bot commands `/watch <address>` (source='manual',
+- **Πώς μπαίνουν**: Telegram bot command `/watch <address>` (source='manual',
   active=true αμέσως — ΔΕΝ περνάει το αυτόματο threshold win_rate/trade_count,
-  εμπιστευόμαστε την κρίση του χρήστη) και `/unwatch <address>`. Το `/watch` κάνει πρώτα
-  το upsert και μετά το scoring: αν το GMGN είναι κάτω, το wallet μπαίνει παρά ταύτα —
-  το score είναι πληροφορία, όχι προϋπόθεση.
-- **Score πάντα από GMGN, όχι cached μόνιμα**: κάθε manual wallet ξανα-σκοράρεται
-  (`portfolio stats`) σε ΚΑΘΕ polling κύκλο (όχι weekly όπως τα auto-discovered).
-  Καταγράφεται σε νέο table `wallet_score_history` ώστε να φαίνεται τάση, όχι μόνο
-  στιγμιότυπο:
+  εμπιστευόμαστε την κρίση του χρήστη). Το `/watch` κάνει πρώτα το upsert και μετά το
+  scoring: αν το GMGN είναι κάτω, το wallet μπαίνει παρά ταύτα — το score είναι
+  πληροφορία, όχι προϋπόθεση.
+- **`/unwatch <address>` δουλεύει σε ΟΠΟΙΟΔΗΠΟΤΕ wallet, ανεξαρτήτως source**
+  (διορθώθηκε 2026-08-26 — δεν ήταν ποτέ περιορισμένο στο repository layer, αλλά η
+  τεκμηρίωση το περιέγραφε σαν manual-only εντολή). Λειτουργεί ως χειροκίνητο
+  override/veto: ακόμα και ένα auto-discovered wallet που πέρασε το algorithmic
+  threshold (`win_rate > 0.5 AND trade_count >= 15`) μπορεί να απενεργοποιηθεί
+  χειροκίνητα. Το ιστορικό score παραμένει.
+- ⚠️ **`wallet_score_history` καταγράφει ΚΑΘΕ re-score, ΟΠΟΙΟΥΔΗΠΟΤΕ active wallet —
+  ΟΧΙ μόνο manual** (διορθώθηκε 2026-08-26· προηγούμενη διατύπωση εδώ έλεγε λάθος ότι
+  το table είναι για τα manual wallets). Το layer 2 scoring loop σκοράρει ΟΛΑ τα
+  active wallets σε κάθε κύκλο (`portfolio stats`, όχι cached μόνιμα), ανεξαρτήτως αν
+  μπήκαν χειροκίνητα ή μέσω του αυτόματου discovery:
   ```sql
   wallet_score_history(id, wallet_address, recorded_at,
                         win_rate, pnl_multiplier, trade_count)
   ```
-- **Ορατότητα**: `/score <address>` on-demand μέσω Telegram (δείχνει και το trend από
-  το history table). Επιπλέον, proactive alert όταν το score ενός manual wallet πέσει
-  κάτω από το ίδιο floor του auto-discovery (win_rate < 0.5) — προτείνει review, ΔΕΝ
-  το απενεργοποιεί μόνο του (ο χρήστης αποφασίζει για ό,τι πρόσθεσε ο ίδιος).
+  Μία ξεχωριστή, πιο αργή (weekly) διαδικασία re-scoring αποκλειστικά για τα
+  auto-discovered — όπως περιγράφεται στο "Αυτόματο" μονοπάτι του layer 2 πιο πάνω —
+  **δεν έχει υλοποιηθεί ακόμα** (δεν υπάρχει καν collector που να παράγει
+  auto-discovered wallets σήμερα). Μέχρι τότε, ΟΛΑ τα active wallets περνάνε από το
+  ίδιο loop, στο ίδιο interval.
+- **Ορατότητα**: `/score <address>` on-demand (δείχνει trend από το history table).
+  `/watchlist` (alias: `/list`) λιστάρει ΟΛΑ τα active wallets — address, source, win
+  rate, pnl, πλήθος θέσεων — ώστε να φαίνεται τι υπάρχει πριν αποφασίσεις `/unwatch`
+  σε κάτι. Επιπλέον, proactive alert όταν το score ΟΠΟΙΟΥΔΗΠΟΤΕ active wallet πέσει
+  κάτω από το floor του auto-discovery (win_rate < 0.5) — προτείνει review, ΔΕΝ
+  το απενεργοποιεί μόνο του (ο χρήστης αποφασίζει, ακόμα και για wallets που δεν
+  πρόσθεσε ο ίδιος — βλ. `/unwatch` παραπάνω).
 - "Real-time" εδώ σημαίνει: στην ίδια συχνότητα polling με το υπόλοιπο σύστημα — το
   GMGN `portfolio stats` δεν έχει websocket/push endpoint, άρα δεν υπάρχει true
   streaming score.
@@ -284,7 +306,7 @@ calls ΔΕΝ έχουν την ίδια στατιστική σημασία. Τ�
 ## Phased rollout
 0. ✅ Setup & instrumentation (API key, plugin install, logging σκελετός) — **έγινε**
 1. 🚧 Read-only signal collection (καμία συναλλαγή, μόνο logging) — **υλοποιημένο**:
-   3 collector loops (discovery 30s, wallet-activity 60s, manual-scoring 300s) σε ένα
+   3 collector loops (discovery 30s, wallet-activity 60s, wallet-scoring 300s) σε ένα
    process με κοινό cooldown, `logic_version = gate-v1-<hash των thresholds>`.
 2. Backtesting & threshold tuning πάνω σε πραγματικά logged δεδομένα
 3. Paper trading (πλήρες decision engine, simulated fills)

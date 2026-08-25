@@ -1,10 +1,10 @@
 import { runDiscoveryCycle } from './collectors/discovery.js';
 import {
   DISCOVERY_INTERVAL_MS,
-  MANUAL_SCORING_INTERVAL_MS,
   WALLET_ACTIVITY_INTERVAL_MS,
+  WALLET_SCORING_INTERVAL_MS,
 } from './collectors/intervals.js';
-import { runManualScoringCycle } from './collectors/scoring.js';
+import { runWalletScoringCycle } from './collectors/scoring.js';
 import { runWalletActivityCycle } from './collectors/walletActivity.js';
 import { config } from './config.js';
 import { closePool } from './db/pool.js';
@@ -78,13 +78,13 @@ const loops: LoopDefinition[] = [
     },
   },
   {
-    name: 'manual-scoring',
-    intervalMs: MANUAL_SCORING_INTERVAL_MS,
+    name: 'wallet-scoring',
+    intervalMs: WALLET_SCORING_INTERVAL_MS,
     run: async () => {
-      const result = await runManualScoringCycle();
+      const result = await runWalletScoringCycle();
       if (result.walletsScored === 0 && result.failures === 0) return;
       console.log(
-        `[manual-scoring] scored=${result.walletsScored} failures=${result.failures} ` +
+        `[wallet-scoring] scored=${result.walletsScored} failures=${result.failures} ` +
           `alerts=${result.alerts.length}`,
       );
       for (const alert of result.alerts) await notify(alert);
