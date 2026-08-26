@@ -11,8 +11,9 @@ import path from 'node:path';
 import { test } from 'node:test';
 
 import { buildActivityArgs, parseActivityResponse } from './activity.js';
-import { GmgnCliError, GmgnRateLimitError, GmgnResponseError } from './errors.js';
+import { GmgnCliError, GmgnRateLimitError, GmgnResponseError, rethrowIfRateLimited } from './errors.js';
 import { LOCAL_CLI_BIN, runCli } from './exec.js';
+import { buildHoldersArgs, parseHoldersResponse } from './holders.js';
 import { TokenBucket, type Clock } from './rateLimiter.js';
 import { buildTrenchesArgs, parseTrenchesResponse } from './trenches.js';
 import { toNumber } from './validate.js';
@@ -118,6 +119,39 @@ test('parseActivityResponse reads event_type/tx_hash and coerces string amounts'
   assert.equal(typeof buy.costUsd, 'number');
   assert.equal(typeof buy.timestamp, 'number');
   assert.equal(typeof page.nextCursor, 'string');
+});
+
+test('parseHoldersResponse reads the wallet from `address`, not `account_address`', () => {
+  // Το πραγματικό response έχει ΚΑΙ τα δύο πεδία: `address` είναι ο owner/wallet,
+  // `account_address` είναι το on-chain token account (ATA). Αν μπερδευτούν, το
+  // discovery θα σκόραρε/πρότεινε λάθος address για watchlist.
+  const holders = parseHoldersResponse(fixture('token.holders.smart_degen.json'));
+  assert.equal(holders.length, 5);
+
+  const first = holders[0];
+  assert.ok(first);
+  assert.equal(first.address, '9wFxpNE8awZnaYqCUPje3gSMBzijeasATnRCmaMgEvQF');
+  assert.notEqual(first.address, '6uFko3dFCPXpvLuVh32zEMsp62SXpMYtyNF9krQnKfYp'); // account_address
+  assert.ok(first.tags.includes('smart_degen'));
+});
+
+test('buildHoldersArgs uses a single --tag value, not repeatable', () => {
+  assert.deepEqual(
+    buildHoldersArgs({ tokenAddress: 'TOKEN1', tag: 'smart_degen', limit: 20 }),
+    ['token', 'holders', '--chain', 'sol', '--address', 'TOKEN1', '--tag', 'smart_degen', '--limit', '20'],
+  );
+});
+
+test('rethrowIfRateLimited stops a per-item loop instead of hammering through a ban', () => {
+  // Αυτό είναι το guard που εμποδίζει το ακριβές λάθος που κάνει ένα naive per-item
+  // catch: ξαναχτυπάει το API στο επόμενο item ενώ το ban είναι ακόμα ενεργό.
+  assert.throws(
+    () => rethrowIfRateLimited(new GmgnRateLimitError('banned', null, '')),
+    GmgnRateLimitError,
+  );
+  // Οτιδήποτε άλλο σφάλμα περνά αθόρυβα — το per-item catch συνεχίζει κανονικά.
+  assert.doesNotThrow(() => rethrowIfRateLimited(new Error('some other failure')));
+  assert.doesNotThrow(() => rethrowIfRateLimited(new GmgnCliError('x', 1, '', [])));
 });
 
 test('toNumber accepts both driver conventions and rejects junk', () => {

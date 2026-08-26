@@ -22,6 +22,7 @@ import {
 import { insertScores, recentScores } from './walletScoreHistory.js';
 import {
   getWallet,
+  insertWalletIfNew,
   listActiveWallets,
   setWalletActive,
   updateWalletScore,
@@ -209,6 +210,59 @@ test('upsertWallet is idempotent and preserves added_at', async () => {
     assert.deepEqual(second.addedAt, first.addedAt);
     assert.equal(second.winRate, 0.7);
     assert.equal(second.tradeCount, 30);
+  });
+});
+
+test('insertWalletIfNew inserts a fresh smart_money candidate as active', async () => {
+  await inRollback(async (tx) => {
+    const inserted = await insertWalletIfNew(
+      { address: 'WalletDiscover1', source: 'smart_money', active: true, winRate: 0.62, pnlMultiplier: 0.4, tradeCount: 20 },
+      tx,
+    );
+    assert.equal(inserted, true);
+
+    const wallet = await getWallet('WalletDiscover1', tx);
+    assert.equal(wallet?.source, 'smart_money');
+    assert.equal(wallet?.active, true);
+    assert.equal(wallet?.winRate, 0.62);
+  });
+});
+
+test('insertWalletIfNew never overwrites an existing manual wallet', async () => {
+  await inRollback(async (tx) => {
+    // Ο χρήστης το πρόσθεσε χειροκίνητα, με δικά του scores.
+    await upsertWallet({ address: 'WalletManual1', source: 'manual', active: true, winRate: 0.3, tradeCount: 2 }, tx);
+
+    // Το discovery το ξαναβρίσκει ως smart_degen holder, ΚΑΙ περνάει το threshold —
+    // δεν πρέπει να το υποβαθμίσει από 'manual' σε 'smart_money'.
+    const inserted = await insertWalletIfNew(
+      { address: 'WalletManual1', source: 'smart_money', active: true, winRate: 0.9, pnlMultiplier: 1, tradeCount: 100 },
+      tx,
+    );
+    assert.equal(inserted, false);
+
+    const wallet = await getWallet('WalletManual1', tx);
+    assert.equal(wallet?.source, 'manual');
+    assert.equal(wallet?.winRate, 0.3);
+    assert.equal(wallet?.tradeCount, 2);
+  });
+});
+
+test('insertWalletIfNew does not re-score an already-known smart_money wallet', async () => {
+  await inRollback(async (tx) => {
+    await insertWalletIfNew(
+      { address: 'WalletKnown1', source: 'smart_money', active: true, winRate: 0.55, tradeCount: 15 },
+      tx,
+    );
+    const insertedAgain = await insertWalletIfNew(
+      { address: 'WalletKnown1', source: 'smart_money', active: true, winRate: 0.95, tradeCount: 999 },
+      tx,
+    );
+    assert.equal(insertedAgain, false);
+
+    const wallet = await getWallet('WalletKnown1', tx);
+    assert.equal(wallet?.winRate, 0.55);
+    assert.equal(wallet?.tradeCount, 15);
   });
 });
 

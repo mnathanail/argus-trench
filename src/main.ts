@@ -2,10 +2,12 @@ import { runDiscoveryCycle } from './collectors/discovery.js';
 import {
   DISCOVERY_INTERVAL_MS,
   WALLET_ACTIVITY_INTERVAL_MS,
+  WALLET_DISCOVERY_INTERVAL_MS,
   WALLET_SCORING_INTERVAL_MS,
 } from './collectors/intervals.js';
 import { runWalletScoringCycle } from './collectors/scoring.js';
 import { runWalletActivityCycle } from './collectors/walletActivity.js';
+import { runWalletDiscoveryCycle } from './collectors/walletDiscovery.js';
 import { config } from './config.js';
 import { closePool } from './db/pool.js';
 import { logicVersion } from './decision/gateConfig.js';
@@ -88,6 +90,21 @@ const loops: LoopDefinition[] = [
           `alerts=${result.alerts.length}`,
       );
       for (const alert of result.alerts) await notify(alert);
+    },
+  },
+  {
+    name: 'wallet-discovery',
+    intervalMs: WALLET_DISCOVERY_INTERVAL_MS,
+    run: async () => {
+      const result = await runWalletDiscoveryCycle();
+      console.log(
+        `[wallet-discovery] tokens=${result.tokensScanned} candidates=${result.uniqueCandidates} ` +
+          `discovered=${result.discovered} belowThreshold=${result.belowThreshold} ` +
+          `alreadyKnown=${result.alreadyKnown} failures=${result.failures}`,
+      );
+      if (result.discovered > 0) {
+        await notify(`🔎 ${result.discovered} νέο(α) smart_money wallet(s) προστέθηκαν στη watchlist`);
+      }
     },
   },
 ];

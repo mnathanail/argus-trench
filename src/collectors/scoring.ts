@@ -4,6 +4,7 @@ import {
   updateWalletScore,
   type WatchlistWallet,
 } from '../db/repositories/watchlistWallets.js';
+import { rethrowIfRateLimited } from '../gmgn/errors.js';
 import { fetchWalletStats } from '../gmgn/walletStats.js';
 import {
   ADVISORY_TOKEN_COUNT_FLOOR,
@@ -43,30 +44,35 @@ export async function runWalletScoringCycle(): Promise<ScoringResult> {
   const alerts: string[] = [];
   let failures = 0;
 
-  for (const wallet of wallets) {
-    try {
-      const stats = await fetchWalletStats({ wallet: wallet.address });
-      const score = {
-        walletAddress: wallet.address,
-        winRate: stats.winRate,
-        // `realized_profit_pnl` είναι ratio, όχι multiplier — βλ. walletStats.ts.
-        pnlMultiplier: stats.realizedPnlRatio,
-        // token_num: ο παρονομαστής του winRate, ΟΧΙ buy+sell.
-        tradeCount: stats.tokenCount,
-      };
-      scores.push(score);
-      await updateWalletScore(wallet.address, score);
+  try {
+    for (const wallet of wallets) {
+      try {
+        const stats = await fetchWalletStats({ wallet: wallet.address });
+        const score = {
+          walletAddress: wallet.address,
+          winRate: stats.winRate,
+          // `realized_profit_pnl` είναι ratio, όχι multiplier — βλ. walletStats.ts.
+          pnlMultiplier: stats.realizedPnlRatio,
+          // token_num: ο παρονομαστής του winRate, ΟΧΙ buy+sell.
+          tradeCount: stats.tokenCount,
+        };
+        scores.push(score);
+        await updateWalletScore(wallet.address, score);
 
-      const alert = advisoryFor(wallet, score.winRate, score.tradeCount);
-      if (alert !== null) alerts.push(alert);
-    } catch {
-      // Ένα wallet που αποτυγχάνει δε πρέπει να ρίξει τον κύκλο για τα υπόλοιπα.
-      failures += 1;
+        const alert = advisoryFor(wallet, score.winRate, score.tradeCount);
+        if (alert !== null) alerts.push(alert);
+      } catch (error) {
+        // Rate limit: ΟΧΙ "ένα wallet απέτυχε" — σταματά ολόκληρο τον κύκλο, αλλιώς τα
+        // επόμενα wallets θα ξαναχτυπούσαν το API μέσα στο ban (rethrowIfRateLimited).
+        rethrowIfRateLimited(error);
+        failures += 1;
+      }
     }
+  } finally {
+    // Πάντα γράφουμε ό,τι μαζεύτηκε μέχρι στιγμής — ακόμα και όταν το rethrow πιο πάνω
+    // σταματήσει πρόωρα τον κύκλο, καλύτερο ένα partial history point παρά κανένα.
+    await insertScores(scores);
   }
-
-  // Ένα round-trip για όλο το ιστορικό.
-  await insertScores(scores);
 
   return { walletsScored: scores.length, failures, alerts };
 }

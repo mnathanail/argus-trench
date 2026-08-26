@@ -22,3 +22,18 @@ export const WALLET_ACTIVITY_INTERVAL_MS = 60_000;
  * Όχι τόσο πυκνά που να τρώει το budget με N wallets × weight 3.
  */
 export const WALLET_SCORING_INTERVAL_MS = 300_000;
+
+/**
+ * Bootstrap/auto-discovery για νέα `source='smart_money'` wallets — βλ.
+ * `collectors/walletDiscovery.ts`. Weekly επίτηδες, ΞΕΧΩΡΙΣΤΟ και πολύ πιο αργό από το
+ * per-cycle re-scoring πιο πάνω: αυτό εδώ ψάχνει ΝΕΑ candidate wallets (holders weight 5
+ * × ~25 tokens + stats weight 3 × N candidates — δεκάδες weight ανά run), το scoring
+ * ξανα-μετρά ό,τι ΗΔΗ ξέρουμε (weight 3 ανά ήδη-active wallet). Ίδιος shared rate
+ * limiter με όλα τα υπόλοιπα loops — δεν χρειάζεται δικό του budget reservation.
+ *
+ * ΣΗΜΕΙΩΣΗ: ο scheduler τρέχει κάθε loop ΜΙΑ φορά αμέσως στο ξεκίνημα (πριν τον πρώτο
+ * interval sleep) — άρα κάθε restart του process (π.χ. Railway redeploy) προκαλεί ένα
+ * άμεσο discovery pass, όχι μετά από μία εβδομάδα. Ίδιο υπάρχον pattern με τα άλλα
+ * loops· εδώ είναι πιο αισθητό λόγω του μεγαλύτερου one-shot κόστους.
+ */
+export const WALLET_DISCOVERY_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;

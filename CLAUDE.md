@@ -25,18 +25,33 @@ ecosystem (gmgn-cli), με στόχο: track wallets/tokens, entry/exit signals,
    tuning της Φάσης 2 μένει τυφλό (βλ. `candidate_source`, migration 0003).
    Φάση 1: **`--launchpad-platform Pump.fun` μόνο** — ένα launchpad, καθαρότερο dataset.
 2. **Wallet curation** — standing, ανεξάρτητη διαδικασία, δύο παράλληλα μονοπάτια:
-   - *Αυτόματο*: candidate wallets από `track smartmoney`/`kol` ή `token holders --tag
-     smart_degen` πάνω σε ~20-30 πρόσφατα migrated/graduated tokens· wallets που
-     εμφανίζονται σε >1 token βαραίνουν περισσότερο. Scoring μέσω `portfolio stats
-     --wallet <addr>`, `active=true` μόνο αν `win_rate > 0.5 AND trade_count >= 15`
-     (αποφεύγει false positives από 2-3 τυχερά trades). Σχεδιασμός: weekly re-scoring
-     ειδικά για τα auto-discovered, ξεχωριστά/πιο αργά από τα manual — **δεν έχει
-     υλοποιηθεί ακόμα**, γιατί δεν υπάρχει καν collector που να παράγει auto-discovered
-     wallets σήμερα (το `track smartmoney`/`kol` discovery του παραπάνω παραγράφου
-     είναι ακόμα ανοιχτό). Μέχρι να χτιστεί, το ενιαίο scoring loop (βλ. "Manual wallet
-     watching" → `wallet_score_history`) σκοράρει ΟΠΟΙΟΔΗΠΟΤΕ active wallet, όποιου
-     source, στο ίδιο interval — άρα το table δεν είναι manual-only, ανεξάρτητα από
-     αυτό το ανοιχτό σχέδιο για διαφορετική cadence ανά source.
+   - *Αυτόματο*: **υλοποιημένο 2026-08-26** (`collectors/walletDiscovery.ts`), μέσω
+     `token holders --tag smart_degen` πάνω σε ~20-30 πρόσφατα **graduated** (`market
+     trenches --type completed`, ταξινομημένα κατά `complete_timestamp` — ΟΧΙ
+     `created_timestamp`) Pump.fun tokens. Το `track smartmoney`/`kol` μονοπάτι (η άλλη
+     επιλογή του αρχικού σχεδίου) παραμένει ανοιχτό/ανυλοποίητο.
+     Wallets σε >1 token **δε μπλοκάρουν** όσα εμφανίζονται σε ένα μόνο — η συχνότητα
+     είναι προτεραιότητα scoring (multi-token candidates σκοράρονται πρώτα, αφού ο
+     throttled κύκλος μπορεί να μη προλάβει όλους), όχι hard filter, καμία αλλαγή schema.
+     Scoring μέσω `portfolio stats --wallet <addr>`, INSERT (`ON CONFLICT DO NOTHING`,
+     ΠΟΤΕ update) μόνο αν `pnl_stat.winrate > 0.5 AND pnl_stat.token_num >= 15` —
+     αλλιώς skip, καμία inactive γραμμή. Το `ON CONFLICT DO NOTHING` προστατεύει διπλά:
+     δεν υποβαθμίζει ποτέ ένα ήδη υπάρχον `manual` wallet σε `smart_money`, και δεν
+     ξαναγράφει score για ήδη γνωστό `smart_money` wallet (αυτό είναι δουλειά του
+     ενιαίου wallet-scoring loop, όχι discovery — αλλιώς θα διπλογραφόταν η λογική).
+     **Weekly = μόνο το bootstrap νέων candidates.** Μόλις ένα wallet μπει στη
+     watchlist, ξανασκοράρεται στο ΙΔΙΟ fast interval με όλα τα active wallets (βλ.
+     "Manual wallet watching" → `wallet_score_history`) — δεν υπάρχει ξεχωριστό, πιο
+     αργό re-scoring cadence *αποκλειστικά* για τα ήδη-discovered, όπως θα υπονοούσε
+     μια κυριολεκτική ανάγνωση του "weekly re-scoring" πιο πάνω. Το ενιαίο scoring loop
+     σκοράρει ΟΠΟΙΟΔΗΠΟΤΕ active wallet, όποιου source, στο ίδιο interval.
+     ⚠️ **`--tag` είναι single-value, ΟΧΙ repeatable** (σε αντίθεση με `market trenches
+     --type`) — δοκιμασμένο 2026-08-26. Για ΚΑΙ `smart_degen` ΚΑΙ `renowned` θέλει δύο
+     ξεχωριστά calls (διπλάσιο weight 5+5 ανά token). Το `renowned` υποστηρίζεται
+     (`includeRenowned` option) αλλά είναι **off by default** ακριβώς γι' αυτό το κόστος.
+     ⚠️ **Το response έχει ΚΑΙ `address` ΚΑΙ `account_address`** — το `address` είναι ο
+     owner/wallet, το `account_address` είναι το on-chain token account (ATA). Λάθος
+     επιλογή θα έγραφε ATA addresses στο watchlist αντί για wallets.
      ⚠️ **Το `portfolio stats` ΔΕΝ κάνει batch** (δοκιμασμένο 2026-08-25, και με
      `--wallet A B` και με `--wallet A --wallet B`): επιστρέφει ένα object, μόνο για το
      πρώτο wallet, παρά το help text "supports multiple wallets". Άρα το scoring κοστίζει
@@ -116,16 +131,30 @@ per-token. Layers 3-6 είναι το per-event pipeline.
 **Rate limits** — leaky bucket `rate=20 capacity=20`, **κοινός σε όλα τα routes** (άρα ένα
 βαρύ poll κλέβει budget από τα άλλα). Weights: `trenches` 3, `signal` 3, `hot-searches` 3,
 `kline` 2, `trending` 1, `search` 1, `portfolio activity` 3, `portfolio stats` 3,
-`portfolio profits` 3, `portfolio holdings` 5, `portfolio info` 1, `track smartmoney` 1,
-`track kol` 1, `track follow-wallet` 3.
+`portfolio profits` 3, `portfolio holdings` 5, `portfolio info` 1, `token holders` 5,
+`track smartmoney` 1, `track kol` 1, `track follow-wallet` 3.
 Το two-call discovery κοστίζει 6/κύκλο. Ακριβά είναι τα per-wallet routes: `portfolio
 activity` **και** `portfolio stats` είναι weight 3 **ανά wallet** και κανένα από τα δύο δε
 κάνει batch. 50 wallets σε activity = 150 weight = 7.5s στο πλήρες rate· άλλα 150 αν
 σκοράρουμε τα ίδια. Μόνο το `portfolio profits` κάνει πραγματικά batch (100 wallets,
-weight 3) — αλλά δίνει P&L, όχι win rate.
+weight 3) — αλλά δίνει P&L, όχι win rate. Το `token holders` (weight 5, το ακριβότερο
+route) είναι ακόμα πιο ακριβό: ~20-30 tokens/εβδομάδα στο wallet-discovery bootstrap
+είναι 100-150 weight μόνο για το holders pass.
 Πρακτικός κανόνας: το budget των 20/s το τρώνε τα wallets, όχι το discovery. Στο 429: διάβασε `X-RateLimit-Reset` header ή `reset_at` στο body.
 **ΜΗΝ κάνεις naive retry** — κάθε request μέσα στο cooldown επεκτείνει το ban κατά 5s,
 έως 5 λεπτά. Ο adapter θέλει token bucket, όχι retry loop.
+⚠️ **Το `retryAt` parsing πιάνει μόνο το JSON `reset_at`** (δοκιμασμένο 2026-08-26): το
+`RATE_LIMIT_EXCEEDED` variant επιστρέφει human-readable "Rate limit resets at ... (~30s
+remaining)" ΧΩΡΙΣ αριθμητικό `reset_at` πεδίο, άρα ο `parseResetAt` στο `gmgn/exec.ts`
+γυρίζει `null` και ο scheduler πέφτει στο conservative default (60s). Ασφαλές (δε
+περιμένει λιγότερο απ' όσο πρέπει), απλά λιγότερο ακριβές — παραμένει ανοιχτό.
+⚠️ **Κάθε per-item loop πάνω σε πολλά wallets/tokens πρέπει να rethrow-άρει
+`GmgnRateLimitError`, ΟΧΙ να το καταπίνει ως "ένα item απέτυχε"** (πραγματικό bug,
+βρέθηκε 2026-08-26 στο `scoring.ts` ενώ χτιζόταν το `walletDiscovery.ts`, και
+επιβεβαιώθηκε live: ένα 429 στο wallet #N θα άφηνε τα #N+1..end να ξαναχτυπήσουν το API
+ΜΕΣΑ στο ban, επεκτείνοντάς το κατά 5s ανά request). Το `rethrowIfRateLimited()` στο
+`gmgn/errors.ts` είναι το shared guard — κάθε νέο per-item collector loop πρέπει να το
+καλεί πρώτο μέσα στο `catch`.
 
 **IPv6 δεν υποστηρίζεται** — δίνει 401/403 με σωστά credentials. Έλεγχος πριν το Railway
 deploy: αν το `https://ipv6.icanhazip.com` απαντά, το outbound βγαίνει από IPv6.
@@ -289,11 +318,11 @@ calls ΔΕΝ έχουν την ίδια στατιστική σημασία. Τ�
   wallet_score_history(id, wallet_address, recorded_at,
                         win_rate, pnl_multiplier, trade_count)
   ```
-  Μία ξεχωριστή, πιο αργή (weekly) διαδικασία re-scoring αποκλειστικά για τα
-  auto-discovered — όπως περιγράφεται στο "Αυτόματο" μονοπάτι του layer 2 πιο πάνω —
-  **δεν έχει υλοποιηθεί ακόμα** (δεν υπάρχει καν collector που να παράγει
-  auto-discovered wallets σήμερα). Μέχρι τότε, ΟΛΑ τα active wallets περνάνε από το
-  ίδιο loop, στο ίδιο interval.
+  Το weekly bootstrap collector (`walletDiscovery.ts`, βλ. "Αυτόματο" μονοπάτι του
+  layer 2 πιο πάνω) είναι **υλοποιημένο 2026-08-26**, αλλά μόνο για το discovery ΝΕΩΝ
+  candidates — δεν είναι ξεχωριστό re-scoring cadence για τα ήδη-γνωστά. Μόλις ένα
+  `smart_money` wallet μπει στη watchlist, ξανασκοράρεται στο ΙΔΙΟ ενιαίο loop, στο
+  ίδιο interval, με όλα τα υπόλοιπα active wallets.
 - **Ορατότητα**: `/score <address>` on-demand (δείχνει trend από το history table).
   `/watchlist` (alias: `/list`) λιστάρει ΟΛΑ τα active wallets — address, source, win
   rate, pnl, πλήθος θέσεων — ώστε να φαίνεται τι υπάρχει πριν αποφασίσεις `/unwatch`
@@ -308,8 +337,9 @@ calls ΔΕΝ έχουν την ίδια στατιστική σημασία. Τ�
 ## Phased rollout
 0. ✅ Setup & instrumentation (API key, plugin install, logging σκελετός) — **έγινε**
 1. 🚧 Read-only signal collection (καμία συναλλαγή, μόνο logging) — **υλοποιημένο**:
-   3 collector loops (discovery 30s, wallet-activity 60s, wallet-scoring 300s) σε ένα
-   process με κοινό cooldown, `logic_version = gate-v1-<hash των thresholds>`.
+   4 collector loops (discovery 30s, wallet-activity 60s, wallet-scoring 300s,
+   wallet-discovery weekly) σε ένα process με κοινό cooldown,
+   `logic_version = gate-v1-<hash των thresholds>`.
 2. Backtesting & threshold tuning πάνω σε πραγματικά logged δεδομένα
 3. Paper trading (πλήρες decision engine, simulated fills)
 4. Μικρό live κεφάλαιο (αυστηρό position sizing)

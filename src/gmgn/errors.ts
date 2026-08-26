@@ -30,6 +30,18 @@ export class GmgnRateLimitError extends GmgnError {
 }
 
 /**
+ * Guard για per-item `catch` blocks σε loops πάνω από πολλά wallets/tokens (scoring,
+ * discovery). Ένα ασαφές `catch { failures++; continue; }` καταπίνει ΚΑΙ το
+ * `GmgnRateLimitError` — δηλαδή αν το item #3 από 20 πάρει 429, τα #4-20 θα ξαναχτυπήσουν
+ * το API μέσα στο ban, επεκτείνοντάς το κατά 5s το καθένα. Κάθε τέτοιο loop πρέπει να
+ * καλεί αυτό ΠΡΩΤΟ μέσα στο catch· αν είναι rate limit, rethrow ώστε ο κύκλος να
+ * σταματήσει εντελώς και ο scheduler's `SharedCooldown` να παγώσει όλα τα loops.
+ */
+export function rethrowIfRateLimited(error: unknown): void {
+  if (error instanceof GmgnRateLimitError) throw error;
+}
+
+/**
  * Το response δεν είχε το σχήμα που περιμέναμε. Χωριστός τύπος επίτηδες: σημαίνει ότι το
  * CLI/API άλλαξε από κάτω μας, που είναι εντελώς άλλο πρόβλημα από ένα network error και
  * θέλει άνθρωπο, όχι retry. Βλ. CLAUDE.md "Verified CLI contract" — έχει συμβεί ήδη ότι

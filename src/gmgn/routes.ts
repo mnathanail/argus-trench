@@ -8,6 +8,11 @@
  * - `portfolio activity` = 3 **ανά wallet**. 50 watchlist wallets = 150 weight, δηλαδή
  *   7.5s στο πλήρες rate. Αυτό είναι το ακριβό κομμάτι του layer 3.
  * - `portfolio profits` = 3 για έως **100 wallets μαζί** — γι' αυτό το scoring πάει batch.
+ * - `token holders` = 5, το ακριβότερο route που χρησιμοποιούμε. Το wallet-discovery
+ *   collector (βλ. `collectors/walletDiscovery.ts`) το καλεί ~20-30 φορές/εβδομάδα
+ *   (μία ανά sampled token) — 100-150 weight μόνο για το holder-fetch pass, πάνω σε
+ *   ΚΟΙΝΟ bucket με τα υπόλοιπα loops. Σειριακό, όχι burst, ίδιο pattern με
+ *   `portfolio activity`/`portfolio stats`.
  */
 export const ROUTE_WEIGHTS = {
   'market kline': 2,
@@ -23,6 +28,7 @@ export const ROUTE_WEIGHTS = {
   'portfolio profits': 3,
   'portfolio token-balance': 1,
   'portfolio created-tokens': 2,
+  'token holders': 5,
   'track follow-tokens': 3,
   'track follow-token-groups': 1,
   'track follow-wallet': 3,

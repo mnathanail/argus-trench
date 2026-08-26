@@ -210,3 +210,45 @@ export async function setWalletActive(
   );
   return (result.rowCount ?? 0) > 0;
 }
+
+export interface NewDiscoveredWallet {
+  address: string;
+  chain?: Chain;
+  source: WalletSource;
+  active: boolean;
+  winRate?: number | null;
+  pnlMultiplier?: number | null;
+  tradeCount?: number | null;
+}
+
+/**
+ * Χρησιμοποιείται από το wallet-discovery collector. INSERT-only, ΠΟΤΕ update —
+ * `ON CONFLICT DO NOTHING`. Αν το address υπάρχει ήδη, ΔΕΝ το αγγίζουμε καθόλου:
+ * - αν είναι `manual`, το auto-discovery δεν πρέπει ποτέ να το υποβαθμίσει/επικαλύψει
+ *   με `source='smart_money'` — το manual είναι ρητή εμπιστοσύνη του χρήστη.
+ * - αν είναι ήδη `smart_money` (από προηγούμενο discovery pass), το re-scoring του
+ *   είναι δουλειά του wallet-scoring loop (`updateWalletScore`), όχι αυτής της
+ *   συνάρτησης — αλλιώς θα διπλογραφόταν η ίδια λογική σε δύο σημεία.
+ *
+ * Επιστρέφει `true` μόνο όταν όντως γράφτηκε νέο row.
+ */
+export async function insertWalletIfNew(
+  input: NewDiscoveredWallet,
+  conn?: Queryable,
+): Promise<boolean> {
+  const result = await db(conn).query(
+    `INSERT INTO watchlist_wallets (address, chain, source, active, win_rate, pnl_multiplier, trade_count)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)
+     ON CONFLICT (address) DO NOTHING`,
+    [
+      input.address,
+      input.chain ?? 'sol',
+      input.source,
+      input.active,
+      input.winRate ?? null,
+      input.pnlMultiplier ?? null,
+      input.tradeCount ?? null,
+    ],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
