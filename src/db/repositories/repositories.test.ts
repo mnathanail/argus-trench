@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import type pg from 'pg';
 import { closePool, getPool } from '../pool.js';
-import { insertDecision, insertDecisions, gatePassRate } from './decisionLog.js';
+import { insertDecision, insertDecisions, upsertDecisions, recordTrigger, gatePassRate } from './decisionLog.js';
 import { recordEntry } from './entries.js';
 import {
   closeTrade,
@@ -90,6 +90,71 @@ test('gatePassRate never mixes the two candidate sources', async () => {
 
     const gated = await gatePassRate('test-v1', 'gated_pool', tx);
     assert.deepEqual(gated, { evaluated: 1, passed: 1 });
+  });
+});
+
+test('upsertDecisions clears a stale trigger once the gate re-evaluates as failed', async () => {
+  // Reproduces ένα πραγματικό production row (2026-08-26, token
+  // ERbqmhiwvNwnx9g7Y9YYb3ivWbjauqsp1n9qaTyGpump, candidate_source sample_window):
+  // gate_passed=false / decision='skipped_gate', αλλά trigger_type ακόμα
+  // 'smart_money_buy' με wallet από ένα ΠΑΛΙΟΤΕΡΟ, ξεχωριστό evaluation. Το
+  // upsertDecisions() δεν έγραφε τα trigger πεδία στο ON CONFLICT, άρα κάθε νέο
+  // discovery cycle άφηνε το παλιό trigger να «επιζήσει» ανεξάρτητα από το νέο decision.
+  await inRollback(async (tx) => {
+    // Cycle 1: το discovery βλέπει το token να περνά το gate.
+    await upsertDecisions(
+      [{ ...baseDecision, candidateSource: 'gated_pool', gatePassed: true, decision: 'skipped_no_trigger' }],
+      tx,
+    );
+
+    // trigger_wallet_address έχει FK στο watchlist_wallets — πρέπει να υπάρχει πρώτα.
+    await upsertWallet(
+      { address: 'WalletTrigger1111111111111111111111111111', source: 'manual', active: true },
+      tx,
+    );
+
+    // Ένας wallet-activity κύκλος βρίσκει πραγματικό buy και σφραγίζει το trigger.
+    const updated = await recordTrigger(
+      {
+        tokenAddress: baseDecision.tokenAddress,
+        logicVersion: baseDecision.logicVersion,
+        triggerType: 'smart_money_buy',
+        triggerWalletAddress: 'WalletTrigger1111111111111111111111111111',
+        triggerWalletSnapshot: { win_rate: 0.6 },
+        decision: 'signal_logged',
+        decisionReasonText: 'trusted wallet buy — gate είχε περάσει',
+      },
+      tx,
+    );
+    assert.equal(updated, 1);
+
+    // Cycle 2: το discovery ξανα-αξιολογεί και το gate ΤΩΡΑ αποτυγχάνει — ακριβώς όπως
+    // στο production row. Το `triggerType: 'none'` εδώ είναι ό,τι στέλνει ΠΑΝΤΑ ο
+    // discovery collector (δεν ξέρει τίποτα για triggers).
+    await upsertDecisions(
+      [
+        {
+          ...baseDecision,
+          candidateSource: 'gated_pool',
+          gatePassed: false,
+          gateFailReason: 'rug_ratio 0.4 > max 0.2',
+          triggerType: 'none',
+          decision: 'skipped_gate',
+        },
+      ],
+      tx,
+    );
+
+    const { rows } = await tx.query(
+      `SELECT decision, gate_passed, trigger_type, trigger_wallet_address
+         FROM decision_log
+        WHERE token_address = $1 AND logic_version = $2 AND candidate_source = 'gated_pool'`,
+      [baseDecision.tokenAddress, baseDecision.logicVersion],
+    );
+    assert.equal(rows[0]?.decision, 'skipped_gate');
+    assert.equal(rows[0]?.gate_passed, false);
+    assert.equal(rows[0]?.trigger_type, 'none');
+    assert.equal(rows[0]?.trigger_wallet_address, null);
   });
 });
 

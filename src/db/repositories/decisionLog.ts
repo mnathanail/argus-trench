@@ -111,7 +111,7 @@ export interface UpsertedDecision {
  * Bulk upsert για τους collector κύκλους: ένα row ανά (token, logic_version,
  * candidate_source), όχι ανά poll tick.
  *
- * Δύο πράγματα αξίζουν προσοχή:
+ * Τρία πράγματα αξίζουν προσοχή:
  *
  * 1. Το `WHERE decision_log.decision <> 'entered'` προστατεύει ιστορικό. Μόλις ένα
  *    candidate γίνει `entered`, το row είναι δεμένο με πραγματικό trade μέσω
@@ -119,6 +119,15 @@ export interface UpsertedDecision {
  *    να αφήσει ορφανό trade.
  * 2. Τα rows που προστατεύτηκαν έτσι ΔΕΝ επιστρέφονται από το RETURNING — γι' αυτό ο
  *    caller δε πρέπει να υποθέτει `result.length === inputs.length`.
+ * 3. Το `SET` γράφει ΚΑΙ τα τρία trigger πεδία σε κάθε evaluation — ο caller (πάντα ο
+ *    discovery collector) δεν ξέρει ποτέ για πραγματικό trigger, άρα κάθε input εδώ
+ *    έχει ήδη `triggerType: 'none'`/`triggerWalletAddress: null`. Χωρίς αυτό, ένα row
+ *    που το `recordTrigger()` είχε προηγουμένως σφραγίσει σε `signal_logged` με
+ *    πραγματικό wallet θα κρατούσε το ΙΔΙΟ wallet_address για πάντα, ακόμα κι όταν ο
+ *    επόμενος discovery κύκλος το ξαναγυρίσει σε `skipped_gate` — decision και trigger
+ *    θα διαφωνούσαν (επιβεβαιωμένο σε production row, 2026-08-26: candidate_source
+ *    'sample_window', gate_passed=false, decision='skipped_gate', αλλά trigger_type
+ *    ακόμα 'smart_money_buy' με wallet από παλιότερο, ξεχωριστό cycle).
  */
 export async function upsertDecisions(
   inputs: readonly NewDecisionLog[],
@@ -144,13 +153,16 @@ export async function upsertDecisions(
       $11::text[], $12::text[]
     )
     ON CONFLICT (token_address, logic_version, candidate_source) DO UPDATE SET
-      gate_snapshot_json   = EXCLUDED.gate_snapshot_json,
-      gate_passed          = EXCLUDED.gate_passed,
-      gate_fail_reason     = EXCLUDED.gate_fail_reason,
-      decision             = EXCLUDED.decision,
-      decision_reason_text = EXCLUDED.decision_reason_text,
-      last_evaluated_at    = now(),
-      evaluation_count     = decision_log.evaluation_count + 1
+      gate_snapshot_json           = EXCLUDED.gate_snapshot_json,
+      gate_passed                  = EXCLUDED.gate_passed,
+      gate_fail_reason             = EXCLUDED.gate_fail_reason,
+      trigger_type                 = EXCLUDED.trigger_type,
+      trigger_wallet_address       = EXCLUDED.trigger_wallet_address,
+      trigger_wallet_snapshot_json = EXCLUDED.trigger_wallet_snapshot_json,
+      decision                     = EXCLUDED.decision,
+      decision_reason_text         = EXCLUDED.decision_reason_text,
+      last_evaluated_at            = now(),
+      evaluation_count             = decision_log.evaluation_count + 1
     WHERE decision_log.decision <> 'entered'
     RETURNING id, token_address, evaluation_count
     `,

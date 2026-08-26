@@ -258,8 +258,10 @@ calls ΔΕΝ έχουν την ίδια στατιστική σημασία. Τ�
 Πέρα από το αυτόματο discovery, ο χρήστης μπορεί να προσθέσει wallets που θέλει να
 παρακολουθεί απευθείας:
 - **Bot**: `@shitcoin_intel_bot` ("Shitcoin Intel"). **Προϋπήρχε** — δεν φτιάχτηκε νέο, και
-  ο χρήστης επιβεβαίωσε 2026-08-25 ότι αυτό είναι το σωστό. Αναθεωρεί την προηγούμενη
-  απόφαση "νέο bot". Αν αργότερα μπερδεύονται alerts με άλλο σύστημα στο ίδιο chat, το
+  ο χρήστης επιβεβαίωσε 2026-08-25 ότι αυτό είναι το σωστό, doubly confirmed 2026-08-26.
+  Αναθεωρεί την προηγούμενη απόφαση "νέο bot" — παλιότερη, ασύμφωνη σημείωση στο
+  "Runtime & environment variables" διορθώθηκε στο ίδιο commit. Αν αργότερα μπερδεύονται
+  alerts με άλλο σύστημα στο ίδιο chat, το
   ξεχωρίζουμε τότε.
 - **Authorization — fail closed**: το `TELEGRAM_CHAT_ID` είναι allowlist (comma-separated)
   και **κενό σημαίνει κανείς, όχι όλοι**. Το bot username είναι ανακαλύψιμο, οποιοσδήποτε
@@ -371,15 +373,16 @@ triggers, συμπληρωματικό στο GMGN).
   περνάει όλο το parent env στο child process by default — άρα αρκεί να οριστούν στο
   Railway dashboard, καμία αλλαγή κώδικα. Αν αργότερα κληθεί το GMGN REST απευθείας
   αντί για το CLI (βλ. layer "Εκτέλεση"), ήδη θα υπάρχουν εκεί.
-- **Telegram bot**: **νέο bot**, ΟΧΙ reuse του υπάρχοντος pump.fun (επιβεβαιωμένο
-  2026-08-25) — ανάμειξη alerts από δύο συστήματα στο ίδιο chat γίνεται αχρείαστα θολή.
-  Το token δεν έχει δημιουργηθεί ακόμα (BotFather).
+- **Telegram bot**: `@shitcoin_intel_bot` ("Shitcoin Intel") — προϋπάρχον, ΣΚΟΠΙΜΑ
+  reused, ΟΧΙ νέο. Επιβεβαιωμένο 2026-08-25, doubly confirmed 2026-08-26 (βλ. "Manual
+  wallet watching" για το πλήρες σκεπτικό). Token ήδη configured στο project `.env`.
 
 ## Setup που μένει χειροκίνητο (μία φορά)
 ✅ **Έγινε 2026-08-25**: λογαριασμός GMGN → `gmgn-cli config` (Ed25519 keypair) →
 `config --apply <key>`. Το `config --check` επιστρέφει 0.
-⬜ **Μένει**: binding trading wallet (χρειάζεται πριν τη Φάση 4, όχι για read-only) και
-δημιουργία του νέου Telegram bot στο BotFather.
+✅ **Έγινε**: Telegram bot — `@shitcoin_intel_bot`, προϋπάρχον/reused (βλ. "Manual
+wallet watching"). Token στο project `.env`, `TELEGRAM_CHAT_ID` γνωστό.
+⬜ **Μένει**: binding trading wallet (χρειάζεται πριν τη Φάση 4, όχι για read-only).
 Το `portfolio info` επιστρέφει `{"wallets": []}` — **κανένα wallet δεμένο**. Αυτό είναι
 δεύτερο, ανεξάρτητο ασφαλιστικό πάνω από το `GMGN_ALLOW_AUTOMATED_TRADES`: ακόμα κι αν
 κάτι καλέσει `swap`, δεν υπάρχει wallet να συναλλάξει. Κρατάμε το έτσι μέχρι τη Φάση 4.
