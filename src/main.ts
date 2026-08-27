@@ -2,6 +2,7 @@ import { runDiscoveryCycle } from './collectors/discovery.js';
 import {
   DISCOVERY_INTERVAL_MS,
   WALLET_ACTIVITY_INTERVAL_MS,
+  WALLET_ACTIVITY_RETRY_BACKOFF_MS,
   WALLET_DISCOVERY_INTERVAL_MS,
   WALLET_DISCOVERY_RETRY_BACKOFF_MS,
   WALLET_SCORING_INTERVAL_MS,
@@ -68,6 +69,9 @@ const loops: LoopDefinition[] = [
   {
     name: 'wallet-activity',
     intervalMs: WALLET_ACTIVITY_INTERVAL_MS,
+    // Χωρίς backoff, ένας γεμάτος κύκλος ξαναχτυπά την ίδια συμφόρηση κάθε 60s επ'
+    // αόριστον — βλ. intervals.ts. Παρατηρήθηκε 8 συνεχόμενες αποτυχίες σε production.
+    retryBackoffMs: WALLET_ACTIVITY_RETRY_BACKOFF_MS,
     run: async () => {
       const result = await runWalletActivityCycle();
       if (result.walletsPolled === 0) return;

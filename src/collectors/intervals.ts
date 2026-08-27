@@ -18,6 +18,20 @@ export const DISCOVERY_INTERVAL_MS = 30_000;
 export const WALLET_ACTIVITY_INTERVAL_MS = 60_000;
 
 /**
+ * Retry backoff για το wallet-activity — πιο ήπιο cap από το wallet-discovery (10min
+ * αντί για 30min) γιατί αυτό εδώ είναι latency-sensitive: ένα trigger που καθυστερεί
+ * ώρες χάνει την αξία του. Χωρίς ΚΑΝΕΝΑ backoff όμως, ένας γεμάτος κύκλος στο ίδιο 60s
+ * ξαναχτυπά την ίδια συμφόρηση επ' αόριστον χωρίς ποτέ να πάρει ανάσα — παρατηρήθηκε
+ * 8 συνεχόμενες αποτυχίες σε production πριν προστεθεί αυτό.
+ */
+export const WALLET_ACTIVITY_RETRY_BACKOFF_MS = [
+  60_000, // 1η αποτυχία — ίδιο με πριν, μπορεί να ήταν παροδικό
+  2 * 60_000, // 2η
+  5 * 60_000, // 3η
+  10 * 60_000, // 4η και κάθε επόμενη
+] as const;
+
+/**
  * Re-scoring για ΟΛΑ τα active wallets (κάθε source) — βλ. `collectors/scoring.ts`.
  * Όχι τόσο πυκνά που να τρώει το budget με N wallets × weight 3.
  */
