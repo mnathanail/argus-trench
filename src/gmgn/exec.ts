@@ -81,7 +81,12 @@ export async function runCli(
     });
     stdout = result.stdout;
   } catch (error) {
-    throw toGmgnError(error, argv);
+    const gmgnError = toGmgnError(error, argv);
+    if (gmgnError instanceof GmgnRateLimitError) {
+      // Also pause requests already waiting inside the limiter queue.
+      limiter.block(gmgnError.retryAt);
+    }
+    throw gmgnError;
   }
 
   try {

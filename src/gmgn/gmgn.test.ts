@@ -74,6 +74,16 @@ test('TokenBucket serialises concurrent acquires', async () => {
   assert.ok(bucket.available >= 0);
 });
 
+test('TokenBucket pauses queued acquires after a shared rate limit', async () => {
+  const { clock, elapsed } = fakeClock();
+  const bucket = new TokenBucket(20, 20, clock);
+  bucket.block(new Date(5_000));
+
+  await bucket.acquire(3);
+
+  assert.equal(elapsed(), 5_000);
+});
+
 test('parseTrenchesResponse reads the real near_completion shape', () => {
   const candidates = parseTrenchesResponse(fixture('trenches.near_completion.json'), 'near_completion');
   assert.equal(candidates.length, 2);

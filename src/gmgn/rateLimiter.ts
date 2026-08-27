@@ -20,6 +20,7 @@ export const systemClock: Clock = {
 export class TokenBucket {
   #tokens: number;
   #lastRefillAt: number;
+  #blockedUntil = 0;
   /** Σειριοποιεί τα acquire ώστε δύο ταυτόχρονοι callers να μη διαβάσουν το ίδιο υπόλοιπο. */
   #queue: Promise<unknown> = Promise.resolve();
 
@@ -37,6 +38,12 @@ export class TokenBucket {
     return this.#tokens;
   }
 
+  /** Stops already queued callers too when the server reports a shared cooldown. */
+  block(until: Date | null, fallbackMs = 60_000): void {
+    const target = until?.getTime() ?? this.clock.now() + fallbackMs;
+    this.#blockedUntil = Math.max(this.#blockedUntil, target);
+  }
+
   async acquire(weight: number): Promise<void> {
     if (weight <= 0) return;
     if (weight > this.capacity) {
@@ -50,6 +57,11 @@ export class TokenBucket {
 
   async #take(weight: number): Promise<void> {
     for (;;) {
+      const blockedMs = this.#blockedUntil - this.clock.now();
+      if (blockedMs > 0) {
+        await this.clock.sleep(blockedMs);
+        continue;
+      }
       this.#refill();
       if (this.#tokens >= weight) {
         this.#tokens -= weight;
