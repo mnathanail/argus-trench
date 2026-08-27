@@ -95,6 +95,8 @@ const loops: LoopDefinition[] = [
   {
     name: 'wallet-discovery',
     intervalMs: WALLET_DISCOVERY_INTERVAL_MS,
+    // A failed bootstrap must retry after the shared cooldown, not wait a full week.
+    retryIntervalMs: 60_000,
     run: async () => {
       const result = await runWalletDiscoveryCycle();
       console.log(

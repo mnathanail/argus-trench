@@ -18,11 +18,17 @@ export const realClock: SchedulerClock = {
   now: () => Date.now(),
   sleep: (ms, signal) =>
     new Promise((resolve) => {
-      const timer = setTimeout(resolve, ms);
-      signal?.addEventListener('abort', () => {
-        clearTimeout(timer);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const onAbort = () => {
+        if (timer !== undefined) clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
         resolve();
-      }, { once: true });
+      };
+      timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      signal?.addEventListener('abort', onAbort, { once: true });
     }),
 };
 
@@ -50,6 +56,8 @@ export class SharedCooldown {
 export interface LoopDefinition {
   name: string;
   intervalMs: number;
+  /** Retry delay after a failed run; defaults to the normal interval. */
+  retryIntervalMs?: number;
   run(): Promise<void>;
 }
 
@@ -88,9 +96,11 @@ async function runLoop(
     }
 
     const startedAt = clock.now();
+    let failed = false;
     try {
       await loop.run();
     } catch (error) {
+      failed = true;
       if (error instanceof GmgnRateLimitError) {
         options.cooldown.engage(error.retryAt);
         log(
@@ -106,6 +116,7 @@ async function runLoop(
     // Το interval μετριέται από την ΑΡΧΗ του κύκλου, ώστε ένας αργός κύκλος να μη
     // προσθέτει καθυστέρηση πάνω στην καθυστέρηση.
     const elapsed = clock.now() - startedAt;
-    await clock.sleep(Math.max(0, loop.intervalMs - elapsed), options.signal);
+    const intervalMs = failed ? (loop.retryIntervalMs ?? loop.intervalMs) : loop.intervalMs;
+    await clock.sleep(Math.max(0, intervalMs - elapsed), options.signal);
   }
 }
