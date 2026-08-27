@@ -10,7 +10,7 @@ import { ADVISORY_TOKEN_COUNT_FLOOR, ADVISORY_WIN_RATE_FLOOR } from '../telegram
  * Layer 2 — «Αυτόματο» wallet discovery (CLAUDE.md). Weekly, standing process
  * ανεξάρτητο από τα layer 1/3 collectors:
  *
- *   ~20-30 πρόσφατα graduated Pump.fun tokens
+ *   ~8-10 πρόσφατα graduated Pump.fun tokens (default — βλ. σημείωση παρακάτω)
  *     → holders tagged `smart_degen` ανά token
  *     → μοναδικά candidate wallets, με πόσα tokens τα «είδαν» (βαρύτητα, όχι φίλτρο)
  *     → `portfolio stats` ανά candidate, σειριακά
@@ -23,6 +23,15 @@ import { ADVISORY_TOKEN_COUNT_FLOOR, ADVISORY_WIN_RATE_FLOOR } from '../telegram
  * `TokenBucket.acquire()` ήδη περιμένει/σειριοποιεί, άρα αυτό το job απλά «διεκδικεί»
  * μερίδιο του κοινού budget, δεν το μονοπωλεί.
  *
+ * ⚠️ Το αρχικό spec έλεγε «~20-30» tokens — μειώθηκε στο πρακτικό default παρακάτω.
+ * Στην πράξη, 25 tokens × holders (weight 5) + δεκάδες candidates × stats (weight 3)
+ * ξεπερνούσε συστηματικά τα 300+ weight ανά κύκλο· πάνω σε shared budget 20/s, ΜΑΖΙ με
+ * τα άλλα 3 loops, ο κύκλος σχεδόν ποτέ δεν πρόλαβε να τελειώσει πριν χτυπήσει rate
+ * limit — και επειδή μια αποτυχία πετάει ΟΛΟ το progress του κύκλου (κανένα partial
+ * commit), ξανάρχιζε από το μηδέν κάθε φορά, επ' αόριστον. Μικρότερο sampleSize
+ * σημαίνει πιο αργή συνολική κάλυψη candidates, αλλά πραγματικά ολοκληρωμένους κύκλους
+ * αντί για έναν κύκλο που ποτέ δεν τελειώνει.
+ *
  * ⚠️ Κάθε per-item `catch` (ανά token για holders, ανά candidate για stats) καλεί ΠΡΩΤΑ
  * `rethrowIfRateLimited` — ένα naive `catch { failures++; continue }` θα καταπίνε το
  * `GmgnRateLimitError` και θα ξαναχτυπούσε το API στο ΕΠΟΜΕΝΟ item μέσα στο ban,
@@ -30,7 +39,7 @@ import { ADVISORY_TOKEN_COUNT_FLOOR, ADVISORY_WIN_RATE_FLOOR } from '../telegram
  * `scoring.ts` όσο χτιζόταν αυτό το collector — διορθώθηκε εκεί επίσης).
  */
 export interface WalletDiscoveryOptions {
-  /** «~20-30» στο spec· default 25. */
+  /** «~20-30» στο αρχικό spec· μειώθηκε σε πρακτικό default — βλ. σχόλιο πάνω από τη function. */
   sampleSize?: number;
   /** Πρωτεύον tag. `renowned` είναι προαιρετικό πρόσθετο πέρασμα — βλ. `includeRenowned`. */
   tag?: HolderTag;
@@ -56,7 +65,7 @@ export interface WalletDiscoveryResult {
 export async function runWalletDiscoveryCycle(
   options: WalletDiscoveryOptions = {},
 ): Promise<WalletDiscoveryResult> {
-  const sampleSize = options.sampleSize ?? 25;
+  const sampleSize = options.sampleSize ?? 10;
   const tag = options.tag ?? 'smart_degen';
   const holdersLimit = options.holdersLimitPerToken ?? 20;
 

@@ -56,8 +56,13 @@ export class SharedCooldown {
 export interface LoopDefinition {
   name: string;
   intervalMs: number;
-  /** Retry delay after a failed run; defaults to the normal interval. */
-  retryIntervalMs?: number;
+  /**
+   * Retry delay μετά από αποτυχία, βάσει συνεχόμενων αποτυχιών (1-indexed: το πρώτο
+   * στοιχείο ισχύει μετά την 1η αποτυχία στη σειρά, το τελευταίο επαναλαμβάνεται για
+   * κάθε επόμενη). Χωρίς αυτό, μια αποτυχία περιμένει απλά το κανονικό `intervalMs`,
+   * όπως πριν — flat retry, χωρίς backoff.
+   */
+  retryBackoffMs?: readonly number[];
   run(): Promise<void>;
 }
 
@@ -86,6 +91,9 @@ async function runLoop(
   log: (message: string) => void,
 ): Promise<void> {
   const aborted = (): boolean => options.signal?.aborted === true;
+  // Per-loop state — κάθε loop έχει το δικό του closure μέσω runScheduler's .map(), άρα
+  // αυτό δε μοιράζεται ποτέ κατά λάθος μεταξύ loops.
+  let consecutiveFailures = 0;
 
   while (!aborted()) {
     const cooling = options.cooldown.remainingMs();
@@ -99,8 +107,10 @@ async function runLoop(
     let failed = false;
     try {
       await loop.run();
+      consecutiveFailures = 0;
     } catch (error) {
       failed = true;
+      consecutiveFailures += 1;
       if (error instanceof GmgnRateLimitError) {
         options.cooldown.engage(error.retryAt);
         log(
@@ -116,7 +126,25 @@ async function runLoop(
     // Το interval μετριέται από την ΑΡΧΗ του κύκλου, ώστε ένας αργός κύκλος να μη
     // προσθέτει καθυστέρηση πάνω στην καθυστέρηση.
     const elapsed = clock.now() - startedAt;
-    const intervalMs = failed ? (loop.retryIntervalMs ?? loop.intervalMs) : loop.intervalMs;
+    const intervalMs = failed ? retryDelayMs(loop, consecutiveFailures) : loop.intervalMs;
+    if (failed) {
+      log(
+        `[${loop.name}] retry in ${Math.ceil(intervalMs / 1000)}s ` +
+          `(consecutive failures: ${consecutiveFailures})`,
+      );
+    }
     await clock.sleep(Math.max(0, intervalMs - elapsed), options.signal);
   }
+}
+
+/**
+ * Το backoff array είναι 1-indexed κατά συνεχόμενες αποτυχίες· το τελευταίο στοιχείο
+ * επαναλαμβάνεται για κάθε αποτυχία πέρα από το μήκος του (cap). Χωρίς array, ίδια
+ * συμπεριφορά με πριν: πάντα `intervalMs`.
+ */
+export function retryDelayMs(loop: LoopDefinition, consecutiveFailures: number): number {
+  const backoff = loop.retryBackoffMs;
+  if (!backoff || backoff.length === 0) return loop.intervalMs;
+  const index = Math.min(consecutiveFailures - 1, backoff.length - 1);
+  return backoff[index] ?? loop.intervalMs;
 }

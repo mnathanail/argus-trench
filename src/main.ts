@@ -3,6 +3,7 @@ import {
   DISCOVERY_INTERVAL_MS,
   WALLET_ACTIVITY_INTERVAL_MS,
   WALLET_DISCOVERY_INTERVAL_MS,
+  WALLET_DISCOVERY_RETRY_BACKOFF_MS,
   WALLET_SCORING_INTERVAL_MS,
 } from './collectors/intervals.js';
 import { runWalletScoringCycle } from './collectors/scoring.js';
@@ -95,8 +96,8 @@ const loops: LoopDefinition[] = [
   {
     name: 'wallet-discovery',
     intervalMs: WALLET_DISCOVERY_INTERVAL_MS,
-    // A failed bootstrap must retry after the shared cooldown, not wait a full week.
-    retryIntervalMs: 60_000,
+    // Αυξανόμενο retry αντί για σταθερό 60s — βλ. intervals.ts για το σκεπτικό.
+    retryBackoffMs: WALLET_DISCOVERY_RETRY_BACKOFF_MS,
     run: async () => {
       const result = await runWalletDiscoveryCycle();
       console.log(

@@ -37,3 +37,17 @@ export const WALLET_SCORING_INTERVAL_MS = 300_000;
  * loops· εδώ είναι πιο αισθητό λόγω του μεγαλύτερου one-shot κόστους.
  */
 export const WALLET_DISCOVERY_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Retry backoff για το wallet-discovery μετά από αποτυχία (π.χ. rate limit πριν
+ * ολοκληρωθεί ένας πλήρης κύκλος) — αυξανόμενο αντί για σταθερό 60s, ώστε ένα δομικά
+ * ακριβό run που δεν προλαβαίνει να χωρέσει στο shared budget να μη ξαναχτυπάει τον
+ * ίδιο τοίχο κάθε λεπτό επ' αόριστον. Reset στο μηδέν μόλις πετύχει έστω ένας πλήρης
+ * κύκλος — βλ. `scheduler.ts`.
+ */
+export const WALLET_DISCOVERY_RETRY_BACKOFF_MS = [
+  60_000, // 1η αποτυχία
+  5 * 60_000, // 2η
+  15 * 60_000, // 3η
+  30 * 60_000, // 4η και κάθε επόμενη
+] as const;
