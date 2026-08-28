@@ -45,6 +45,18 @@ export const WALLET_SCORING_INTERVAL_MS = 300_000;
 export const WALLET_LOOP_PACING_MS = 300;
 
 /**
+ * Ξεχωριστό, πιο αργό pacing ΜΟΝΟ για το wallet-discovery holders/stats loop.
+ * Επιβεβαιωμένο (2026-08-28, 2ωρο log): με το κοινό 300ms, wallet-activity/scoring
+ * (weight 3/call) έγιναν 100%/98% υγιή, αλλά το wallet-discovery (weight 5/call στο
+ * holders — `token_top_holders`) συνέχισε 100% αποτυχία, 9 φορές στη σειρά, πάντα στο
+ * ίδιο endpoint, RATE_LIMIT_EXCEEDED. Υπόθεση: το όριο είναι πιο αυστηρό ανά
+ * weight/δευτερόλεπτο, όχι μόνο ανά αίτημα — το ίδιο 300ms στέλνει περισσότερο βάρος/s
+ * σε weight-5 calls απ' ό,τι σε weight-3. Το wallet-discovery είναι weekly/background,
+ * ΟΧΙ latency-sensitive — μηδενικό κόστος να είναι πολύ πιο αργό.
+ */
+export const WALLET_DISCOVERY_LOOP_PACING_MS = 1_500;
+
+/**
  * Bootstrap/auto-discovery για νέα `source='smart_money'` wallets — βλ.
  * `collectors/walletDiscovery.ts`. Weekly επίτηδες, ΞΕΧΩΡΙΣΤΟ και πολύ πιο αργό από το
  * per-cycle re-scoring πιο πάνω: αυτό εδώ ψάχνει ΝΕΑ candidate wallets (holders weight 5
