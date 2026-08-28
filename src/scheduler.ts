@@ -115,7 +115,7 @@ async function runLoop(
         options.cooldown.engage(error.retryAt);
         log(
           `[${loop.name}] rate limited — pausing every loop for ` +
-            `${Math.ceil(options.cooldown.remainingMs() / 1000)}s`,
+            `${Math.ceil(options.cooldown.remainingMs() / 1000)}s — ${error.message}`,
         );
       } else {
         log(`[${loop.name}] failed: ${error instanceof Error ? error.message : String(error)}`);
