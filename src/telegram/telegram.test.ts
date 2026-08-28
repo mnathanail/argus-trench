@@ -200,6 +200,48 @@ test('/list is an alias of /watchlist', async () => {
   assert.equal(viaList, viaWatchlist);
 });
 
+test('/trades shows nothing gracefully when no signal has fired yet', async () => {
+  const deps = stubDeps();
+  deps.listRecentTrades = () => Promise.resolve([]);
+  assert.match(await handleCommand('/trades', deps), /Κανένα trade ακόμα/);
+});
+
+test('/trades shows token, trigger wallet, entry, and status for open and closed trades', async () => {
+  const deps = stubDeps();
+  deps.listRecentTrades = () =>
+    Promise.resolve([
+      {
+        id: 2,
+        tokenAddress: 'TokenTwoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2222',
+        triggerWalletAddress: ADDRESS,
+        entryAt: new Date('2026-08-28T10:00:00Z'),
+        simulatedEntryPrice: 0.0000456,
+        simulatedEntryAmountSol: 0.1,
+        status: 'closed',
+        exitReason: 'tp_tier_1',
+        exitAt: new Date('2026-08-28T11:00:00Z'),
+        pnlPct: 0.5,
+      },
+      {
+        id: 1,
+        tokenAddress: 'TokenOneAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1111',
+        triggerWalletAddress: null,
+        entryAt: new Date('2026-08-28T09:00:00Z'),
+        simulatedEntryPrice: 0.0000123,
+        simulatedEntryAmountSol: 0.1,
+        status: 'open',
+        exitReason: null,
+        exitAt: null,
+        pnlPct: null,
+      },
+    ]);
+
+  const reply = await handleCommand('/trades', deps);
+  assert.match(reply, /Τελευταία 2 trades/);
+  assert.match(reply, /Toke…2222.*wallet AV7P…8gUz.*✅ tp_tier_1.*pnl \+50\.0%/);
+  assert.match(reply, /Toke…1111.*wallet —.*🟡 open/);
+});
+
 test('/unwatch vetoes an auto-discovered wallet that already passed the algorithmic threshold', async () => {
   const deps = stubDeps();
   const deactivated: string[] = [];
@@ -269,5 +311,6 @@ function stubDeps(statsOverride: Partial<WalletStats> = {}): CommandDeps {
     insertScore: () => Promise.resolve(),
     recentScores: () => Promise.resolve([]),
     listActiveWallets: () => Promise.resolve([]),
+    listRecentTrades: () => Promise.resolve([]),
   };
 }

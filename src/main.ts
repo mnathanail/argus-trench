@@ -1,6 +1,8 @@
 import { runDiscoveryCycle } from './collectors/discovery.js';
+import { runExitResolverCycle } from './collectors/exitResolver.js';
 import {
   DISCOVERY_INTERVAL_MS,
+  EXIT_RESOLVER_INTERVAL_MS,
   WALLET_ACTIVITY_INTERVAL_MS,
   WALLET_ACTIVITY_RETRY_BACKOFF_MS,
   WALLET_DISCOVERY_INTERVAL_MS,
@@ -111,6 +113,20 @@ const loops: LoopDefinition[] = [
       );
       if (result.discovered > 0) {
         await notify(`🔎 ${result.discovered} νέο(α) smart_money wallet(s) προστέθηκαν στη watchlist`);
+      }
+    },
+  },
+  {
+    name: 'exit-resolver',
+    intervalMs: EXIT_RESOLVER_INTERVAL_MS,
+    run: async () => {
+      const result = await runExitResolverCycle();
+      if (result.openTrades === 0 && result.closed === 0 && result.failures === 0) return;
+      console.log(
+        `[exit-resolver] open=${result.openTrades} closed=${result.closed} failures=${result.failures}`,
+      );
+      if (result.closed > 0) {
+        await notify(`📉 ${result.closed} log_only trade(s) έκλεισαν — δες /trades για λεπτομέρειες`);
       }
     },
   },

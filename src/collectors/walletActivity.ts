@@ -1,4 +1,5 @@
-import { findPassedTokens, recordTrigger } from '../db/repositories/decisionLog.js';
+import { findPassedTokens } from '../db/repositories/decisionLog.js';
+import { recordSignal } from '../db/repositories/entries.js';
 import {
   listActiveWallets,
   updateActivityCursor,
@@ -6,8 +7,16 @@ import {
 } from '../db/repositories/watchlistWallets.js';
 import { WALLET_LOOP_PACING_MS } from './intervals.js';
 import { PHASE1_THRESHOLDS, logicVersion } from '../decision/gateConfig.js';
+import {
+  PAPER_ASSUMED_LATENCY_MS,
+  PAPER_ASSUMED_SLIPPAGE_PCT,
+  PAPER_BANKROLL_SOL,
+  PAPER_POSITION_SIZE_PCT,
+  conditionOrdersJson,
+} from '../decision/paperTradingConfig.js';
 import { fetchWalletBuys, type WalletActivity } from '../gmgn/activity.js';
 import type { GateThresholds } from '../gmgn/trenches.js';
+import { toNumberOrNull } from '../gmgn/validate.js';
 import { delay } from '../util/delay.js';
 
 /**
@@ -54,28 +63,50 @@ export async function runWalletActivityCycle(
 
     const gated = await findPassedTokens(buys.map((buy) => buy.tokenAddress), version);
     for (const buy of buys) {
-      if (!gated.has(buy.tokenAddress)) continue;
-      const updated = await recordTrigger({
-        tokenAddress: buy.tokenAddress,
-        logicVersion: version,
-        triggerType: 'smart_money_buy',
-        triggerWalletAddress: wallet.address,
-        // Τα scores ΤΗ ΣΤΙΓΜΗ του trigger, όχι σημερινά — αλλιώς το backtest είναι
-        // μεροληπτικό προς τα σημερινά αποτελέσματα του wallet.
-        triggerWalletSnapshot: {
-          win_rate: wallet.winRate,
-          pnl_multiplier: wallet.pnlMultiplier,
-          trade_count: wallet.tradeCount,
-          source: wallet.source,
-          buy_cost_usd: buy.costUsd,
-          buy_price_usd: buy.priceUsd,
-          buy_tx_hash: buy.txHash,
-          buy_timestamp: buy.timestamp,
+      const gateSnapshot = gated.get(buy.tokenAddress);
+      if (gateSnapshot === undefined) continue;
+
+      // 'price' έρχεται από το ήδη-fetched gate_snapshot_json — ΟΧΙ φρέσκο call, ακριβώς
+      // όπως ορίστηκε: δε ρισκάρουμε επιπλέον GMGN weight μόνο για ένα simulated entry.
+      const entryPrice = toNumberOrNull(gateSnapshot['price'], 'gate_snapshot.price');
+      const simulatedEntryAmountSol = PAPER_BANKROLL_SOL * PAPER_POSITION_SIZE_PCT;
+
+      const recorded = await recordSignal(
+        {
+          tokenAddress: buy.tokenAddress,
+          logicVersion: version,
+          triggerType: 'smart_money_buy',
+          triggerWalletAddress: wallet.address,
+          // Τα scores ΤΗ ΣΤΙΓΜΗ του trigger, όχι σημερινά — αλλιώς το backtest είναι
+          // μεροληπτικό προς τα σημερινά αποτελέσματα του wallet.
+          triggerWalletSnapshot: {
+            win_rate: wallet.winRate,
+            pnl_multiplier: wallet.pnlMultiplier,
+            trade_count: wallet.tradeCount,
+            source: wallet.source,
+            buy_cost_usd: buy.costUsd,
+            buy_price_usd: buy.priceUsd,
+            buy_tx_hash: buy.txHash,
+            buy_timestamp: buy.timestamp,
+          },
+          decision: 'signal_logged',
+          decisionReasonText: `${wallet.source} wallet ${short(wallet.address)} αγόρασε ${buy.tokenSymbol ?? short(buy.tokenAddress)} — gate είχε περάσει`,
         },
-        decision: 'signal_logged',
-        decisionReasonText: `${wallet.source} wallet ${short(wallet.address)} αγόρασε ${buy.tokenSymbol ?? short(buy.tokenAddress)} — gate είχε περάσει`,
-      });
-      if (updated > 0) signalsRecorded += 1;
+        {
+          tokenAddress: buy.tokenAddress,
+          intendedSizePct: PAPER_POSITION_SIZE_PCT,
+          bankrollAtEntry: PAPER_BANKROLL_SOL,
+          // entryPrice==null σε ελάχιστα, ασυνήθιστα gate_snapshots χωρίς 'price' — 0 αντί
+          // για null ώστε το column (NUMERIC NOT NULL-ish χρήση) να μη σκάσει· το
+          // exit-resolver ήδη πρέπει να αγνοεί trades με μη-ρεαλιστική τιμή.
+          simulatedEntryPrice: entryPrice ?? 0,
+          simulatedEntryAmountSol: simulatedEntryAmountSol,
+          assumedSlippagePct: PAPER_ASSUMED_SLIPPAGE_PCT,
+          assumedLatencyMs: PAPER_ASSUMED_LATENCY_MS,
+          conditionOrders: conditionOrdersJson(),
+        },
+      );
+      if (recorded !== null) signalsRecorded += 1;
     }
 
     // Ο cursor προχωράει ΑΦΟΥ επεξεργαστούμε τη σελίδα: αν σκάσει κάτι στη μέση, ο

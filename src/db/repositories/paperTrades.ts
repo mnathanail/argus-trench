@@ -17,8 +17,9 @@ export interface NewPaperTrade {
    */
   assumedSlippagePct: number;
   assumedLatencyMs: number;
-  /** Το exit plan όπως μπήκε ΤΗ ΣΤΙΓΜΗ του entry, όχι όπως το θυμόμαστε μετά. */
-  conditionOrders?: Record<string, unknown> | null;
+  /** Το exit plan όπως μπήκε ΤΗ ΣΤΙΓΜΗ του entry, όχι όπως το θυμόμαστε μετά. Πάντα array
+   * από order objects (π.χ. [{order_type:'profit_stop',...}, {...}]), ποτέ bare object. */
+  conditionOrders?: readonly Record<string, unknown>[] | null;
 }
 
 export interface PaperTrade {
@@ -171,4 +172,58 @@ export async function getTrade(id: number, conn?: Queryable): Promise<PaperTrade
   );
   const row = rows[0];
   return row === undefined ? null : mapTrade(row);
+}
+
+export interface TradeSummary {
+  id: number;
+  tokenAddress: string;
+  triggerWalletAddress: string | null;
+  entryAt: Date;
+  simulatedEntryPrice: number | null;
+  simulatedEntryAmountSol: number | null;
+  status: TradeStatus;
+  exitReason: ExitReason | null;
+  exitAt: Date | null;
+  pnlPct: number | null;
+}
+
+/**
+ * Για το `/trades` command — τι ήταν ένα signal, χωρίς να ανοίγεις τη βάση χειροκίνητα.
+ * JOIN με `decision_log` για το trigger wallet, που δε ζει στο `paper_trades` (μία πηγή
+ * αλήθειας — βλ. `getDecisionById`).
+ */
+export async function listRecentTrades(limit: number, conn?: Queryable): Promise<TradeSummary[]> {
+  const { rows } = await db(conn).query<{
+    id: string;
+    token_address: string;
+    trigger_wallet_address: string | null;
+    entry_at: Date;
+    simulated_entry_price: string | null;
+    simulated_entry_amount_sol: string | null;
+    status: TradeStatus;
+    exit_reason: ExitReason | null;
+    exit_at: Date | null;
+    pnl_pct: string | null;
+  }>(
+    `SELECT t.id, t.token_address, d.trigger_wallet_address, t.entry_at,
+            t.simulated_entry_price, t.simulated_entry_amount_sol,
+            t.status, t.exit_reason, t.exit_at, t.pnl_pct
+       FROM paper_trades t
+       JOIN decision_log d ON d.id = t.decision_log_id
+      ORDER BY t.entry_at DESC
+      LIMIT $1`,
+    [limit],
+  );
+  return rows.map((row) => ({
+    id: toNum(row.id),
+    tokenAddress: row.token_address,
+    triggerWalletAddress: row.trigger_wallet_address,
+    entryAt: row.entry_at,
+    simulatedEntryPrice: toNumOrNull(row.simulated_entry_price),
+    simulatedEntryAmountSol: toNumOrNull(row.simulated_entry_amount_sol),
+    status: row.status,
+    exitReason: row.exit_reason,
+    exitAt: row.exit_at,
+    pnlPct: toNumOrNull(row.pnl_pct),
+  }));
 }

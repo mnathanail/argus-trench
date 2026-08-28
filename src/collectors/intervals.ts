@@ -45,6 +45,16 @@ export const WALLET_SCORING_INTERVAL_MS = 300_000;
 export const WALLET_LOOP_PACING_MS = 300;
 
 /**
+/**
+ * Exit-resolver για paper_trades (log_only, Φάση 1). Μία φορά την ώρα, όχι κάθε 15
+ * λεπτά — τραβάμε ΠΛΗΡΕΣ price history (market kline) από entry μέχρι τώρα, όχι μόνο
+ * τρέχουσα τιμή, άρα το ωριαίο interval δε χάνει ακρίβεια στο ΠΟΤΕ/ΣΕ ΤΙ ΤΙΜΗ χτυπήθηκε
+ * ένα tier — χάνει μόνο πόσο γρήγορα το καταγράφουμε στη βάση, που δεν έχει σημασία για
+ * log-only ανάλυση.
+ */
+export const EXIT_RESOLVER_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
  * Ξεχωριστό, πιο αργό pacing ΜΟΝΟ για το wallet-discovery holders/stats loop.
  * Επιβεβαιωμένο (2026-08-28, 2ωρο log): με το κοινό 300ms, wallet-activity/scoring
  * (weight 3/call) έγιναν 100%/98% υγιή, αλλά το wallet-discovery (weight 5/call στο

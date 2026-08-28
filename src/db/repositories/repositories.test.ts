@@ -127,7 +127,11 @@ test('upsertDecisions clears a stale trigger once the gate re-evaluates as faile
       },
       tx,
     );
-    assert.equal(updated, 1);
+    // recordTrigger επιστρέφει πλέον το decision_log id (όχι rowCount) — ώστε ο caller
+    // να μπορεί να συνδέσει atomically ένα paper_trades row (βλ. entries.ts:
+    // recordSignal). Ελέγχουμε ότι ταίριαξε ένα πραγματικό row, όχι τη συγκεκριμένη τιμή
+    // του id (auto-increment, όχι ντετερμινιστικό).
+    assert.ok(typeof updated === 'number' && updated > 0);
 
     // Cycle 2: το discovery ξανα-αξιολογεί και το gate ΤΩΡΑ αποτυγχάνει — ακριβώς όπως
     // στο production row. Το `triggerType: 'none'` εδώ είναι ό,τι στέλνει ΠΑΝΤΑ ο
@@ -316,7 +320,10 @@ test('recordEntry links decision and trade atomically in both directions', async
         simulatedEntryAmountSol: 0.1,
         assumedSlippagePct: 0.02,
         assumedLatencyMs: 400,
-        conditionOrders: { profit_stop: 2, profit_stop_trace: { drawdown_rate: 0.25 } },
+        conditionOrders: [
+          { order_type: 'profit_stop', price_scale: '50', sell_ratio: '50' },
+          { order_type: 'profit_stop_trace', price_scale: '100', sell_ratio: '100', drawdown_rate: '40' },
+        ],
       },
       tx,
     );

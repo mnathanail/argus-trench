@@ -189,7 +189,10 @@ export async function upsertDecisions(
 }
 
 /**
- * Ποια από αυτά τα tokens έχουν περάσει το gate κάτω από το τρέχον σετ κανόνων.
+ * Ποια από αυτά τα tokens έχουν περάσει το gate κάτω από το τρέχον σετ κανόνων, ΜΑΖΙ με
+ * το gate_snapshot_json της αξιολόγησης — χρειάζεται για simulated_entry_price στο
+ * paper trading (CLAUDE.md: "simulated_entry_price: το 'price' από το gate_snapshot_json",
+ * ΟΧΙ φρέσκο call· η τιμή που ήδη έχουμε είναι αρκετή και δε ρισκάρει επιπλέον weight).
  *
  * Ο trigger του layer 3 είναι η ΤΟΜΗ δύο ρευμάτων, και το gate είναι η μία πλευρά της.
  * Ρωτάμε ανά `logic_version` επίτηδες: ένα token που πέρασε με παλιά thresholds δεν
@@ -199,15 +202,16 @@ export async function findPassedTokens(
   tokenAddresses: readonly string[],
   logicVersion: string,
   conn?: Queryable,
-): Promise<Set<string>> {
-  if (tokenAddresses.length === 0) return new Set();
-  const { rows } = await db(conn).query<{ token_address: string }>(
-    `SELECT DISTINCT token_address
+): Promise<Map<string, Record<string, unknown>>> {
+  if (tokenAddresses.length === 0) return new Map();
+  const { rows } = await db(conn).query<{ token_address: string; gate_snapshot_json: Record<string, unknown> }>(
+    `SELECT DISTINCT ON (token_address) token_address, gate_snapshot_json
        FROM decision_log
-      WHERE logic_version = $2 AND gate_passed AND token_address = ANY($1::text[])`,
+      WHERE logic_version = $2 AND gate_passed AND token_address = ANY($1::text[])
+      ORDER BY token_address, last_evaluated_at DESC`,
     [[...tokenAddresses], logicVersion],
   );
-  return new Set(rows.map((row) => row.token_address));
+  return new Map(rows.map((row) => [row.token_address, row.gate_snapshot_json]));
 }
 
 export interface TriggerRecord {
@@ -229,12 +233,16 @@ export interface TriggerRecord {
  * Το `decision <> 'entered'` προστατεύει ιστορικό — μόλις ανοίξει πραγματική θέση, το row
  * είναι δεμένο με trade και δε το ξαναγράφουμε. Το `gate_passed` στο WHERE είναι η δεύτερη
  * μισή του κανόνα εισόδου: trigger σε token που δεν πέρασε το gate ΔΕΝ είναι signal.
+ *
+ * Επιστρέφει το `id` (όχι μόνο rowCount) ώστε ο caller να μπορεί να συνδέσει ατομικά ένα
+ * paper_trades row — βλ. `recordSignal` στο entries.ts. `null` όταν δεν ταίριαξε τίποτα
+ * (π.χ. το row έγινε ήδη 'entered' στο μεσοδιάστημα).
  */
 export async function recordTrigger(
   input: TriggerRecord,
   conn?: Queryable,
-): Promise<number> {
-  const result = await db(conn).query(
+): Promise<number | null> {
+  const { rows } = await db(conn).query<{ id: string }>(
     `UPDATE decision_log
         SET trigger_type = $3,
             trigger_wallet_address = $4,
@@ -245,7 +253,8 @@ export async function recordTrigger(
       WHERE token_address = $1
         AND logic_version = $2
         AND gate_passed
-        AND decision <> 'entered'`,
+        AND decision <> 'entered'
+      RETURNING id`,
     [
       input.tokenAddress,
       input.logicVersion,
@@ -256,7 +265,8 @@ export async function recordTrigger(
       input.decisionReasonText,
     ],
   );
-  return result.rowCount ?? 0;
+  const row = rows[0];
+  return row === undefined ? null : toNum(row.id);
 }
 
 /** Το βασικό ερώτημα του tuning: pass-rate ανά provenance, ΠΟΤΕ αναμεμιγμένο. */
@@ -273,4 +283,38 @@ export async function gatePassRate(
   );
   const row = requireRow(rows, 'gatePassRate');
   return { evaluated: toNum(row.evaluated), passed: toNum(row.passed) };
+}
+
+export interface DecisionSummary {
+  id: number;
+  tokenAddress: string;
+  triggerType: TriggerType | null;
+  triggerWalletAddress: string | null;
+}
+
+/**
+ * Το exit-resolver χρειάζεται το trigger wallet ενός open trade για να ελέγξει αν
+ * ΠΟΥΛΗΣΕ (exit_signal) — αυτό ζει στο `decision_log`, ΟΧΙ στο `paper_trades` (το
+ * `paper_trades.decision_log_id` είναι το μόνο link). Δεν αντιγράφουμε το wallet address
+ * στο `paper_trades` επίτηδες: μία πηγή αλήθειας, όχι διπλή συντήρηση.
+ */
+export async function getDecisionById(id: number, conn?: Queryable): Promise<DecisionSummary | null> {
+  const { rows } = await db(conn).query<{
+    id: string;
+    token_address: string;
+    trigger_type: TriggerType | null;
+    trigger_wallet_address: string | null;
+  }>(
+    `SELECT id, token_address, trigger_type, trigger_wallet_address
+       FROM decision_log WHERE id = $1`,
+    [id],
+  );
+  const row = rows[0];
+  if (row === undefined) return null;
+  return {
+    id: toNum(row.id),
+    tokenAddress: row.token_address,
+    triggerType: row.trigger_type,
+    triggerWalletAddress: row.trigger_wallet_address,
+  };
 }

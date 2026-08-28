@@ -1,6 +1,7 @@
 import { config } from '../config.js';
 import { fetchWalletStats } from '../gmgn/walletStats.js';
 import { insertScore, recentScores } from '../db/repositories/walletScoreHistory.js';
+import { listRecentTrades } from '../db/repositories/paperTrades.js';
 import {
   getWallet,
   listActiveWallets,
@@ -21,6 +22,7 @@ export function createCommandDeps(): CommandDeps {
     insertScore: (input) => insertScore(input),
     recentScores: (address, limit) => recentScores(address, limit),
     listActiveWallets: () => listActiveWallets(),
+    listRecentTrades: (limit) => listRecentTrades(limit),
   };
 }
 

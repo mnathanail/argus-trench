@@ -68,6 +68,18 @@ export async function fetchWalletBuys(
   return fetchWalletActivity({ ...options, wallet, types: ['buy'] });
 }
 
+/**
+ * Convenience για το exit-resolver: πούλησε το trigger wallet ΜΕΤΑ από μια δεδομένη
+ * στιγμή (entry_at); Χρησιμοποιεί το ίδιο endpoint/weight με το `fetchWalletBuys` — απλά
+ * `--type sell`.
+ */
+export async function fetchWalletSells(
+  wallet: string,
+  options: Omit<FetchWalletActivityOptions, 'wallet' | 'types'> = {},
+): Promise<WalletActivityPage> {
+  return fetchWalletActivity({ ...options, wallet, types: ['sell'] });
+}
+
 export function parseActivityResponse(raw: unknown): WalletActivityPage {
   const root = expectObject(raw, 'response');
   const list = expectArray(root['activities'] ?? [], 'activities');

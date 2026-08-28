@@ -1,6 +1,7 @@
 import type { WalletStats } from '../gmgn/walletStats.js';
 import type { WatchlistWallet } from '../db/repositories/watchlistWallets.js';
 import type { WalletScoreEntry } from '../db/repositories/walletScoreHistory.js';
+import type { TradeSummary } from '../db/repositories/paperTrades.js';
 
 /**
  * Οι εντολές του manual wallet watching. Καθαρά συναρτήσεις πάνω σε injected deps, ώστε
@@ -42,6 +43,7 @@ export interface CommandDeps {
   }): Promise<void>;
   recentScores(address: string, limit: number): Promise<WalletScoreEntry[]>;
   listActiveWallets(): Promise<WatchlistWallet[]>;
+  listRecentTrades(limit: number): Promise<TradeSummary[]>;
 }
 
 const HELP = [
@@ -52,6 +54,7 @@ const HELP = [
   '/score <address>     τρέχον score + τάση από το ιστορικό',
   '/watchlist           όλα τα ενεργά wallets: source + τρέχον score',
   '/list                alias του /watchlist',
+  '/trades              τελευταία signal_logged trades (log_only, Φάση 1)',
   '/help                αυτό το μήνυμα',
 ].join('\n');
 
@@ -81,6 +84,8 @@ export async function handleCommand(text: string, deps: CommandDeps): Promise<st
     case '/watchlist':
     case '/list':
       return watchlist(deps);
+    case '/trades':
+      return trades(deps);
     default:
       return `Άγνωστη εντολή: ${command || '(κενό)'}\n\n${HELP}`;
   }
@@ -177,6 +182,30 @@ async function watchlist(deps: CommandDeps): Promise<string> {
   return [`Ενεργά wallets (${wallets.length}):`, ...rows].join('\n');
 }
 
+/**
+ * Τι ήταν ένα signal, χωρίς να ανοίγεις τη βάση χειροκίνητα: token, πότε, ποιο wallet
+ * το πυροδότησε, simulated entry, και τρέχουσα κατάσταση (open, ή closed + pnl).
+ */
+async function trades(deps: CommandDeps): Promise<string> {
+  const recent = await deps.listRecentTrades(10);
+  if (recent.length === 0) return 'Κανένα trade ακόμα (Φάση 1: μόνο μετά από signal_logged).';
+
+  const rows = recent.map((t) => {
+    const wallet = t.triggerWalletAddress === null ? '—' : short(t.triggerWalletAddress);
+    const entryPrice = t.simulatedEntryPrice == null ? '—' : t.simulatedEntryPrice.toPrecision(4);
+    const amount = t.simulatedEntryAmountSol == null ? '—' : `${t.simulatedEntryAmountSol.toFixed(3)} SOL`;
+    const when = t.entryAt.toISOString().replace('T', ' ').slice(0, 16);
+
+    if (t.status === 'open') {
+      return `• ${short(t.tokenAddress)} | ${when} | wallet ${wallet} | entry ${entryPrice} (${amount}) | 🟡 open`;
+    }
+    const pnl = t.pnlPct == null ? '—' : formatPercent(t.pnlPct, true);
+    return `• ${short(t.tokenAddress)} | ${when} | wallet ${wallet} | entry ${entryPrice} (${amount}) | ✅ ${t.exitReason ?? 'closed'} | pnl ${pnl}`;
+  });
+
+  return [`Τελευταία ${recent.length} trades (log_only):`, ...rows].join('\n');
+}
+
 async function persistScore(address: string, stats: WalletStats, deps: CommandDeps): Promise<void> {
   const score = {
     winRate: stats.winRate,
@@ -225,4 +254,8 @@ function formatDuration(seconds: number | null): string {
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function short(address: string): string {
+  return `${address.slice(0, 4)}…${address.slice(-4)}`;
 }
