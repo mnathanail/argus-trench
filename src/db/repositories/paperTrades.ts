@@ -64,6 +64,10 @@ const COLUMNS = `id, decision_log_id, token_address, chain, mode, intended_size_
                  bankroll_at_entry, simulated_entry_price, entry_at, status, exit_reason,
                  simulated_exit_price, exit_at, pnl_sol, pnl_pct, pnl_net_pct`;
 
+function toJsonParam(value: unknown): string | null {
+  return value === null || value === undefined ? null : JSON.stringify(value);
+}
+
 function mapTrade(row: TradeRow): PaperTrade {
   return {
     id: toNum(row.id),
@@ -104,7 +108,7 @@ export async function openTrade(input: NewPaperTrade, conn?: Queryable): Promise
       input.simulatedEntryAmountSol,
       input.assumedSlippagePct,
       input.assumedLatencyMs,
-      input.conditionOrders ?? null,
+      toJsonParam(input.conditionOrders),
     ],
   );
   return toNum(requireRow(rows, 'openTrade').id);
@@ -139,7 +143,7 @@ export async function closeTrade(
     [
       id,
       input.exitReason,
-      input.exitTriggerDetail ?? null,
+      toJsonParam(input.exitTriggerDetail),
       input.simulatedExitPrice,
       input.pnlSol,
       input.pnlPct,
