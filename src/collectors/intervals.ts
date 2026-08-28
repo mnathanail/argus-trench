@@ -38,6 +38,13 @@ export const WALLET_ACTIVITY_RETRY_BACKOFF_MS = [
 export const WALLET_SCORING_INTERVAL_MS = 300_000;
 
 /**
+ * Σκόπιμη παύση ανάμεσα σε διαδοχικά per-item GMGN calls μέσα στον ΙΔΙΟ κύκλο ενός
+ * loop — βλ. `util/delay.ts` για το πλήρες σκεπτικό/evidence. 300ms σκορπίζει μια ριπή
+ * 6 κλήσεων σε ~1.8s αντί για σχεδόν ταυτόχρονα.
+ */
+export const WALLET_LOOP_PACING_MS = 300;
+
+/**
  * Bootstrap/auto-discovery για νέα `source='smart_money'` wallets — βλ.
  * `collectors/walletDiscovery.ts`. Weekly επίτηδες, ΞΕΧΩΡΙΣΤΟ και πολύ πιο αργό από το
  * per-cycle re-scoring πιο πάνω: αυτό εδώ ψάχνει ΝΕΑ candidate wallets (holders weight 5

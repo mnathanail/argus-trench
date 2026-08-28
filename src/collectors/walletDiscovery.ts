@@ -4,7 +4,9 @@ import { rethrowIfRateLimited } from '../gmgn/errors.js';
 import { fetchTokenHolders, type HolderTag, type TokenHolder } from '../gmgn/holders.js';
 import { fetchTrenches, type TrenchCandidate } from '../gmgn/trenches.js';
 import { fetchWalletStats, type WalletStats } from '../gmgn/walletStats.js';
+import { WALLET_LOOP_PACING_MS } from './intervals.js';
 import { ADVISORY_TOKEN_COUNT_FLOOR, ADVISORY_WIN_RATE_FLOOR } from '../telegram/commands.js';
+import { delay } from '../util/delay.js';
 
 /**
  * Layer 2 — «Αυτόματο» wallet discovery (CLAUDE.md). Weekly, standing process
@@ -17,11 +19,11 @@ import { ADVISORY_TOKEN_COUNT_FLOOR, ADVISORY_WIN_RATE_FLOOR } from '../telegram
  *     → INSERT σε watchlist_wallets ΜΟΝΟ όσα περνούν το ίδιο threshold με το manual
  *       floor (`win_rate > 0.5 AND token_num >= 15`) — αλλιώς skip, όχι inactive row.
  *
- * Throttled by design, όχι burst: όλα τα calls (holders weight 5, stats weight 3) περνούν
- * σειριακά από τον ΙΔΙΟ global rate limiter (`gmgn/exec.ts`) που ήδη μοιράζεται με
- * discovery/wallet-activity/wallet-scoring. Δεν χρειάζεται ξεχωριστό pacing — το
- * `TokenBucket.acquire()` ήδη περιμένει/σειριοποιεί, άρα αυτό το job απλά «διεκδικεί»
- * μερίδιο του κοινού budget, δεν το μονοπωλεί.
+ * Throttled by design: όλα τα calls (holders weight 5, stats weight 3) περνούν σειριακά
+ * από τον ΙΔΙΟ global rate limiter (`gmgn/exec.ts`) που ήδη μοιράζεται με
+ * discovery/wallet-activity/wallet-scoring, ΚΑΙ με σκόπιμο `WALLET_LOOP_PACING_MS`
+ * ανάμεσα σε διαδοχικά calls — βλ. `util/delay.ts` για το γιατί το weight-based budget
+ * από μόνο του δεν αρκούσε (RATE_LIMIT_EXCEEDED σε κάθε ριπή, ανεξάρτητα από backoff).
  *
  * ⚠️ Το αρχικό spec έλεγε «~20-30» tokens — μειώθηκε στο πρακτικό default παρακάτω.
  * Στην πράξη, 25 tokens × holders (weight 5) + δεκάδες candidates × stats (weight 3)
@@ -82,11 +84,13 @@ export async function runWalletDiscoveryCycle(
       perTokenHolders.push(
         await fetchTokenHolders({ tokenAddress: token.tokenAddress, tag, limit: holdersLimit }),
       );
+      await delay(WALLET_LOOP_PACING_MS);
     } catch (error) {
       // Rate limit σταματά ΟΛΟΚΛΗΡΟ τον κύκλο — αλλιώς τα επόμενα tokens θα
       // ξαναχτυπούσαν το API μέσα στο ban (βλ. rethrowIfRateLimited).
       rethrowIfRateLimited(error);
       holderFailures += 1;
+      await delay(WALLET_LOOP_PACING_MS);
       continue;
     }
     if (!options.includeRenowned) continue;
@@ -94,9 +98,11 @@ export async function runWalletDiscoveryCycle(
       perTokenHolders.push(
         await fetchTokenHolders({ tokenAddress: token.tokenAddress, tag: 'renowned', limit: holdersLimit }),
       );
+      await delay(WALLET_LOOP_PACING_MS);
     } catch (error) {
       rethrowIfRateLimited(error);
       holderFailures += 1;
+      await delay(WALLET_LOOP_PACING_MS);
     }
   }
 
@@ -111,9 +117,11 @@ export async function runWalletDiscoveryCycle(
     let stats: WalletStats;
     try {
       stats = await fetchWalletStats({ wallet: candidate.address });
+      await delay(WALLET_LOOP_PACING_MS);
     } catch (error) {
       rethrowIfRateLimited(error);
       statsFailures += 1;
+      await delay(WALLET_LOOP_PACING_MS);
       continue;
     }
     if (!passesAutoDiscoveryThreshold(stats)) {

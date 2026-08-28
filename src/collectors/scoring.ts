@@ -6,10 +6,12 @@ import {
 } from '../db/repositories/watchlistWallets.js';
 import { rethrowIfRateLimited } from '../gmgn/errors.js';
 import { fetchWalletStats } from '../gmgn/walletStats.js';
+import { WALLET_LOOP_PACING_MS } from './intervals.js';
 import {
   ADVISORY_TOKEN_COUNT_FLOOR,
   ADVISORY_WIN_RATE_FLOOR,
 } from '../telegram/commands.js';
+import { delay } from '../util/delay.js';
 
 /**
  * Layer 2 — re-scoring. Σκοράρει ΟΛΑ τα active wallets σε κάθε κύκλο, ανεξαρτήτως
@@ -48,6 +50,7 @@ export async function runWalletScoringCycle(): Promise<ScoringResult> {
     for (const wallet of wallets) {
       try {
         const stats = await fetchWalletStats({ wallet: wallet.address });
+        await delay(WALLET_LOOP_PACING_MS);
         const score = {
           walletAddress: wallet.address,
           winRate: stats.winRate,
@@ -66,6 +69,7 @@ export async function runWalletScoringCycle(): Promise<ScoringResult> {
         // επόμενα wallets θα ξαναχτυπούσαν το API μέσα στο ban (rethrowIfRateLimited).
         rethrowIfRateLimited(error);
         failures += 1;
+        await delay(WALLET_LOOP_PACING_MS);
       }
     }
   } finally {
