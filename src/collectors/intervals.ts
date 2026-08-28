@@ -68,18 +68,25 @@ export const WALLET_DISCOVERY_LOOP_PACING_MS = 1_500;
 
 /**
  * Bootstrap/auto-discovery για νέα `source='smart_money'` wallets — βλ.
- * `collectors/walletDiscovery.ts`. Weekly επίτηδες, ΞΕΧΩΡΙΣΤΟ και πολύ πιο αργό από το
- * per-cycle re-scoring πιο πάνω: αυτό εδώ ψάχνει ΝΕΑ candidate wallets (holders weight 5
- * × ~25 tokens + stats weight 3 × N candidates — δεκάδες weight ανά run), το scoring
- * ξανα-μετρά ό,τι ΗΔΗ ξέρουμε (weight 3 ανά ήδη-active wallet). Ίδιος shared rate
- * limiter με όλα τα υπόλοιπα loops — δεν χρειάζεται δικό του budget reservation.
+ * `collectors/walletDiscovery.ts`. ΞΕΧΩΡΙΣΤΟ και πιο αργό από το per-cycle re-scoring
+ * πιο πάνω: αυτό εδώ ψάχνει ΝΕΑ candidate wallets (holders weight 5 × ~10 tokens +
+ * stats weight 3 × N candidates — 100-150+ weight ανά run), το scoring ξανα-μετρά ό,τι
+ * ΗΔΗ ξέρουμε (weight 3 ανά ήδη-active wallet). Ίδιος shared rate limiter με όλα τα
+ * υπόλοιπα loops — δεν χρειάζεται δικό του budget reservation.
+ *
+ * Ωριαίο, ΟΧΙ weekly (άλλαξε 2026-08-28, δοκιμαστικά — αρχικό σχέδιο ήταν weekly, πριν
+ * φτιαχτεί το `WALLET_DISCOVERY_LOOP_PACING_MS`). Ο αρχικός λόγος για weekly ήταν το
+ * burst-cost ανά κύκλο, όχι ο μέσος όρος: σε ωριαία βάση, 100-150 weight/h ≈ 0.03/s —
+ * αμελητέο πάνω σε shared budget 20/s. Το πραγματικό ρίσκο ήταν πάντα το burst μέσα σε
+ * λίγα δευτερόλεπτα, που ήδη διορθώθηκε με το pacing. "Ωριαίο" ΔΕΝ σημαίνει back-to-back
+ * χωρίς κενό — κράτα το κενό, αλλιώς ανταγωνίζεται μόνιμα τα latency-sensitive
+ * activity/scoring loops.
  *
  * ΣΗΜΕΙΩΣΗ: ο scheduler τρέχει κάθε loop ΜΙΑ φορά αμέσως στο ξεκίνημα (πριν τον πρώτο
  * interval sleep) — άρα κάθε restart του process (π.χ. Railway redeploy) προκαλεί ένα
- * άμεσο discovery pass, όχι μετά από μία εβδομάδα. Ίδιο υπάρχον pattern με τα άλλα
- * loops· εδώ είναι πιο αισθητό λόγω του μεγαλύτερου one-shot κόστους.
+ * άμεσο discovery pass, πέρα από το κανονικό ωριαίο interval.
  */
-export const WALLET_DISCOVERY_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+export const WALLET_DISCOVERY_INTERVAL_MS = 60 * 60 * 1000;
 
 /**
  * Retry backoff για το wallet-discovery μετά από αποτυχία (π.χ. rate limit πριν
