@@ -65,13 +65,17 @@ async function resolveOneTrade(trade: PaperTrade): Promise<boolean> {
   const triggerWallet = decision?.triggerWalletAddress ?? null;
 
   const fromSeconds = Math.floor(trade.entryAt.getTime() / 1000);
-  const rawCandles = await fetchKline({ tokenAddress: trade.tokenAddress, from: fromSeconds });
+  const rawCandles = await fetchKline({
+    tokenAddress: trade.tokenAddress,
+    from: fromSeconds,
+    priority: 200,
+  });
   // Defensive sort: δεν έχουμε επαληθεύσει αν το GMGN εγγυάται χρονολογική σειρά.
   const candles = [...rawCandles].sort((a, b) => a.timestamp - b.timestamp);
 
   let walletSellAt: Date | null = null;
   if (triggerWallet !== null) {
-    const sells = await fetchWalletSells(triggerWallet, { limit: 20 });
+    const sells = await fetchWalletSells(triggerWallet, { limit: 20, priority: 100 });
     const afterEntry = sells.activities
       .filter((sell) => sell.tokenAddress === trade.tokenAddress)
       .find((sell) => sell.timestamp * 1000 >= trade.entryAt.getTime());

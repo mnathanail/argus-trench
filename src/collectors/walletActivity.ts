@@ -1,5 +1,6 @@
 import { findPassedTokens } from '../db/repositories/decisionLog.js';
 import { recordSignal } from '../db/repositories/entries.js';
+import { countOpenTrades } from '../db/repositories/paperTrades.js';
 import {
   listActiveWallets,
   updateActivityCursor,
@@ -7,6 +8,7 @@ import {
 } from '../db/repositories/watchlistWallets.js';
 import {
   WALLET_ACTIVITY_LOOP_PACING_MS,
+  WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE,
   WALLET_ACTIVITY_WALLETS_PER_CYCLE,
 } from './intervals.js';
 import { PHASE1_THRESHOLDS, logicVersion } from '../decision/gateConfig.js';
@@ -53,6 +55,12 @@ export async function runWalletActivityCycle(
   options: WalletActivityOptions = {},
 ): Promise<WalletActivityResult> {
   const version = logicVersion(options.thresholds ?? PHASE1_THRESHOLDS);
+
+  const openTrades = await countOpenTrades();
+  if (openTrades >= WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE) {
+    return { version, walletsPolled: 0, newBuys: 0, signalsRecorded: 0 };
+  }
+
   const activeWallets = await listActiveWallets();
   const wallets = selectRoundRobinWallets(
     activeWallets,
@@ -168,7 +176,7 @@ export async function fetchNewBuys(
     limit: pageSize,
     stopAtTxHash: wallet.lastSeenTxHash,
     stopAtTimestamp: wallet.lastSeenActivityAt?.getTime() ?? null,
-    priority: 10,
+    priority: 5,
   });
   return filterNewBuys(page.activities, wallet.lastSeenTxHash, wallet.lastSeenActivityAt);
 }
@@ -180,9 +188,12 @@ export function filterNewBuys(
   cursorTime: Date | null,
 ): WalletActivity[] {
   const fresh: WalletActivity[] = [];
+  const seen = new Set<string>();
   for (const activity of activities) {
     if (cursorHash !== null && activity.txHash === cursorHash) break;
     if (cursorTime !== null && activity.timestamp * 1000 <= cursorTime.getTime()) break;
+    if (seen.has(activity.txHash)) continue;
+    seen.add(activity.txHash);
     fresh.push(activity);
   }
   return fresh;

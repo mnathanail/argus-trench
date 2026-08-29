@@ -27,7 +27,8 @@ export const DISCOVERY_RETRY_BACKOFF_MS = [
 export const WALLET_ACTIVITY_INTERVAL_MS = 60_000;
 export const WALLET_ACTIVITY_LOOP_PACING_MS = 1_000;
 /** Περιορίζει το burst· όλο το watchlist περνάει κυκλικά σε διαδοχικά ticks. */
-export const WALLET_ACTIVITY_WALLETS_PER_CYCLE = 4;
+export const WALLET_ACTIVITY_WALLETS_PER_CYCLE = 2;
+export const WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE = 50;
 export const WALLET_ACTIVITY_INITIAL_DELAY_MS = 5_000;
 
 /**
