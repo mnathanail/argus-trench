@@ -25,7 +25,7 @@ export interface FetchKlineOptions extends RunOptions {
   /** Unix seconds. */
   from: number;
   to?: number;
-  /** π.χ. '1m'/'5m'/'1h' — υπόθεση ονομασίας, να επιβεβαιωθεί. */
+  /** GMGN requires a resolution; 1m preserves the exit tiers' timing detail. */
   resolution?: string;
 }
 
@@ -37,6 +37,8 @@ export function buildKlineArgs(options: FetchKlineOptions): string[] {
     options.chain ?? 'sol',
     '--address',
     options.tokenAddress,
+    '--resolution',
+    options.resolution ?? '1m',
     '--from',
     String(options.from),
   ];

@@ -211,7 +211,18 @@ test('buildActivityArgs repeats --type and passes the cursor through', () => {
 test('buildKlineArgs uses the CLI address flag', () => {
   assert.deepEqual(
     buildKlineArgs({ tokenAddress: 'TOKEN1', from: 123 }),
-    ['market', 'kline', '--chain', 'sol', '--address', 'TOKEN1', '--from', '123'],
+    [
+      'market',
+      'kline',
+      '--chain',
+      'sol',
+      '--address',
+      'TOKEN1',
+      '--resolution',
+      '1m',
+      '--from',
+      '123',
+    ],
   );
 });
 
