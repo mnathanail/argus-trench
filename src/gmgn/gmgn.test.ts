@@ -95,7 +95,7 @@ test('TokenBucket pauses queued acquires after a shared rate limit', async () =>
 
   await bucket.acquire(3);
 
-  assert.equal(elapsed(), 5_000);
+  assert.ok(elapsed() >= 8_000 && elapsed() <= 8_001);
 });
 
 test('parseTrenchesResponse reads the real near_completion shape', () => {

@@ -18,9 +18,12 @@ export const systemClock: Clock = {
 };
 
 export class TokenBucket {
+  static readonly RECOVERY_WINDOW_MS = 60_000;
+  static readonly RECOVERY_REFILL_PER_SECOND = 1;
   #tokens: number;
   #lastRefillAt: number;
   #blockedUntil = 0;
+  #recoveryUntil = 0;
   #queue: {
     weight: number;
     priority: number;
@@ -49,6 +52,12 @@ export class TokenBucket {
   block(until: Date | null, fallbackMs = 60_000): void {
     const target = until?.getTime() ?? this.clock.now() + fallbackMs;
     this.#blockedUntil = Math.max(this.#blockedUntil, target);
+    this.#recoveryUntil = Math.max(
+      this.#recoveryUntil,
+      target + TokenBucket.RECOVERY_WINDOW_MS,
+    );
+    this.#tokens = 0;
+    this.#lastRefillAt = this.clock.now();
   }
 
   async acquire(weight: number, priority = 0): Promise<void> {
@@ -102,9 +111,17 @@ export class TokenBucket {
 
   #refill(): void {
     const now = this.clock.now();
+    if (now <= this.#blockedUntil) {
+      this.#lastRefillAt = now;
+      return;
+    }
     const elapsedSeconds = (now - this.#lastRefillAt) / 1000;
     if (elapsedSeconds <= 0) return;
-    this.#tokens = Math.min(this.capacity, this.#tokens + elapsedSeconds * this.refillPerSecond);
+    const refillRate =
+      now < this.#recoveryUntil
+        ? TokenBucket.RECOVERY_REFILL_PER_SECOND
+        : this.refillPerSecond;
+    this.#tokens = Math.min(this.capacity, this.#tokens + elapsedSeconds * refillRate);
     this.#lastRefillAt = now;
   }
 }
