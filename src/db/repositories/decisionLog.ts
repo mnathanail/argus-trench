@@ -230,13 +230,14 @@ export interface TriggerRecord {
  * Δεν φτιάχνει νέο row: το candidate ήταν ήδη καταγεγραμμένο από τον discovery κύκλο, και
  * ένα δεύτερο row θα διπλομέτραγε το ίδιο token στα pass-rate stats.
  *
- * Το `decision <> 'entered'` προστατεύει ιστορικό — μόλις ανοίξει πραγματική θέση, το row
- * είναι δεμένο με trade και δε το ξαναγράφουμε. Το `gate_passed` στο WHERE είναι η δεύτερη
- * μισή του κανόνα εισόδου: trigger σε token που δεν πέρασε το gate ΔΕΝ είναι signal.
+ * Το `decision <> 'entered'` προστατεύει ιστορικό, ενώ το `linked_trade_id IS NULL`
+ * διασφαλίζει ότι ένα candidate δε δημιουργεί δεύτερο paper trade μετά το πρώτο signal.
+ * Το `gate_passed` στο WHERE είναι η δεύτερη μισή του κανόνα εισόδου: trigger σε token που
+ * δεν πέρασε το gate ΔΕΝ είναι signal.
  *
  * Επιστρέφει το `id` (όχι μόνο rowCount) ώστε ο caller να μπορεί να συνδέσει ατομικά ένα
  * paper_trades row — βλ. `recordSignal` στο entries.ts. `null` όταν δεν ταίριαξε τίποτα
- * (π.χ. το row έγινε ήδη 'entered' στο μεσοδιάστημα).
+ * (π.χ. το row συνδέθηκε ήδη με trade στο μεσοδιάστημα).
  */
 export async function recordTrigger(
   input: TriggerRecord,
@@ -254,6 +255,7 @@ export async function recordTrigger(
         AND logic_version = $2
         AND gate_passed
         AND decision <> 'entered'
+        AND linked_trade_id IS NULL
       RETURNING id`,
     [
       input.tokenAddress,
