@@ -163,6 +163,53 @@ test('upsertDecisions clears a stale trigger once the gate re-evaluates as faile
   });
 });
 
+test('recordTrigger blocks a second open trade for the same token and wallet', async () => {
+  await inRollback(async (tx) => {
+    await upsertWallet({ address: 'WalletDup1', source: 'manual', active: true }, tx);
+
+    const decisionId = await insertDecision(
+      {
+        ...baseDecision,
+        tokenAddress: 'TokenDupGuard',
+        triggerType: 'smart_money_buy',
+        triggerWalletAddress: 'WalletDup1',
+        decision: 'signal_logged',
+      },
+      tx,
+    );
+
+    await openTrade(
+      {
+        decisionLogId: decisionId,
+        tokenAddress: 'TokenDupGuard',
+        mode: 'paper',
+        intendedSizePct: 1,
+        bankrollAtEntry: 100,
+        simulatedEntryPrice: 0.000123,
+        simulatedEntryAmountSol: 1,
+        assumedSlippagePct: 0.5,
+        assumedLatencyMs: 200,
+      },
+      tx,
+    );
+
+    const duplicate = await recordTrigger(
+      {
+        tokenAddress: 'TokenDupGuard',
+        logicVersion: baseDecision.logicVersion,
+        triggerType: 'smart_money_buy',
+        triggerWalletAddress: 'WalletDup1',
+        triggerWalletSnapshot: { win_rate: 0.76 },
+        decision: 'signal_logged',
+        decisionReasonText: 'should be blocked while open trade exists',
+      },
+      tx,
+    );
+
+    assert.equal(duplicate, null);
+  });
+});
+
 test('insertDecisions returns one id per input and handles an empty batch', async () => {
   await inRollback(async (tx) => {
     assert.deepEqual(await insertDecisions([], tx), []);

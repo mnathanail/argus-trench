@@ -235,6 +235,11 @@ export interface TriggerRecord {
  * Το `gate_passed` στο WHERE είναι η δεύτερη μισή του κανόνα εισόδου: trigger σε token που
  * δεν πέρασε το gate ΔΕΝ είναι signal.
  *
+ * Προστέθηκε επιπλέον guard για να μη δημιουργηθεί second open trade όταν το ίδιο token
+ * από το ίδιο wallet έχει ήδη ανοιχτή position, ακόμη κι αν το candidate εμφανιστεί ξανά
+ * από διαφορετική `candidate_source` στο ίδιο logic_version. Αυτό είναι κρίσιμο για να μην
+ * μπλέκουμε duplicate closed rows με ίδιο exit snapshot.
+ *
  * Επιστρέφει το `id` (όχι μόνο rowCount) ώστε ο caller να μπορεί να συνδέσει ατομικά ένα
  * paper_trades row — βλ. `recordSignal` στο entries.ts. `null` όταν δεν ταίριαξε τίποτα
  * (π.χ. το row συνδέθηκε ήδη με trade στο μεσοδιάστημα).
@@ -244,19 +249,28 @@ export async function recordTrigger(
   conn?: Queryable,
 ): Promise<number | null> {
   const { rows } = await db(conn).query<{ id: string }>(
-    `UPDATE decision_log
+    `UPDATE decision_log d
         SET trigger_type = $3,
             trigger_wallet_address = $4,
             trigger_wallet_snapshot_json = $5,
             decision = $6,
             decision_reason_text = $7,
             last_evaluated_at = now()
-      WHERE token_address = $1
-        AND logic_version = $2
-        AND gate_passed
-        AND decision <> 'entered'
-        AND linked_trade_id IS NULL
-      RETURNING id`,
+      WHERE d.token_address = $1
+        AND d.logic_version = $2
+        AND d.gate_passed
+        AND d.decision <> 'entered'
+        AND d.linked_trade_id IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM paper_trades pt
+          JOIN decision_log existing_d ON existing_d.id = pt.decision_log_id
+          WHERE existing_d.token_address = d.token_address
+            AND existing_d.logic_version = d.logic_version
+            AND existing_d.trigger_wallet_address = $4
+            AND pt.status = 'open'
+        )
+      RETURNING d.id`,
     [
       input.tokenAddress,
       input.logicVersion,
