@@ -58,6 +58,8 @@ export interface LoopDefinition {
   intervalMs: number;
   /** Delay before the first run, used to avoid a startup request burst. */
   initialDelayMs?: number;
+  /** Runs alone after all currently active regular loops have finished. */
+  exclusive?: boolean;
   /**
    * Retry delay μετά από αποτυχία, βάσει συνεχόμενων αποτυχιών (1-indexed: το πρώτο
    * στοιχείο ισχύει μετά την 1η αποτυχία στη σειρά, το τελευταίο επαναλαμβάνεται για
@@ -71,9 +73,62 @@ export interface LoopDefinition {
 export interface SchedulerOptions {
   loops: readonly LoopDefinition[];
   cooldown: SharedCooldown;
+  coordinator?: ExclusiveCoordinator;
   signal?: AbortSignal;
   clock?: SchedulerClock;
   log?: (message: string) => void;
+}
+
+interface CoordinatorWaiter {
+  exclusive: boolean;
+  resolve: (release: () => void) => void;
+}
+
+/** Coordinates normal loop runs with an exclusive maintenance window. */
+export class ExclusiveCoordinator {
+  #activeRegular = 0;
+  #exclusiveActive = false;
+  #exclusivePending = false;
+  #waiters: CoordinatorWaiter[] = [];
+
+  acquire(exclusive = false): Promise<() => void> {
+    if (exclusive) this.#exclusivePending = true;
+    return new Promise((resolve) => {
+      this.#waiters.push({ exclusive, resolve });
+      this.#drain();
+    });
+  }
+
+  #drain(): void {
+    if (this.#exclusiveActive) return;
+
+    if (this.#exclusivePending && this.#activeRegular === 0) {
+      const index = this.#waiters.findIndex((waiter) => waiter.exclusive);
+      const waiter = index >= 0 ? this.#waiters.splice(index, 1)[0] : undefined;
+      if (waiter) {
+        this.#exclusivePending = false;
+        this.#exclusiveActive = true;
+        waiter.resolve(() => {
+          this.#exclusiveActive = false;
+          this.#drain();
+        });
+        return;
+      }
+    }
+
+    if (this.#exclusivePending) return;
+
+    while (this.#activeRegular >= 0) {
+      const index = this.#waiters.findIndex((waiter) => !waiter.exclusive);
+      const waiter = index >= 0 ? this.#waiters.splice(index, 1)[0] : undefined;
+      if (!waiter) return;
+      this.#activeRegular += 1;
+      waiter.resolve(() => {
+        this.#activeRegular -= 1;
+        this.#drain();
+      });
+    }
+  }
 }
 
 /**
@@ -83,12 +138,14 @@ export interface SchedulerOptions {
 export async function runScheduler(options: SchedulerOptions): Promise<void> {
   const clock = options.clock ?? realClock;
   const log = options.log ?? ((message: string) => console.log(message));
-  await Promise.all(options.loops.map((loop) => runLoop(loop, options, clock, log)));
+  const coordinator = options.coordinator ?? new ExclusiveCoordinator();
+  await Promise.all(options.loops.map((loop) => runLoop(loop, options, coordinator, clock, log)));
 }
 
 async function runLoop(
   loop: LoopDefinition,
   options: SchedulerOptions,
+  coordinator: ExclusiveCoordinator,
   clock: SchedulerClock,
   log: (message: string) => void,
 ): Promise<void> {
@@ -111,23 +168,28 @@ async function runLoop(
       continue;
     }
 
+    const release = await coordinator.acquire(loop.exclusive);
     const startedAt = clock.now();
     let failed = false;
     try {
-      await loop.run();
-      consecutiveFailures = 0;
-    } catch (error) {
-      failed = true;
-      consecutiveFailures += 1;
-      if (error instanceof GmgnRateLimitError) {
-        options.cooldown.engage(error.retryAt);
-        log(
-          `[${loop.name}] rate limited — pausing every loop for ` +
-            `${Math.ceil(options.cooldown.remainingMs() / 1000)}s — ${error.message}`,
-        );
-      } else {
-        log(`[${loop.name}] failed: ${error instanceof Error ? error.message : String(error)}`);
+      try {
+        await loop.run();
+        consecutiveFailures = 0;
+      } catch (error) {
+        failed = true;
+        consecutiveFailures += 1;
+        if (error instanceof GmgnRateLimitError) {
+          options.cooldown.engage(error.retryAt);
+          log(
+            `[${loop.name}] rate limited — pausing every loop for ` +
+              `${Math.ceil(options.cooldown.remainingMs() / 1000)}s — ${error.message}`,
+          );
+        } else {
+          log(`[${loop.name}] failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
+    } finally {
+      release();
     }
 
     if (aborted()) return;

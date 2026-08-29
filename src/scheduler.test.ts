@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { GmgnRateLimitError } from './gmgn/errors.js';
-import { retryDelayMs, runScheduler, SharedCooldown, type LoopDefinition, type SchedulerClock } from './scheduler.js';
+import {
+  ExclusiveCoordinator,
+  retryDelayMs,
+  runScheduler,
+  SharedCooldown,
+  type LoopDefinition,
+  type SchedulerClock,
+} from './scheduler.js';
 
 function fakeClock(): { clock: SchedulerClock; elapsed: () => number } {
   let now = 0;
@@ -16,6 +23,32 @@ function fakeClock(): { clock: SchedulerClock; elapsed: () => number } {
     elapsed: () => now,
   };
 }
+
+test('ExclusiveCoordinator waits for regular work and blocks new regular work', async () => {
+  const coordinator = new ExclusiveCoordinator();
+  const regularRelease = await coordinator.acquire();
+  let exclusiveStarted = false;
+  const exclusive = coordinator.acquire(true).then((release) => {
+    exclusiveStarted = true;
+    return release;
+  });
+  const queuedRegular = coordinator.acquire();
+
+  await Promise.resolve();
+  assert.equal(exclusiveStarted, false);
+  regularRelease();
+  const exclusiveRelease = await exclusive;
+  assert.equal(exclusiveStarted, true);
+  let regularStarted = false;
+  void queuedRegular.then(() => {
+    regularStarted = true;
+  });
+  await Promise.resolve();
+  assert.equal(regularStarted, false);
+  exclusiveRelease();
+  await queuedRegular;
+  assert.equal(regularStarted, true);
+});
 
 test('retryDelayMs walks the backoff array by consecutive failures, then caps at the last entry', () => {
   const loop: LoopDefinition = { name: 'x', intervalMs: 999, retryBackoffMs: [10, 20, 30], run: async () => {} };

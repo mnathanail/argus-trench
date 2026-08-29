@@ -98,15 +98,10 @@ export const WALLET_DISCOVERY_INTERVAL_MS = 60 * 60 * 1000;
 export const WALLET_DISCOVERY_INITIAL_DELAY_MS = 30_000;
 
 /**
- * Retry backoff για το wallet-discovery μετά από αποτυχία (π.χ. rate limit πριν
- * ολοκληρωθεί ένας πλήρης κύκλος) — αυξανόμενο αντί για σταθερό 60s, ώστε ένα δομικά
- * ακριβό run που δεν προλαβαίνει να χωρέσει στο shared budget να μη ξαναχτυπάει τον
- * ίδιο τοίχο κάθε λεπτό επ' αόριστον. Reset στο μηδέν μόλις πετύχει έστω ένας πλήρης
- * κύκλος — βλ. `scheduler.ts`.
+ * Retry policy για το wallet-discovery μετά από αποτυχία: καμία δεύτερη προσπάθεια μέσα
+ * στο ίδιο hourly window, ώστε ένα rate limit να μη συναγωνίζεται τα latency-sensitive
+ * loops. Η επόμενη προσπάθεια γίνεται μετά από μία ώρα.
  */
 export const WALLET_DISCOVERY_RETRY_BACKOFF_MS = [
-  60_000, // 1η αποτυχία
-  5 * 60_000, // 2η
-  15 * 60_000, // 3η
-  30 * 60_000, // 4η και κάθε επόμενη
+  60 * 60 * 1000, // Κάθε αποτυχία — επόμενη προσπάθεια στο επόμενο hourly window
 ] as const;

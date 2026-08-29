@@ -118,6 +118,7 @@ const loops: LoopDefinition[] = [
     name: 'wallet-discovery',
     intervalMs: WALLET_DISCOVERY_INTERVAL_MS,
     initialDelayMs: WALLET_DISCOVERY_INITIAL_DELAY_MS,
+    exclusive: true,
     // Αυξανόμενο retry αντί για σταθερό 60s — βλ. intervals.ts για το σκεπτικό.
     retryBackoffMs: WALLET_DISCOVERY_RETRY_BACKOFF_MS,
     run: async () => {

@@ -19,11 +19,9 @@ import { delay } from '../util/delay.js';
  *     → INSERT σε watchlist_wallets ΜΟΝΟ όσα περνούν το ίδιο threshold με το manual
  *       floor (`win_rate > 0.5 AND token_num >= 15`) — αλλιώς skip, όχι inactive row.
  *
- * Throttled by design: όλα τα calls (holders weight 5, stats weight 3) περνούν σειριακά
- * από τον ΙΔΙΟ global rate limiter (`gmgn/exec.ts`) που ήδη μοιράζεται με
- * discovery/wallet-activity/wallet-scoring, ΚΑΙ με σκόπιμο `WALLET_DISCOVERY_LOOP_PACING_MS`
- * ανάμεσα σε διαδοχικά calls — βλ. `util/delay.ts` για το γιατί το weight-based budget
- * από μόνο του δεν αρκούσε (RATE_LIMIT_EXCEEDED σε κάθε ριπή, ανεξάρτητα από backoff).
+ * Throttled by design: το loop τρέχει σε exclusive scheduler window, όλα τα calls
+ * περνούν σειριακά από τον ΙΔΙΟ global rate limiter (`gmgn/exec.ts`) και υπάρχει σκόπιμο
+ * `WALLET_DISCOVERY_LOOP_PACING_MS` ανάμεσα σε διαδοχικά calls.
  *
  * ⚠️ Το αρχικό spec έλεγε «~20-30» tokens — μειώθηκε στο πρακτικό default παρακάτω.
  * Στην πράξη, 25 tokens × holders (weight 5) + δεκάδες candidates × stats (weight 3)

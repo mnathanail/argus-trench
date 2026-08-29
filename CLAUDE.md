@@ -338,7 +338,9 @@ calls ΔΕΝ έχουν την ίδια στατιστική σημασία. Τ�
 0. ✅ Setup & instrumentation (API key, plugin install, logging σκελετός) — **έγινε**
 1. 🚧 Read-only signal collection (καμία συναλλαγή, μόνο logging) — **υλοποιημένο**:
    4 collector loops (discovery 120s, wallet-activity 60s, wallet-scoring 300s,
-   wallet-discovery hourly) σε ένα process με κοινό cooldown,
+   wallet-discovery hourly) σε ένα process με κοινό cooldown. Το wallet-discovery εκτελείται
+   σε exclusive maintenance window: περιμένει να ολοκληρωθούν τα ενεργά requests και
+   παγώνει την έναρξη νέων requests από τα άλλα loops μέχρι να τελειώσει.
    `logic_version = gate-v1-<hash των thresholds>`.
 2. Backtesting & threshold tuning πάνω σε πραγματικά logged δεδομένα
 3. Paper trading (πλήρες decision engine, simulated fills)
