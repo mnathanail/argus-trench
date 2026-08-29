@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { filterNewBuys } from '../collectors/walletActivity.js';
+import { filterNewBuys, selectRoundRobinWallets } from '../collectors/walletActivity.js';
+import type { WatchlistWallet } from '../db/repositories/watchlistWallets.js';
 import type { WalletActivity } from '../gmgn/activity.js';
 import { parseTrenchesResponse, type TrenchCandidate } from '../gmgn/trenches.js';
 import { GmgnRateLimitError } from '../gmgn/errors.js';
@@ -104,6 +105,25 @@ test('filterNewBuys falls back to the timestamp when the hash fell off the page'
   const page = [buy('e', 500), buy('d', 400)];
   // Ο cursor 'b' δεν υπάρχει πια στη σελίδα· το timestamp σώζει από re-trigger.
   assert.deepEqual(filterNewBuys(page, 'b', new Date(400_000)).map((x) => x.txHash), ['e']);
+});
+
+test('activity polling selects a bounded round-robin batch', () => {
+  const wallets = Array.from({ length: 5 }, (_, index) => ({
+    address: `W${index + 1}`,
+  })) as WatchlistWallet[];
+
+  assert.deepEqual(
+    selectRoundRobinWallets(wallets, 0, 2).map((wallet) => wallet.address),
+    ['W1', 'W2'],
+  );
+  assert.deepEqual(
+    selectRoundRobinWallets(wallets, 2, 2).map((wallet) => wallet.address),
+    ['W3', 'W4'],
+  );
+  assert.deepEqual(
+    selectRoundRobinWallets(wallets, 4, 2).map((wallet) => wallet.address),
+    ['W5', 'W1'],
+  );
 });
 
 // --- scheduler -------------------------------------------------------------------------

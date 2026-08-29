@@ -5,7 +5,10 @@ import {
   updateActivityCursor,
   type WatchlistWallet,
 } from '../db/repositories/watchlistWallets.js';
-import { WALLET_ACTIVITY_LOOP_PACING_MS } from './intervals.js';
+import {
+  WALLET_ACTIVITY_LOOP_PACING_MS,
+  WALLET_ACTIVITY_WALLETS_PER_CYCLE,
+} from './intervals.js';
 import { PHASE1_THRESHOLDS, logicVersion } from '../decision/gateConfig.js';
 import {
   PAPER_ASSUMED_LATENCY_MS,
@@ -33,6 +36,8 @@ export interface WalletActivityOptions {
   thresholds?: GateThresholds;
   /** Πόσα trades ζητάμε ανά wallet. Αρκετά για να καλύψουν ένα poll interval. */
   pageSize?: number;
+  /** Μέγιστος αριθμός wallets ανά κύκλο· το default εφαρμόζει round-robin polling. */
+  walletsPerCycle?: number;
 }
 
 export interface WalletActivityResult {
@@ -42,11 +47,23 @@ export interface WalletActivityResult {
   signalsRecorded: number;
 }
 
+let nextWalletIndex = 0;
+
 export async function runWalletActivityCycle(
   options: WalletActivityOptions = {},
 ): Promise<WalletActivityResult> {
   const version = logicVersion(options.thresholds ?? PHASE1_THRESHOLDS);
-  const wallets = await listActiveWallets();
+  const activeWallets = await listActiveWallets();
+  const wallets = selectRoundRobinWallets(
+    activeWallets,
+    nextWalletIndex,
+    options.walletsPerCycle ?? WALLET_ACTIVITY_WALLETS_PER_CYCLE,
+  );
+  if (activeWallets.length > 0) {
+    nextWalletIndex = (nextWalletIndex + wallets.length) % activeWallets.length;
+  } else {
+    nextWalletIndex = 0;
+  }
 
   let newBuys = 0;
   let signalsRecorded = 0;
@@ -118,6 +135,22 @@ export async function runWalletActivityCycle(
   }
 
   return { version, walletsPolled: wallets.length, newBuys, signalsRecorded };
+}
+
+/**
+ * Επιλέγει συνεχόμενο τμήμα του watchlist και τυλίγει στην αρχή.
+ * Το index προχωράει πριν τα network calls, ώστε ένα 429 να μη λιμοκτονεί τα ίδια wallets.
+ */
+export function selectRoundRobinWallets(
+  wallets: readonly WatchlistWallet[],
+  startIndex: number,
+  maxWallets: number,
+): WatchlistWallet[] {
+  if (wallets.length === 0 || maxWallets <= 0) return [];
+
+  const count = Math.min(maxWallets, wallets.length);
+  const start = ((startIndex % wallets.length) + wallets.length) % wallets.length;
+  return Array.from({ length: count }, (_, offset) => wallets[(start + offset) % wallets.length]!);
 }
 
 /**
