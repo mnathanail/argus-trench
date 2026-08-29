@@ -14,6 +14,7 @@ import { buildActivityArgs, parseActivityResponse } from './activity.js';
 import { GmgnCliError, GmgnRateLimitError, GmgnResponseError, rethrowIfRateLimited } from './errors.js';
 import { LOCAL_CLI_BIN, runCli } from './exec.js';
 import { buildHoldersArgs, parseHoldersResponse } from './holders.js';
+import { buildKlineArgs } from './kline.js';
 import { TokenBucket, type Clock } from './rateLimiter.js';
 import { buildTrenchesArgs, parseTrenchesResponse } from './trenches.js';
 import { toNumber } from './validate.js';
@@ -204,6 +205,13 @@ test('buildActivityArgs repeats --type and passes the cursor through', () => {
     buildActivityArgs({ wallet: 'W1', types: ['buy', 'sell'], limit: 20, cursor: 'CUR' }),
     ['portfolio', 'activity', '--chain', 'sol', '--wallet', 'W1',
       '--type', 'buy', '--type', 'sell', '--limit', '20', '--cursor', 'CUR'],
+  );
+});
+
+test('buildKlineArgs uses the CLI address flag', () => {
+  assert.deepEqual(
+    buildKlineArgs({ tokenAddress: 'TOKEN1', from: 123 }),
+    ['market', 'kline', '--chain', 'sol', '--address', 'TOKEN1', '--from', '123'],
   );
 });
 

@@ -35,7 +35,7 @@ export function buildKlineArgs(options: FetchKlineOptions): string[] {
     'kline',
     '--chain',
     options.chain ?? 'sol',
-    '--token-address',
+    '--address',
     options.tokenAddress,
     '--from',
     String(options.from),
