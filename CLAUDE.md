@@ -334,13 +334,60 @@ calls ΔΕΝ έχουν την ίδια στατιστική σημασία. Τ�
   GMGN `portfolio stats` δεν έχει websocket/push endpoint, άρα δεν υπάρχει true
   streaming score.
 
+## Recent operational hardening (2026-08-29)
+Το live deployment αποκάλυψε ότι το κρίσιμο πρόβλημα δεν ήταν το gate logic, αλλά η
+συλλογική ροή αιτημάτων προς το GMGN: όλοι οι regular loops μοιράζονταν το ίδιο IP-level
+rate bucket και το scheduler επέτρεπε να τρέχουν ταυτόχρονα. Το αποτέλεσμα ήταν burst
+requests, παρατεινόμενα 429 και backlog ανοιχτών paper trades επειδή το exit resolver δεν
+έφτανε να κλείνει τα trades πριν προλάβει να ανοίξει νέα.
+
+### Το patch που εφαρμόστηκε
+- **Scheduler serialization**: το `runScheduler()` / `ExclusiveCoordinator` τρέχει τα regular
+  loops σε serial order, ώστε μόνο ένα regular loop να είναι ενεργό κάθε φορά. Ένα
+  `exclusive` loop (π.χ. wallet-discovery maintenance window) μπλοκάρει νέα regular work
+  μέχρι να ολοκληρωθεί.
+- **Shared cooldown για όλο το app**: κάθε 429 ενεργοποιεί κοινό cooldown σε όλα τα loops,
+  όχι μόνο στο loop που το πέτυχε. Αυτή η λογική είναι υλοποιημένη στο `SharedCooldown`
+  και στο `GmgnRateLimitError` path.
+- **Retry backoff**: τα loops έχουν αυστηρότερο backoff για συνεχόμενες αποτυχίες,
+  αντί για flat retries σε μικρά διαστήματα που επεκτείνουν το ban.
+- **Wallet activity burst reduction**: το polling περιορίστηκε σε 2 wallets/κύκλο,
+  η round-robin επιλογή διατηρεί σταθερό δείκτη για να μην λιμοκτονεί τα ίδια wallets,
+  και υπήρξε guard για μεγάλο open-trade backlog (`max open trades before pause`).
+- **Dedupe και cursoring**: το `filterNewBuys()` αφαιρεί διπλάκες `txHash` και το
+  `last_seen_tx_hash` / `last_seen_activity_at` διατηρούν το cursor του τελευταίου buy,
+  ώστε να μην ξαναγράφετε τα ίδια signals σε κάθε κύκλο.
+- **Exit resolution priority**: το exit resolver είναι πλέον προτεραιότητα, ώστε να κλείνει
+  ανοιχτά trades πριν το system μπει σε νέα trigger traffic.
+- **Rate-limit safety guard**: κάθε per-item loop rethrows `GmgnRateLimitError` και δεν το
+  καταπίνει ως “ενδεικτικό item failure”, γιατί αυτό θα επέτρεπε στο επόμενο item να
+  χτυπήσει ξανά το API μέσα στο ban.
+
+### Τι είδαμε στην πράξη
+- Το `wallet-activity` έδινε bursts σε 4 wallets/κύκλο και άνοιγε πολλά `signal_logged`
+  entries ταυτόχρονα.
+- Το `wallet-discovery` και το `wallet-scoring` μοιράζονταν το ίδιο GMGN bucket, άρα ένα 429
+  σε ένα endpoint επηρέαζε και τα άλλα loops.
+- Το `paper_trades` ήταν ανοιχτό backlog με `status='open'` και `exit_reason=NULL`, επειδή
+  ο exit loop πήγαινε σε 429 και δεν κατάφερνε να εκτελέσει closes.
+- Το πραγματικό “burst on a single wallet” δεν ήταν μαγεία· ήταν την ίδια σελίδα activity να
+  επανα-στέλνεται στο ίδιο φάσμα των wallets έως ότου η GMGN έβαζε τον IP σε ban.
+
+### Τύπος της μελλοντικής προστασίας
+- Το architecture παραμένει “read-only with logging” για τη Φάση 1.
+- Η περιστολή του ποσοστού αιτημάτων είναι το primary lever. Η ροή πρέπει να μένει
+  controlled / serialized και να μην φορτώνει το κοινό GMGN rate bucket σε bursts.
+- Αν το 429 συνεχίσει να εμφανίζεται ακόμη και με serial looping, τότε το επόμενο βήμα είναι
+  διαχωρισμός GMGN capacity (ξεχωριστό API key / IP / account), όχι περισσότερη request
+  pressure στο ίδιο IP.
+
 ## Phased rollout
 0. ✅ Setup & instrumentation (API key, plugin install, logging σκελετός) — **έγινε**
 1. 🚧 Read-only signal collection (καμία συναλλαγή, μόνο logging) — **υλοποιημένο**:
-   4 collector loops (discovery 120s, wallet-activity 60s, wallet-scoring 300s,
-   wallet-discovery hourly) σε ένα process με κοινό cooldown. Το wallet-discovery εκτελείται
-   σε exclusive maintenance window: περιμένει να ολοκληρωθούν τα ενεργά requests και
-   παγώνει την έναρξη νέων requests από τα άλλα loops μέχρι να τελειώσει.
+   5 collector loops (discovery, wallet-activity, wallet-scoring, wallet-discovery, exit-resolver)
+   σε ένα process με κοινό cooldown και serial regular execution. Το wallet-discovery
+   και το exit-resolver τρέχουν σε controlled windows ώστε να μην παρεμποδίζουν ο ένας τον
+   άλλο ή να γεμίζουν το shared GMGN bucket.
    `logic_version = gate-v1-<hash των thresholds>`.
 2. Backtesting & threshold tuning πάνω σε πραγματικά logged δεδομένα
 3. Paper trading (πλήρες decision engine, simulated fills)
