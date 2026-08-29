@@ -56,6 +56,8 @@ export class SharedCooldown {
 export interface LoopDefinition {
   name: string;
   intervalMs: number;
+  /** Delay before the first run, used to avoid a startup request burst. */
+  initialDelayMs?: number;
   /**
    * Retry delay μετά από αποτυχία, βάσει συνεχόμενων αποτυχιών (1-indexed: το πρώτο
    * στοιχείο ισχύει μετά την 1η αποτυχία στη σειρά, το τελευταίο επαναλαμβάνεται για
@@ -94,6 +96,12 @@ async function runLoop(
   // Per-loop state — κάθε loop έχει το δικό του closure μέσω runScheduler's .map(), άρα
   // αυτό δε μοιράζεται ποτέ κατά λάθος μεταξύ loops.
   let consecutiveFailures = 0;
+
+  const initialDelayMs = loop.initialDelayMs ?? 0;
+  if (initialDelayMs > 0) {
+    await clock.sleep(initialDelayMs, options.signal);
+    if (aborted()) return;
+  }
 
   while (!aborted()) {
     const cooling = options.cooldown.remainingMs();

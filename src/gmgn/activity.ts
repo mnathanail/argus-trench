@@ -45,6 +45,13 @@ export interface FetchWalletActivityOptions extends RunOptions {
   cursor?: string | null;
 }
 
+export interface FetchWalletBuysOptions
+  extends Omit<FetchWalletActivityOptions, 'types'> {
+  /** Stop pagination once the persisted local cursor is reached. */
+  stopAtTxHash?: string | null;
+  stopAtTimestamp?: number | null;
+}
+
 export function buildActivityArgs(options: FetchWalletActivityOptions): string[] {
   const args = ['portfolio', 'activity', '--chain', options.chain ?? 'sol', '--wallet', options.wallet];
   for (const type of options.types ?? []) args.push('--type', type);
@@ -63,9 +70,36 @@ export async function fetchWalletActivity(
 /** Convenience για το layer 3: μόνο αγορές, πρώτη σελίδα. */
 export async function fetchWalletBuys(
   wallet: string,
-  options: Omit<FetchWalletActivityOptions, 'wallet' | 'types'> = {},
+  options: Omit<FetchWalletBuysOptions, 'wallet'> = {},
 ): Promise<WalletActivityPage> {
-  return fetchWalletActivity({ ...options, wallet, types: ['buy'] });
+  const { stopAtTxHash, stopAtTimestamp, ...requestOptions } = options;
+  const activities: WalletActivity[] = [];
+  let cursor: string | null = requestOptions.cursor ?? null;
+
+  // Paginate until the persisted cursor is found, with a safety cap for a first run.
+  for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
+    const page = await fetchWalletActivity({
+      ...requestOptions,
+      wallet,
+      types: ['buy'],
+      cursor,
+    });
+    activities.push(...page.activities);
+
+    const reachedCursor = page.activities.some(
+      (activity) =>
+        (stopAtTxHash !== null && stopAtTxHash !== undefined && activity.txHash === stopAtTxHash) ||
+        (stopAtTimestamp !== null &&
+          stopAtTimestamp !== undefined &&
+          activity.timestamp * 1000 <= stopAtTimestamp),
+    );
+    if (reachedCursor || page.nextCursor === null) {
+      return { activities, nextCursor: null };
+    }
+    cursor = page.nextCursor;
+  }
+
+  return { activities, nextCursor: cursor };
 }
 
 /**

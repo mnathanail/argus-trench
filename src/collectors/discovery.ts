@@ -3,6 +3,8 @@ import { evaluateGate } from '../decision/evaluateGate.js';
 import { LAUNCHPAD_PLATFORMS, PHASE1_THRESHOLDS, logicVersion } from '../decision/gateConfig.js';
 import { fetchTrenches, type TrenchCandidate } from '../gmgn/trenches.js';
 import type { GateThresholds, TrenchCategory } from '../gmgn/trenches.js';
+import { DISCOVERY_REQUEST_PACING_MS } from './intervals.js';
+import { delay } from '../util/delay.js';
 
 /**
  * Discovery κύκλος — layer 1. **Δύο calls, όχι ένα** (βλ. CLAUDE.md):
@@ -42,6 +44,7 @@ export async function runDiscoveryCycle(options: DiscoveryOptions = {}): Promise
   // Σειριακά και όχι παράλληλα: ο rate limiter είναι κοινός, οπότε το παράλληλο δε
   // κερδίζει χρόνο — απλώς κάνει τη σειρά των logs μη ντετερμινιστική.
   const gated = await fetchTrenches({ ...base, thresholds });
+  await delay(DISCOVERY_REQUEST_PACING_MS);
   const sampled = await fetchTrenches(base);
 
   const rows: NewDecisionLog[] = [];

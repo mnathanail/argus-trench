@@ -138,8 +138,8 @@ activity` **και** `portfolio stats` είναι weight 3 **ανά wallet** κ�
 κάνει batch. 50 wallets σε activity = 150 weight = 7.5s στο πλήρες rate· άλλα 150 αν
 σκοράρουμε τα ίδια. Μόνο το `portfolio profits` κάνει πραγματικά batch (100 wallets,
 weight 3) — αλλά δίνει P&L, όχι win rate. Το `token holders` (weight 5, το ακριβότερο
-route) είναι ακόμα πιο ακριβό: ~20-30 tokens/εβδομάδα στο wallet-discovery bootstrap
-είναι 100-150 weight μόνο για το holders pass.
+route) είναι ακόμα πιο ακριβό: ~10 tokens/ώρα στο wallet-discovery bootstrap
+είναι περίπου 50 weight μόνο για το holders pass.
 Πρακτικός κανόνας: το budget των 20/s το τρώνε τα wallets, όχι το discovery. Στο 429: διάβασε `X-RateLimit-Reset` header ή `reset_at` στο body.
 **ΜΗΝ κάνεις naive retry** — κάθε request μέσα στο cooldown επεκτείνει το ban κατά 5s,
 έως 5 λεπτά. Ο adapter θέλει token bucket, όχι retry loop.
@@ -318,7 +318,7 @@ calls ΔΕΝ έχουν την ίδια στατιστική σημασία. Τ�
   wallet_score_history(id, wallet_address, recorded_at,
                         win_rate, pnl_multiplier, trade_count)
   ```
-  Το weekly bootstrap collector (`walletDiscovery.ts`, βλ. "Αυτόματο" μονοπάτι του
+  Το hourly bootstrap collector (`walletDiscovery.ts`, βλ. "Αυτόματο" μονοπάτι του
   layer 2 πιο πάνω) είναι **υλοποιημένο 2026-08-26**, αλλά μόνο για το discovery ΝΕΩΝ
   candidates — δεν είναι ξεχωριστό re-scoring cadence για τα ήδη-γνωστά. Μόλις ένα
   `smart_money` wallet μπει στη watchlist, ξανασκοράρεται στο ΙΔΙΟ ενιαίο loop, στο
@@ -337,8 +337,8 @@ calls ΔΕΝ έχουν την ίδια στατιστική σημασία. Τ�
 ## Phased rollout
 0. ✅ Setup & instrumentation (API key, plugin install, logging σκελετός) — **έγινε**
 1. 🚧 Read-only signal collection (καμία συναλλαγή, μόνο logging) — **υλοποιημένο**:
-   4 collector loops (discovery 30s, wallet-activity 60s, wallet-scoring 300s,
-   wallet-discovery weekly) σε ένα process με κοινό cooldown,
+   4 collector loops (discovery 120s, wallet-activity 60s, wallet-scoring 300s,
+   wallet-discovery hourly) σε ένα process με κοινό cooldown,
    `logic_version = gate-v1-<hash των thresholds>`.
 2. Backtesting & threshold tuning πάνω σε πραγματικά logged δεδομένα
 3. Paper trading (πλήρες decision engine, simulated fills)

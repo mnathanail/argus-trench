@@ -9,8 +9,8 @@
  *   7.5s στο πλήρες rate. Αυτό είναι το ακριβό κομμάτι του layer 3.
  * - `portfolio profits` = 3 για έως **100 wallets μαζί** — γι' αυτό το scoring πάει batch.
  * - `token holders` = 5, το ακριβότερο route που χρησιμοποιούμε. Το wallet-discovery
- *   collector (βλ. `collectors/walletDiscovery.ts`) το καλεί ~20-30 φορές/εβδομάδα
- *   (μία ανά sampled token) — 100-150 weight μόνο για το holder-fetch pass, πάνω σε
+ *   collector (βλ. `collectors/walletDiscovery.ts`) το καλεί ~10 φορές/ώρα
+ *   (μία ανά sampled token) — 50 weight μόνο για το holder-fetch pass, πάνω σε
  *   ΚΟΙΝΟ bucket με τα υπόλοιπα loops. Σειριακό, όχι burst, ίδιο pattern με
  *   `portfolio activity`/`portfolio stats`.
  */

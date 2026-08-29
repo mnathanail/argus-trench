@@ -9,7 +9,7 @@ import { ADVISORY_TOKEN_COUNT_FLOOR, ADVISORY_WIN_RATE_FLOOR } from '../telegram
 import { delay } from '../util/delay.js';
 
 /**
- * Layer 2 — «Αυτόματο» wallet discovery (CLAUDE.md). Weekly, standing process
+ * Layer 2 — «Αυτόματο» wallet discovery (CLAUDE.md). Hourly, standing process
  * ανεξάρτητο από τα layer 1/3 collectors:
  *
  *   ~8-10 πρόσφατα graduated Pump.fun tokens (default — βλ. σημείωση παρακάτω)

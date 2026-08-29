@@ -2,12 +2,18 @@ import { runDiscoveryCycle } from './collectors/discovery.js';
 import { runExitResolverCycle } from './collectors/exitResolver.js';
 import {
   DISCOVERY_INTERVAL_MS,
+  DISCOVERY_INITIAL_DELAY_MS,
+  DISCOVERY_RETRY_BACKOFF_MS,
+  EXIT_RESOLVER_INITIAL_DELAY_MS,
   EXIT_RESOLVER_INTERVAL_MS,
   WALLET_ACTIVITY_INTERVAL_MS,
+  WALLET_ACTIVITY_INITIAL_DELAY_MS,
   WALLET_ACTIVITY_RETRY_BACKOFF_MS,
   WALLET_DISCOVERY_INTERVAL_MS,
+  WALLET_DISCOVERY_INITIAL_DELAY_MS,
   WALLET_DISCOVERY_RETRY_BACKOFF_MS,
   WALLET_SCORING_INTERVAL_MS,
+  WALLET_SCORING_INITIAL_DELAY_MS,
 } from './collectors/intervals.js';
 import { runWalletScoringCycle } from './collectors/scoring.js';
 import { runWalletActivityCycle } from './collectors/walletActivity.js';
@@ -55,24 +61,32 @@ async function notify(text: string): Promise<void> {
 }
 
 const cooldown = new SharedCooldown();
+let successfulDiscoveryCycles = 0;
 
 const loops: LoopDefinition[] = [
   {
     name: 'discovery',
     intervalMs: DISCOVERY_INTERVAL_MS,
+    initialDelayMs: DISCOVERY_INITIAL_DELAY_MS,
+    retryBackoffMs: DISCOVERY_RETRY_BACKOFF_MS,
     run: async () => {
       const result = await runDiscoveryCycle();
-      console.log(
-        `[discovery] gated=${result.gatedCandidates} sampled=${result.sampledCandidates} ` +
-          `(pass=${result.sampledPassed} fail=${result.sampledFailed}) rows=${result.rowsWritten}`,
-      );
+      successfulDiscoveryCycles += 1;
+      if (successfulDiscoveryCycles % 10 === 0) {
+        console.log(
+          `[discovery] cycles=${successfulDiscoveryCycles} gated=${result.gatedCandidates} ` +
+            `sampled=${result.sampledCandidates} (pass=${result.sampledPassed} ` +
+            `fail=${result.sampledFailed}) rows=${result.rowsWritten}`,
+        );
+      }
     },
   },
   {
     name: 'wallet-activity',
     intervalMs: WALLET_ACTIVITY_INTERVAL_MS,
-    // Χωρίς backoff, ένας γεμάτος κύκλος ξαναχτυπά την ίδια συμφόρηση κάθε 60s επ'
-    // αόριστον — βλ. intervals.ts. Παρατηρήθηκε 8 συνεχόμενες αποτυχίες σε production.
+    initialDelayMs: WALLET_ACTIVITY_INITIAL_DELAY_MS,
+    // Με backoff, ένας γεμάτος κύκλος δεν ξαναχτυπά την ίδια συμφόρηση κάθε 60s επ'
+    // αόριστον — βλ. intervals.ts.
     retryBackoffMs: WALLET_ACTIVITY_RETRY_BACKOFF_MS,
     run: async () => {
       const result = await runWalletActivityCycle();
@@ -89,6 +103,7 @@ const loops: LoopDefinition[] = [
   {
     name: 'wallet-scoring',
     intervalMs: WALLET_SCORING_INTERVAL_MS,
+    initialDelayMs: WALLET_SCORING_INITIAL_DELAY_MS,
     run: async () => {
       const result = await runWalletScoringCycle();
       if (result.walletsScored === 0 && result.failures === 0) return;
@@ -102,6 +117,7 @@ const loops: LoopDefinition[] = [
   {
     name: 'wallet-discovery',
     intervalMs: WALLET_DISCOVERY_INTERVAL_MS,
+    initialDelayMs: WALLET_DISCOVERY_INITIAL_DELAY_MS,
     // Αυξανόμενο retry αντί για σταθερό 60s — βλ. intervals.ts για το σκεπτικό.
     retryBackoffMs: WALLET_DISCOVERY_RETRY_BACKOFF_MS,
     run: async () => {
@@ -119,11 +135,15 @@ const loops: LoopDefinition[] = [
   {
     name: 'exit-resolver',
     intervalMs: EXIT_RESOLVER_INTERVAL_MS,
+    initialDelayMs: EXIT_RESOLVER_INITIAL_DELAY_MS,
     run: async () => {
       const result = await runExitResolverCycle();
       if (result.openTrades === 0 && result.closed === 0 && result.failures === 0) return;
       console.log(
-        `[exit-resolver] open=${result.openTrades} closed=${result.closed} failures=${result.failures}`,
+        `[exit-resolver] open=${result.openTrades} closed=${result.closed} failures=${result.failures}` +
+          (result.failureReasons.length > 0
+            ? ` reasons=${result.failureReasons.slice(0, 3).join(' | ')}`
+            : ''),
       );
       if (result.closed > 0) {
         await notify(`📉 ${result.closed} log_only trade(s) έκλεισαν — δες /trades για λεπτομέρειες`);

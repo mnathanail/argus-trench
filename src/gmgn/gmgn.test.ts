@@ -74,6 +74,19 @@ test('TokenBucket serialises concurrent acquires', async () => {
   assert.ok(bucket.available >= 0);
 });
 
+test('TokenBucket serves higher-priority requests first', async () => {
+  const { clock } = fakeClock();
+  const bucket = new TokenBucket(3, 20, clock);
+  await bucket.acquire(3);
+
+  const order: string[] = [];
+  const low = bucket.acquire(3, 0).then(() => order.push('low'));
+  const high = bucket.acquire(3, 10).then(() => order.push('high'));
+  await Promise.all([low, high]);
+
+  assert.deepEqual(order, ['high', 'low']);
+});
+
 test('TokenBucket pauses queued acquires after a shared rate limit', async () => {
   const { clock, elapsed } = fakeClock();
   const bucket = new TokenBucket(20, 20, clock);

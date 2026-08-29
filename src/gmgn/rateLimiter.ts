@@ -21,8 +21,15 @@ export class TokenBucket {
   #tokens: number;
   #lastRefillAt: number;
   #blockedUntil = 0;
-  /** Σειριοποιεί τα acquire ώστε δύο ταυτόχρονοι callers να μη διαβάσουν το ίδιο υπόλοιπο. */
-  #queue: Promise<unknown> = Promise.resolve();
+  #queue: {
+    weight: number;
+    priority: number;
+    sequence: number;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  }[] = [];
+  #processing = false;
+  #sequence = 0;
 
   constructor(
     readonly capacity: number,
@@ -44,15 +51,36 @@ export class TokenBucket {
     this.#blockedUntil = Math.max(this.#blockedUntil, target);
   }
 
-  async acquire(weight: number): Promise<void> {
+  async acquire(weight: number, priority = 0): Promise<void> {
     if (weight <= 0) return;
     if (weight > this.capacity) {
       throw new Error(`weight ${weight} exceeds bucket capacity ${this.capacity}`);
     }
-    const turn = this.#queue.then(() => this.#take(weight));
-    // Το queue δεν πρέπει να «κολλήσει» σε rejection προηγούμενου caller.
-    this.#queue = turn.catch(() => undefined);
-    return turn;
+    return new Promise<void>((resolve, reject) => {
+      this.#queue.push({ weight, priority, sequence: this.#sequence++, resolve, reject });
+      this.#queue.sort((a, b) => b.priority - a.priority || a.sequence - b.sequence);
+      queueMicrotask(() => void this.#processQueue());
+    });
+  }
+
+  async #processQueue(): Promise<void> {
+    if (this.#processing) return;
+    this.#processing = true;
+    try {
+      while (this.#queue.length > 0) {
+        const request = this.#queue.shift();
+        if (!request) continue;
+        try {
+          await this.#take(request.weight);
+          request.resolve();
+        } catch (error) {
+          request.reject(error);
+        }
+      }
+    } finally {
+      this.#processing = false;
+      if (this.#queue.length > 0) void this.#processQueue();
+    }
   }
 
   async #take(weight: number): Promise<void> {

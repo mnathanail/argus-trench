@@ -8,7 +8,16 @@
  * Για N=20 active wallets: 1.0/s. Άφθονος χώρος κάτω από τα 20/s — ο περιορισμός θα
  * εμφανιστεί όταν μεγαλώσει η watchlist, γι' αυτό ο scheduler λογάρει το cooldown.
  */
-export const DISCOVERY_INTERVAL_MS = 30_000;
+export const DISCOVERY_INTERVAL_MS = 120_000;
+export const DISCOVERY_REQUEST_PACING_MS = 1_000;
+export const DISCOVERY_INITIAL_DELAY_MS = 0;
+
+export const DISCOVERY_RETRY_BACKOFF_MS = [
+  60_000,
+  2 * 60_000,
+  5 * 60_000,
+  10 * 60_000,
+] as const;
 
 /**
  * Πιο αργό από το discovery επίτηδες: τα trades ενός wallet δεν εξαφανίζονται, ενώ ένα
@@ -16,6 +25,8 @@ export const DISCOVERY_INTERVAL_MS = 30_000;
  * trigger — ανεκτό στη Φάση 1, που δεν εκτελεί.
  */
 export const WALLET_ACTIVITY_INTERVAL_MS = 60_000;
+export const WALLET_ACTIVITY_LOOP_PACING_MS = 1_000;
+export const WALLET_ACTIVITY_INITIAL_DELAY_MS = 5_000;
 
 /**
  * Retry backoff για το wallet-activity — πιο ήπιο cap από το wallet-discovery (10min
@@ -36,13 +47,8 @@ export const WALLET_ACTIVITY_RETRY_BACKOFF_MS = [
  * Όχι τόσο πυκνά που να τρώει το budget με N wallets × weight 3.
  */
 export const WALLET_SCORING_INTERVAL_MS = 300_000;
-
-/**
- * Σκόπιμη παύση ανάμεσα σε διαδοχικά per-item GMGN calls μέσα στον ΙΔΙΟ κύκλο ενός
- * loop — βλ. `util/delay.ts` για το πλήρες σκεπτικό/evidence. 300ms σκορπίζει μια ριπή
- * 6 κλήσεων σε ~1.8s αντί για σχεδόν ταυτόχρονα.
- */
-export const WALLET_LOOP_PACING_MS = 300;
+export const WALLET_SCORING_LOOP_PACING_MS = 1_000;
+export const WALLET_SCORING_INITIAL_DELAY_MS = 15_000;
 
 /**
 /**
@@ -53,6 +59,8 @@ export const WALLET_LOOP_PACING_MS = 300;
  * log-only ανάλυση.
  */
 export const EXIT_RESOLVER_INTERVAL_MS = 60 * 60 * 1000;
+export const EXIT_RESOLVER_LOOP_PACING_MS = 1_000;
+export const EXIT_RESOLVER_INITIAL_DELAY_MS = 45_000;
 
 /**
  * Ξεχωριστό, πιο αργό pacing ΜΟΝΟ για το wallet-discovery holders/stats loop.
@@ -87,6 +95,7 @@ export const WALLET_DISCOVERY_LOOP_PACING_MS = 1_500;
  * άμεσο discovery pass, πέρα από το κανονικό ωριαίο interval.
  */
 export const WALLET_DISCOVERY_INTERVAL_MS = 60 * 60 * 1000;
+export const WALLET_DISCOVERY_INITIAL_DELAY_MS = 30_000;
 
 /**
  * Retry backoff για το wallet-discovery μετά από αποτυχία (π.χ. rate limit πριν

@@ -11,7 +11,7 @@ import {
   EXIT_TIMEOUT_MS,
   PAPER_ASSUMED_FEES_PCT,
 } from '../decision/paperTradingConfig.js';
-import { WALLET_LOOP_PACING_MS } from './intervals.js';
+import { EXIT_RESOLVER_LOOP_PACING_MS } from './intervals.js';
 import { delay } from '../util/delay.js';
 
 /**
@@ -29,12 +29,14 @@ export interface ExitResolverResult {
   openTrades: number;
   closed: number;
   failures: number;
+  failureReasons: string[];
 }
 
 export async function runExitResolverCycle(): Promise<ExitResolverResult> {
   const openTrades = await listOpenTrades();
   let closed = 0;
   let failures = 0;
+  const failureReasons: string[] = [];
 
   for (const trade of openTrades) {
     try {
@@ -44,11 +46,13 @@ export async function runExitResolverCycle(): Promise<ExitResolverResult> {
       // λόγος: τα επόμενα trades δε πρέπει να ξαναχτυπήσουν το API μέσα στο ban.
       rethrowIfRateLimited(error);
       failures += 1;
+      const reason = error instanceof Error ? error.message : String(error);
+      if (!failureReasons.includes(reason)) failureReasons.push(reason);
     }
-    await delay(WALLET_LOOP_PACING_MS);
+    await delay(EXIT_RESOLVER_LOOP_PACING_MS);
   }
 
-  return { openTrades: openTrades.length, closed, failures };
+  return { openTrades: openTrades.length, closed, failures, failureReasons };
 }
 
 async function resolveOneTrade(trade: PaperTrade): Promise<boolean> {

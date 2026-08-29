@@ -5,7 +5,7 @@ import {
   updateActivityCursor,
   type WatchlistWallet,
 } from '../db/repositories/watchlistWallets.js';
-import { WALLET_LOOP_PACING_MS } from './intervals.js';
+import { WALLET_ACTIVITY_LOOP_PACING_MS } from './intervals.js';
 import { PHASE1_THRESHOLDS, logicVersion } from '../decision/gateConfig.js';
 import {
   PAPER_ASSUMED_LATENCY_MS,
@@ -52,12 +52,12 @@ export async function runWalletActivityCycle(
   let signalsRecorded = 0;
 
   for (const wallet of wallets) {
-    // Σειριακά ανά wallet, ΜΕ σκόπιμο pacing (όχι μόνο σειριακά) — βλ. WALLET_LOOP_PACING_MS.
+    // Σειριακά ανά wallet, με σκόπιμο pacing για αποφυγή IP-level bursts.
     // Το delay μπαίνει ΑΜΕΣΩΣ μετά το ίδιο το network call, όχι στο τέλος του loop
     // body — αλλιώς το early `continue` παρακάτω (καμία νέα activity) θα το παρέκαμπτε
     // ακριβώς στην πιο κοινή περίπτωση.
     const buys = await fetchNewBuys(wallet, options.pageSize ?? 20);
-    await delay(WALLET_LOOP_PACING_MS);
+    await delay(WALLET_ACTIVITY_LOOP_PACING_MS);
     if (buys.length === 0) continue;
     newBuys += buys.length;
 
@@ -131,7 +131,12 @@ export async function fetchNewBuys(
   wallet: WatchlistWallet,
   pageSize: number,
 ): Promise<WalletActivity[]> {
-  const page = await fetchWalletBuys(wallet.address, { limit: pageSize });
+  const page = await fetchWalletBuys(wallet.address, {
+    limit: pageSize,
+    stopAtTxHash: wallet.lastSeenTxHash,
+    stopAtTimestamp: wallet.lastSeenActivityAt?.getTime() ?? null,
+    priority: 10,
+  });
   return filterNewBuys(page.activities, wallet.lastSeenTxHash, wallet.lastSeenActivityAt);
 }
 

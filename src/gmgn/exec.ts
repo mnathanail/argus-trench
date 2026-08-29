@@ -50,6 +50,8 @@ export function limiterAvailable(): number {
 
 export interface RunOptions {
   timeoutMs?: number;
+  /** Higher values are served first when requests wait in the shared limiter queue. */
+  priority?: number;
   /** Το `--raw` μπαίνει αυτόματα· δώσε false μόνο αν θέλεις το human-readable output. */
   raw?: boolean;
 }
@@ -66,7 +68,7 @@ export async function runCli(
   options: RunOptions = {},
 ): Promise<unknown> {
   const weight = ROUTE_WEIGHTS[route];
-  await limiter.acquire(weight);
+  await limiter.acquire(weight, options.priority);
 
   const argv = options.raw === false ? [...args] : [...args, '--raw'];
 
