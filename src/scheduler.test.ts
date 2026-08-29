@@ -127,3 +127,48 @@ test('GmgnRateLimitError engages the shared cooldown, which every loop respects 
   // cooldown έμεινε ενεργό ανεξάρτητα από ΠΟΙΟ loop το πυροδότησε.
   assert.ok(secondLoopRuns >= 0);
 });
+
+test('regular loops are serialized: only one regular loop may be active at a time', async () => {
+  const { clock } = fakeClock();
+  const controller = new AbortController();
+  const cooldown = new SharedCooldown(clock);
+  let running = 0;
+  let maxRunning = 0;
+  let calls = 0;
+
+  const loops: LoopDefinition[] = [
+    {
+      name: 'one',
+      intervalMs: 100,
+      run: async () => {
+        calls += 1;
+        if (calls >= 2) controller.abort();
+        running += 1;
+        maxRunning = Math.max(maxRunning, running);
+        await clock.sleep(10);
+        running -= 1;
+      },
+    },
+    {
+      name: 'two',
+      intervalMs: 100,
+      run: async () => {
+        calls += 1;
+        if (calls >= 2) controller.abort();
+        running += 1;
+        maxRunning = Math.max(maxRunning, running);
+        await clock.sleep(10);
+        running -= 1;
+      },
+    },
+  ];
+
+  await runScheduler({
+    loops,
+    cooldown,
+    signal: controller.signal,
+    clock,
+  });
+
+  assert.equal(maxRunning, 1);
+});

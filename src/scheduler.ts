@@ -116,18 +116,17 @@ export class ExclusiveCoordinator {
       }
     }
 
-    if (this.#exclusivePending) return;
+    if (this.#exclusivePending || this.#activeRegular > 0) return;
 
-    while (this.#activeRegular >= 0) {
-      const index = this.#waiters.findIndex((waiter) => !waiter.exclusive);
-      const waiter = index >= 0 ? this.#waiters.splice(index, 1)[0] : undefined;
-      if (!waiter) return;
-      this.#activeRegular += 1;
-      waiter.resolve(() => {
-        this.#activeRegular -= 1;
-        this.#drain();
-      });
-    }
+    const index = this.#waiters.findIndex((waiter) => !waiter.exclusive);
+    const waiter = index >= 0 ? this.#waiters.splice(index, 1)[0] : undefined;
+    if (!waiter) return;
+
+    this.#activeRegular += 1;
+    waiter.resolve(() => {
+      this.#activeRegular -= 1;
+      this.#drain();
+    });
   }
 }
 

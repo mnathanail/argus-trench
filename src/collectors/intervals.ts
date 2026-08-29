@@ -52,6 +52,11 @@ export const WALLET_ACTIVITY_RETRY_BACKOFF_MS = [
 export const WALLET_SCORING_INTERVAL_MS = 300_000;
 export const WALLET_SCORING_LOOP_PACING_MS = 1_000;
 export const WALLET_SCORING_INITIAL_DELAY_MS = 15_000;
+export const WALLET_SCORING_RETRY_BACKOFF_MS = [
+  5 * 60_000,
+  10 * 60_000,
+  15 * 60_000,
+] as const;
 
 /**
 /**
@@ -64,6 +69,11 @@ export const WALLET_SCORING_INITIAL_DELAY_MS = 15_000;
 export const EXIT_RESOLVER_INTERVAL_MS = 60 * 60 * 1000;
 export const EXIT_RESOLVER_LOOP_PACING_MS = 1_000;
 export const EXIT_RESOLVER_INITIAL_DELAY_MS = 45_000;
+export const EXIT_RESOLVER_RETRY_BACKOFF_MS = [
+  15 * 60_000,
+  30 * 60_000,
+  60 * 60_000,
+] as const;
 
 /**
  * Ξεχωριστό, πιο αργό pacing ΜΟΝΟ για το wallet-discovery holders/stats loop.

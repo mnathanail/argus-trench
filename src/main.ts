@@ -14,6 +14,8 @@ import {
   WALLET_DISCOVERY_RETRY_BACKOFF_MS,
   WALLET_SCORING_INTERVAL_MS,
   WALLET_SCORING_INITIAL_DELAY_MS,
+  WALLET_SCORING_RETRY_BACKOFF_MS,
+  EXIT_RESOLVER_RETRY_BACKOFF_MS,
 } from './collectors/intervals.js';
 import { runWalletScoringCycle } from './collectors/scoring.js';
 import { runWalletActivityCycle } from './collectors/walletActivity.js';
@@ -104,6 +106,7 @@ const loops: LoopDefinition[] = [
     name: 'wallet-scoring',
     intervalMs: WALLET_SCORING_INTERVAL_MS,
     initialDelayMs: WALLET_SCORING_INITIAL_DELAY_MS,
+    retryBackoffMs: WALLET_SCORING_RETRY_BACKOFF_MS,
     run: async () => {
       const result = await runWalletScoringCycle();
       if (result.walletsScored === 0 && result.failures === 0) return;
@@ -137,6 +140,7 @@ const loops: LoopDefinition[] = [
     name: 'exit-resolver',
     intervalMs: EXIT_RESOLVER_INTERVAL_MS,
     initialDelayMs: EXIT_RESOLVER_INITIAL_DELAY_MS,
+    retryBackoffMs: EXIT_RESOLVER_RETRY_BACKOFF_MS,
     run: async () => {
       const result = await runExitResolverCycle();
       if (result.openTrades === 0 && result.closed === 0 && result.failures === 0) return;
