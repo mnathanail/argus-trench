@@ -16,6 +16,7 @@
     "migrate": "tsx src/db/migrate.ts",
     "migrate:status": "tsx src/db/migrate.ts --status",
     "migrate:prod": "node dist/db/migrate.js",
+    "reopen-zero-pnl-closed-trades": "tsx scripts/reopen-zero-pnl-closed-trades.ts",
     "db:up": "docker compose up -d --wait db",
     "db:down": "docker compose down",
     "db:reset": "docker compose down -v && docker compose up -d --wait db",

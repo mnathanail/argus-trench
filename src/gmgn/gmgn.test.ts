@@ -14,7 +14,7 @@ import { buildActivityArgs, parseActivityResponse } from './activity.js';
 import { GmgnCliError, GmgnRateLimitError, GmgnResponseError, rethrowIfRateLimited } from './errors.js';
 import { LOCAL_CLI_BIN, runCli } from './exec.js';
 import { buildHoldersArgs, parseHoldersResponse } from './holders.js';
-import { buildKlineArgs } from './kline.js';
+import { buildKlineArgs, parseKlineResponse } from './kline.js';
 import { TokenBucket, type Clock } from './rateLimiter.js';
 import { buildTrenchesArgs, parseTrenchesResponse } from './trenches.js';
 import { toNumber } from './validate.js';
@@ -224,6 +224,19 @@ test('buildKlineArgs uses the CLI address flag', () => {
       '123',
     ],
   );
+});
+
+test('parseKlineResponse accepts the real GMGN list wrapper and string numerics', () => {
+  const candles = parseKlineResponse({
+    list: [{ time: 1_700_000_000_000, open: '1.0', close: '1.1', high: '1.2', low: '0.9', volume: '10' }],
+  });
+
+  assert.equal(candles.length, 1);
+  assert.equal(candles[0]?.timestamp, 1_700_000_000_000);
+  assert.equal(candles[0]?.open, 1);
+  assert.equal(candles[0]?.close, 1.1);
+  assert.equal(candles[0]?.high, 1.2);
+  assert.equal(candles[0]?.low, 0.9);
 });
 
 test('gmgn-cli is a packaged project dependency, not a global install', () => {
