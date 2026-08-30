@@ -27,7 +27,7 @@ export interface Candle {
 export interface FetchKlineOptions extends RunOptions {
   tokenAddress: string;
   chain?: string;
-  /** Unix seconds. */
+  /** GMGN CLI requires Unix seconds for --from/--to. The raw API response uses ms in `time`. */
   from: number;
   to?: number;
   /** GMGN requires a resolution; 1m preserves the exit tiers' timing detail. */

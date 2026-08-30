@@ -144,7 +144,7 @@ export function resolveExit(input: ExitCheckInput): ExitCheckResult | null {
   let peakSinceActivation = 0;
 
   for (const candle of input.candles) {
-    const candleTime = new Date(candle.timestamp * 1000);
+    const candleTime = new Date(candle.timestamp);
     if (candleTime.getTime() < input.entryAt.getTime()) continue;
 
     if (input.walletSellAt !== null && input.walletSellAt.getTime() <= candleTime.getTime()) {

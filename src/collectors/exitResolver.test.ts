@@ -9,7 +9,7 @@ const ENTRY_PRICE = 1;
 
 function candle(secondsAfterEntry: number, high: number, low: number, close?: number): Candle {
   return {
-    timestamp: Math.floor(ENTRY_AT.getTime() / 1000) + secondsAfterEntry,
+    timestamp: ENTRY_AT.getTime() + secondsAfterEntry * 1000,
     open: high,
     high,
     low,
@@ -26,7 +26,7 @@ test('resolveExit: closes at tp_tier_1 when high reaches +50%, ignoring later ca
   const result = resolveExit({ entryPrice: ENTRY_PRICE, entryAt: ENTRY_AT, candles, walletSellAt: null, now: ENTRY_AT });
   assert.equal(result?.exitReason, 'tp_tier_1');
   assert.equal(result?.exitPrice, 1.5);
-  assert.equal(result?.exitAt.getTime(), candles[1]?.timestamp !== undefined ? candles[1].timestamp * 1000 : NaN);
+  assert.equal(result?.exitAt.getTime(), candles[1]?.timestamp ?? NaN);
 });
 
 test('resolveExit: activates trailing at +100%, then closes at -40% from the post-activation peak', () => {
@@ -41,7 +41,7 @@ test('resolveExit: activates trailing at +100%, then closes at -40% from the pos
 });
 
 test('resolveExit: wallet exit_signal takes priority over a tier hit in the same candle', () => {
-  const sellAt = new Date(candle(120, 0, 0).timestamp * 1000);
+  const sellAt = new Date(candle(120, 0, 0).timestamp);
   const candles: Candle[] = [candle(60, 1.2, 1.1), candle(120, 1.6, 1.5, 1.55)]; // also crosses tier 1 here
   const result = resolveExit({
     entryPrice: ENTRY_PRICE,
@@ -76,7 +76,7 @@ test('resolveExit: returns null (still open) when nothing triggered and no timeo
 
 test('resolveExit: ignores candles before entry (e.g. a kline window that starts slightly early)', () => {
   const candles: Candle[] = [
-    { timestamp: Math.floor(ENTRY_AT.getTime() / 1000) - 3600, open: 5, high: 5, low: 5, close: 5 }, // pre-entry spike, must be ignored
+    { timestamp: ENTRY_AT.getTime() - 3_600_000, open: 5, high: 5, low: 5, close: 5 }, // pre-entry spike, must be ignored
     candle(60, 1.1, 1.0, 1.05),
   ];
   const result = resolveExit({
