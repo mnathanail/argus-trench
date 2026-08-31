@@ -2,7 +2,8 @@ import { findPassedTokens } from '../db/repositories/decisionLog.js';
 import { recordSignal } from '../db/repositories/entries.js';
 import { countOpenTrades } from '../db/repositories/paperTrades.js';
 import {
-  listActiveWallets,
+  markActivityChecked,
+  selectWalletsForActivityCheck,
   updateActivityCursor,
   type WatchlistWallet,
 } from '../db/repositories/watchlistWallets.js';
@@ -49,8 +50,6 @@ export interface WalletActivityResult {
   signalsRecorded: number;
 }
 
-let nextWalletIndex = 0;
-
 export async function runWalletActivityCycle(
   options: WalletActivityOptions = {},
 ): Promise<WalletActivityResult> {
@@ -61,17 +60,12 @@ export async function runWalletActivityCycle(
     return { version, walletsPolled: 0, newBuys: 0, signalsRecorded: 0 };
   }
 
-  const activeWallets = await listActiveWallets();
-  const wallets = selectRoundRobinWallets(
-    activeWallets,
-    nextWalletIndex,
+  // Selection βάσει "ποιος περιμένει περισσότερο" (last_activity_checked_at ASC), όχι
+  // in-memory index — self-healing σε restart, δε λιμοκτονεί wallets στο τέλος μιας
+  // λίστας που μεγαλώνει (βλ. migration 0005).
+  const wallets = await selectWalletsForActivityCheck(
     options.walletsPerCycle ?? WALLET_ACTIVITY_WALLETS_PER_CYCLE,
   );
-  if (activeWallets.length > 0) {
-    nextWalletIndex = (nextWalletIndex + wallets.length) % activeWallets.length;
-  } else {
-    nextWalletIndex = 0;
-  }
 
   let newBuys = 0;
   let signalsRecorded = 0;
@@ -83,6 +77,9 @@ export async function runWalletActivityCycle(
     // ακριβώς στην πιο κοινή περίπτωση.
     const buys = await fetchNewBuys(wallet, options.pageSize ?? 20);
     await delay(WALLET_ACTIVITY_LOOP_PACING_MS);
+    // Σφράγισε ΤΩΡΑ, πριν το early continue — το rotation αφορά "πότε το είδαμε",
+    // ανεξάρτητα αν βρέθηκε κάτι νέο ή όχι (ίδιο ζήτημα με το delay από πάνω).
+    await markActivityChecked(wallet.address);
     if (buys.length === 0) continue;
     newBuys += buys.length;
 
@@ -143,22 +140,6 @@ export async function runWalletActivityCycle(
   }
 
   return { version, walletsPolled: wallets.length, newBuys, signalsRecorded };
-}
-
-/**
- * Επιλέγει συνεχόμενο τμήμα του watchlist και τυλίγει στην αρχή.
- * Το index προχωράει πριν τα network calls, ώστε ένα 429 να μη λιμοκτονεί τα ίδια wallets.
- */
-export function selectRoundRobinWallets(
-  wallets: readonly WatchlistWallet[],
-  startIndex: number,
-  maxWallets: number,
-): WatchlistWallet[] {
-  if (wallets.length === 0 || maxWallets <= 0) return [];
-
-  const count = Math.min(maxWallets, wallets.length);
-  const start = ((startIndex % wallets.length) + wallets.length) % wallets.length;
-  return Array.from({ length: count }, (_, offset) => wallets[(start + offset) % wallets.length]!);
 }
 
 /**

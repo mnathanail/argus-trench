@@ -24,6 +24,8 @@ import {
   getWallet,
   insertWalletIfNew,
   listActiveWallets,
+  markActivityChecked,
+  selectWalletsForActivityCheck,
   setWalletActive,
   updateWalletScore,
   upsertWallet,
@@ -332,6 +334,33 @@ test('updateWalletScore stamps last_reviewed_at; setWalletActive filters the act
     assert.equal(await setWalletActive('NoSuchWallet', false, tx), false);
   });
 });
+
+test('selectWalletsForActivityCheck prioritizes never-checked wallets, then oldest-checked', async () => {
+  await inRollback(async (tx) => {
+    // Χρονολογική σειρά insertion (added_at) — το ΠΑΛΙΟ round-robin θα τα έδινε με αυτή
+    // τη σειρά. Το νέο selection δεν πρέπει να νοιάζεται καθόλου για το added_at.
+    await upsertWallet({ address: 'WActOld', source: 'manual', active: true }, tx);
+    await upsertWallet({ address: 'WActNew1', source: 'smart_money', active: true }, tx);
+    await upsertWallet({ address: 'WActNew2', source: 'smart_money', active: true }, tx);
+
+    // Το 'WActOld' ελέγχθηκε ήδη πρόσφατα — τα δύο άλλα, ΠΟΤΕ. Πρέπει να προτιμηθούν
+    // αυτά τα δύο, ΟΧΙ το WActOld, παρά το ότι προστέθηκε πρώτο.
+    await markActivityChecked('WActOld', tx);
+
+    const batch = await selectWalletsForActivityCheck(2, tx);
+    assert.deepEqual(
+      batch.map((w) => w.address).sort(),
+      ['WActNew1', 'WActNew2'],
+    );
+
+    // Μετά το markActivityChecked, το ίδιο wallet πάει στο τέλος της ουράς — δεν
+    // επανεμφανίζεται πριν ελεγχθούν τα υπόλοιπα.
+    await markActivityChecked('WActNew1', tx);
+    const nextBatch = await selectWalletsForActivityCheck(1, tx);
+    assert.deepEqual(nextBatch.map((w) => w.address), ['WActNew2']);
+  });
+});
+
 
 test('wallet score history keeps a trend, newest first', async () => {
   await inRollback(async (tx) => {

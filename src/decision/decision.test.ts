@@ -3,8 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { filterNewBuys, selectRoundRobinWallets } from '../collectors/walletActivity.js';
-import type { WatchlistWallet } from '../db/repositories/watchlistWallets.js';
+import { filterNewBuys } from '../collectors/walletActivity.js';
 import type { WalletActivity } from '../gmgn/activity.js';
 import { parseTrenchesResponse, type TrenchCandidate } from '../gmgn/trenches.js';
 import { GmgnRateLimitError } from '../gmgn/errors.js';
@@ -107,24 +106,9 @@ test('filterNewBuys falls back to the timestamp when the hash fell off the page'
   assert.deepEqual(filterNewBuys(page, 'b', new Date(400_000)).map((x) => x.txHash), ['e']);
 });
 
-test('activity polling selects a bounded round-robin batch', () => {
-  const wallets = Array.from({ length: 5 }, (_, index) => ({
-    address: `W${index + 1}`,
-  })) as WatchlistWallet[];
-
-  assert.deepEqual(
-    selectRoundRobinWallets(wallets, 0, 2).map((wallet) => wallet.address),
-    ['W1', 'W2'],
-  );
-  assert.deepEqual(
-    selectRoundRobinWallets(wallets, 2, 2).map((wallet) => wallet.address),
-    ['W3', 'W4'],
-  );
-  assert.deepEqual(
-    selectRoundRobinWallets(wallets, 4, 2).map((wallet) => wallet.address),
-    ['W5', 'W1'],
-  );
-});
+// Το activity-check rotation ζει πλέον στη βάση (last_activity_checked_at ASC NULLS
+// FIRST), όχι σε in-memory index — βλ. selectWalletsForActivityCheck στο
+// repositories.test.ts (χρειάζεται DB, γι' αυτό δεν είναι pure-function test εδώ).
 
 // --- scheduler -------------------------------------------------------------------------
 

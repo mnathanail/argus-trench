@@ -286,6 +286,7 @@ function wallet(address: string): WatchlistWallet {
     lastReviewedAt: null,
     lastSeenTxHash: null,
     lastSeenActivityAt: null,
+    lastActivityCheckedAt: null,
   };
 }
 

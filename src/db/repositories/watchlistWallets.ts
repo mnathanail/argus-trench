@@ -16,6 +16,10 @@ export interface WatchlistWallet {
   /** Cursor του activity polling — βλ. `updateActivityCursor`. */
   lastSeenTxHash: string | null;
   lastSeenActivityAt: Date | null;
+  /** Πότε το ΔΙΚΟ ΜΑΣ σύστημα έλεγξε τελευταία φορά αυτό το wallet για νέα activity —
+   * ΔΙΑΦΟΡΕΤΙΚΟ από `lastSeenActivityAt` (που είναι η ώρα του ίδιου του on-chain trade).
+   * Οδηγεί το activity-check rotation — βλ. `selectWalletsForActivityCheck`. */
+  lastActivityCheckedAt: Date | null;
 }
 
 interface WalletRow {
@@ -31,11 +35,12 @@ interface WalletRow {
   last_reviewed_at: Date | null;
   last_seen_tx_hash: string | null;
   last_seen_activity_at: Date | null;
+  last_activity_checked_at: Date | null;
 }
 
 const COLUMNS = `id, address, chain, source, win_rate, pnl_multiplier, trade_count,
                  active, added_at, last_reviewed_at, last_seen_tx_hash,
-                 last_seen_activity_at`;
+                 last_seen_activity_at, last_activity_checked_at`;
 
 function mapWallet(row: WalletRow): WatchlistWallet {
   return {
@@ -52,6 +57,7 @@ function mapWallet(row: WalletRow): WatchlistWallet {
     lastReviewedAt: row.last_reviewed_at,
     lastSeenTxHash: row.last_seen_tx_hash,
     lastSeenActivityAt: row.last_seen_activity_at,
+    lastActivityCheckedAt: row.last_activity_checked_at,
   };
 }
 
@@ -119,6 +125,36 @@ export async function listActiveWallets(conn?: Queryable): Promise<WatchlistWall
     `SELECT ${COLUMNS} FROM watchlist_wallets WHERE active ORDER BY added_at`,
   );
   return rows.map(mapWallet);
+}
+
+/**
+ * Τα `limit` wallets που ΔΕΝ έχουν ελεγχθεί εδώ και περισσότερο καιρό —
+ * `NULLS FIRST` σημαίνει ότι ένα ποτέ-μη-ελεγμένο wallet (π.χ. μόλις ανακαλύφθηκε) έχει
+ * πάντα προτεραιότητα. Αντικαθιστά το παλιό in-memory round-robin index: καμία
+ * κατάσταση διεργασίας να χαθεί σε restart — η ίδια η βάση ΕΙΝΑΙ η κατάσταση,
+ * self-healing by construction.
+ */
+export async function selectWalletsForActivityCheck(
+  limit: number,
+  conn?: Queryable,
+): Promise<WatchlistWallet[]> {
+  const { rows } = await db(conn).query<WalletRow>(
+    `SELECT ${COLUMNS} FROM watchlist_wallets
+      WHERE active
+      ORDER BY last_activity_checked_at ASC NULLS FIRST
+      LIMIT $1`,
+    [limit],
+  );
+  return rows.map(mapWallet);
+}
+
+/** Σφραγίζει ότι μόλις ελέγχθηκε — ανεξάρτητα αν βρέθηκε κάτι νέο ή όχι, γιατί το
+ * rotation αφορά "πότε το είδαμε τελευταία", όχι "πότε βρήκαμε κάτι". */
+export async function markActivityChecked(address: string, conn?: Queryable): Promise<void> {
+  await db(conn).query(
+    `UPDATE watchlist_wallets SET last_activity_checked_at = now() WHERE address = $1`,
+    [address],
+  );
 }
 
 /** Γενικό query ανά `source` — π.χ. για μελλοντικό ξεχωριστό discovery/vetting loop. */
