@@ -91,9 +91,14 @@ async function resolveOneTrade(trade: PaperTrade): Promise<boolean> {
   });
   if (result === null) return false;
 
-  const pnlPct = (result.exitPrice - trade.simulatedEntryPrice) / trade.simulatedEntryPrice;
-  const pnlSol = (trade.bankrollAtEntry ?? 0) * (trade.intendedSizePct ?? 0) * pnlPct;
-  const pnlNetPct = pnlPct - PAPER_ASSUMED_FEES_PCT;
+  // no_market_data = άγνωστο αποτέλεσμα, όχι flat. pnl=null, όχι 0 — βλ. ExitReason.
+  const isKnownOutcome = result.exitReason !== 'no_market_data';
+  const pnlPct = isKnownOutcome
+    ? (result.exitPrice - trade.simulatedEntryPrice) / trade.simulatedEntryPrice
+    : null;
+  const pnlSol =
+    pnlPct === null ? null : (trade.bankrollAtEntry ?? 0) * (trade.intendedSizePct ?? 0) * pnlPct;
+  const pnlNetPct = pnlPct === null ? null : pnlPct - PAPER_ASSUMED_FEES_PCT;
 
   await closeTrade(trade.id, {
     exitReason: result.exitReason,
@@ -178,6 +183,18 @@ export function resolveExit(input: ExitCheckInput): ExitCheckResult | null {
     return { exitReason: 'exit_signal', exitPrice: lastClose, exitAt: input.walletSellAt };
   }
   if (input.now.getTime() - input.entryAt.getTime() >= EXIT_TIMEOUT_MS) {
+    // Άδειο candles array σε ΟΛΗ τη διάρκεια σημαίνει ότι το GMGN δεν είχε ΚΑΘΟΛΟΥ
+    // market data για το token — πολύ πιθανό νεκρό/χωρίς liquidity, όχι "η τιμή έμεινε
+    // ίδια". Ξεχωριστό exit_reason, ώστε να μη μπερδεύεται σιωπηλά με γνήσιο flat-price
+    // timeout σε μελλοντική ανάλυση (επιβεβαιωμένο πραγματικό incident 2026-08-31: τα
+    // δύο ήταν ταυτόσημα στα δεδομένα, pnl_pct=0, μέχρι να διασταυρωθούν με τα logs).
+    if (input.candles.length === 0) {
+      return {
+        exitReason: 'no_market_data',
+        exitPrice: input.entryPrice,
+        exitAt: new Date(input.entryAt.getTime() + EXIT_TIMEOUT_MS),
+      };
+    }
     return {
       exitReason: 'timeout',
       exitPrice: lastClose,

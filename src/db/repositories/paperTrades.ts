@@ -119,10 +119,11 @@ export interface CloseTradeInput {
   /** π.χ. ποιο wallet παρήγαγε το exit_signal. */
   exitTriggerDetail?: Record<string, unknown> | null;
   simulatedExitPrice: number;
-  pnlSol: number;
-  pnlPct: number;
+  /** null όταν exitReason='no_market_data' — άγνωστο αποτέλεσμα, όχι μηδενικό. */
+  pnlSol: number | null;
+  pnlPct: number | null;
   assumedFeesPct: number;
-  pnlNetPct: number;
+  pnlNetPct: number | null;
 }
 
 /**

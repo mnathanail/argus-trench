@@ -88,3 +88,33 @@ test('resolveExit: ignores candles before entry (e.g. a kline window that starts
   });
   assert.equal(result, null); // δεν πρέπει να "χτυπήσει" tier 1 λόγω του pre-entry candle
 });
+
+test('resolveExit: empty candles (dead/no-liquidity token) times out as no_market_data, not a flat-price timeout', () => {
+  const now = new Date(ENTRY_AT.getTime() + 25 * 60 * 60 * 1000);
+  const result = resolveExit({ entryPrice: ENTRY_PRICE, entryAt: ENTRY_AT, candles: [], walletSellAt: null, now });
+  assert.equal(result?.exitReason, 'no_market_data');
+  assert.equal(result?.exitPrice, ENTRY_PRICE);
+});
+
+test('resolveExit: empty candles but not yet 24h — still open, not a premature no_market_data', () => {
+  const result = resolveExit({
+    entryPrice: ENTRY_PRICE,
+    entryAt: ENTRY_AT,
+    candles: [],
+    walletSellAt: null,
+    now: new Date(ENTRY_AT.getTime() + 60_000),
+  });
+  assert.equal(result, null);
+});
+
+test('resolveExit: empty candles but wallet already sold — exit_signal wins, not no_market_data', () => {
+  const sellAt = new Date(ENTRY_AT.getTime() + 60_000);
+  const result = resolveExit({
+    entryPrice: ENTRY_PRICE,
+    entryAt: ENTRY_AT,
+    candles: [],
+    walletSellAt: sellAt,
+    now: new Date(ENTRY_AT.getTime() + 120_000),
+  });
+  assert.equal(result?.exitReason, 'exit_signal');
+});

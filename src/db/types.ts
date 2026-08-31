@@ -41,4 +41,10 @@ export type ExitReason =
   | 'tp_tier_2'
   | 'trailing_stop'
   | 'exit_signal'
-  | 'timeout';
+  | 'timeout'
+  /** GMGN kline επέστρεψε άδειο candles array για ΟΛΗ τη διάρκεια — πολύ πιθανό νεκρό/
+   * χωρίς-liquidity token, όχι ότι η τιμή έμεινε ίδια. Άγνωστο αποτέλεσμα, pnl=null,
+   * ΟΧΙ 0 — βλ. exitResolver.ts. Επιβεβαιώθηκε σε πραγματικό incident 2026-08-31 (η
+   * μόνη εναλλακτική θα ήταν ένα σιωπηλό pnl_pct=0 πανομοιότυπο με πραγματικό
+   * flat-price αποτέλεσμα, αδύνατο να ξεχωριστεί σε μελλοντική ανάλυση). */
+  | 'no_market_data';
