@@ -143,11 +143,12 @@ route) είναι ακόμα πιο ακριβό: ~10 tokens/ώρα στο walle
 Πρακτικός κανόνας: το budget των 20/s το τρώνε τα wallets, όχι το discovery. Στο 429: διάβασε `X-RateLimit-Reset` header ή `reset_at` στο body.
 **ΜΗΝ κάνεις naive retry** — κάθε request μέσα στο cooldown επεκτείνει το ban κατά 5s,
 έως 5 λεπτά. Ο adapter θέλει token bucket, όχι retry loop.
-⚠️ **Το `retryAt` parsing πιάνει μόνο το JSON `reset_at`** (δοκιμασμένο 2026-08-26): το
-`RATE_LIMIT_EXCEEDED` variant επιστρέφει human-readable "Rate limit resets at ... (~30s
-remaining)" ΧΩΡΙΣ αριθμητικό `reset_at` πεδίο, άρα ο `parseResetAt` στο `gmgn/exec.ts`
-γυρίζει `null` και ο scheduler πέφτει στο conservative default (60s). Ασφαλές (δε
-περιμένει λιγότερο απ' όσο πρέπει), απλά λιγότερο ακριβές — παραμένει ανοιχτό.
+⚠️ **Το `retryAt` parsing πρέπει να χειρίζεται ΚΑΙ JSON `reset_at` ΚΑΙ human-readable 429**:
+το live `RATE_LIMIT_EXCEEDED` variant επιστρέφει "Rate limit resets at ... (~30s
+remaining)" χωρίς αριθμητικό `reset_at` πεδίο, οπότε ο `parseResetAt` στο
+`gmgn/exec.ts` έπρεπε να διαβάζει και το κείμενο για να μην πέσει στο fallback των 60s.
+Το patch αυτό διασφαλίζει ότι ο shared cooldown ακολουθεί την πραγματική ώρα reset,
+χωρίς να τρέχει το app ξανά μέσα στο ban και να επιδεινώνει το 429.
 ⚠️ **Κάθε per-item loop πάνω σε πολλά wallets/tokens πρέπει να rethrow-άρει
 `GmgnRateLimitError`, ΟΧΙ να το καταπίνει ως "ένα item απέτυχε"** (πραγματικό bug,
 βρέθηκε 2026-08-26 στο `scoring.ts` ενώ χτιζόταν το `walletDiscovery.ts`, και

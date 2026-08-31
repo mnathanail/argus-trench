@@ -98,6 +98,18 @@ test('TokenBucket pauses queued acquires after a shared rate limit', async () =>
   assert.ok(elapsed() >= 8_000 && elapsed() <= 8_001);
 });
 
+test('parseResetAt understands both JSON reset_at and human-readable GMGN 429 text', () => {
+  const jsonOutput = '{"error":"RATE_LIMIT_EXCEEDED","reset_at":1756667420}';
+  const jsonDate = new Date(1756667420 * 1000);
+  assert.equal(new GmgnRateLimitError('x', new Date(1756667420 * 1000), jsonOutput).retryAt?.getTime(), jsonDate.getTime());
+
+  const humanOutput =
+    'HTTP 429 code=429 error=RATE_LIMIT_EXCEEDED message=IP rate limit exceeded. Rate limit resets at 2026-08-31 21:21:00 GMT+00:00 (~30s remaining).';
+  const humanDate = new Date('2026-08-31T21:21:00.000Z');
+  const error = new GmgnRateLimitError('x', new Date(Date.parse('2026-08-31T21:21:00.000Z')), humanOutput);
+  assert.equal(error.retryAt?.getTime(), humanDate.getTime());
+});
+
 test('parseTrenchesResponse reads the real near_completion shape', () => {
   const candidates = parseTrenchesResponse(fixture('trenches.near_completion.json'), 'near_completion');
   assert.equal(candidates.length, 2);

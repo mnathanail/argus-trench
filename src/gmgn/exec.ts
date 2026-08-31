@@ -130,11 +130,22 @@ function toGmgnError(error: unknown, argv: readonly string[]): Error {
  * (τυπικά 5 λεπτά). Ο scheduler πρέπει να σταματήσει μέχρι τότε, όχι να retry-άρει.
  */
 function parseResetAt(output: string): Date | null {
-  const match = /"?reset_at"?\s*[:=]\s*"?(\d{10,13})"?/.exec(output);
-  if (!match?.[1]) return null;
-  const value = Number(match[1]);
-  const millis = value > 1e12 ? value : value * 1000;
-  return Number.isFinite(millis) ? new Date(millis) : null;
+  const jsonMatch = /"?reset_at"?\s*[:=]\s*"?(\d{10,13})"?/.exec(output);
+  if (jsonMatch?.[1]) {
+    const value = Number(jsonMatch[1]);
+    const millis = value > 1e12 ? value : value * 1000;
+    return Number.isFinite(millis) ? new Date(millis) : null;
+  }
+
+  const textMatch = /Rate limit resets at\s+([^\n\r)]+?)(?:\s*\([^)]*remaining\)|\s*$)/i.exec(output);
+  if (textMatch?.[1]) {
+    const raw = textMatch[1].trim();
+    const isoLike = raw.replace(/\s+GMT([+-]\d{2}:?\d{2})$/, 'GMT$1');
+    const ts = Date.parse(isoLike);
+    return Number.isNaN(ts) ? null : new Date(ts);
+  }
+
+  return null;
 }
 
 function firstLine(text: string): string {
