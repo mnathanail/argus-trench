@@ -102,16 +102,54 @@ export async function fetchWalletBuys(
   return { activities, nextCursor: cursor };
 }
 
+export interface FetchWalletSellsOptions
+  extends Omit<FetchWalletActivityOptions, 'wallet' | 'types'> {
+  /** Σταμάτα τη σελιδοποίηση μόλις φτάσεις activity παλαιότερη από αυτό (ms epoch) —
+   * τυπικά το entry_at ενός trade, αφού ένα sell πριν το entry δεν αφορά τη θέση αυτή. */
+  stopAtTimestamp?: number | null;
+}
+
 /**
  * Convenience για το exit-resolver: πούλησε το trigger wallet ΜΕΤΑ από μια δεδομένη
- * στιγμή (entry_at); Χρησιμοποιεί το ίδιο endpoint/weight με το `fetchWalletBuys` — απλά
- * `--type sell`.
+ * στιγμή (entry_at); Χρησιμοποιεί το ίδιο endpoint/weight με το `fetchWalletBuys`.
+ *
+ * Σελιδοποιεί ίδιο pattern με το `fetchWalletBuys` — ΟΧΙ απλή πρώτη-σελίδα σύντομευση
+ * (ήταν έτσι πριν, ήταν λάθος): επιβεβαιωμένο σε πραγματικό incident 2026-08-31 ότι ένα
+ * αρκετά ενεργό wallet μπορεί να κάνει sell κάθε ~10 λεπτά — 50 αποτελέσματα κάλυπταν
+ * μόλις ~8.5 ώρες, ενώ ένα trade μπορεί να είναι ανοιχτό μέχρι 24 ώρες. Default `limit`
+ * ανά σελίδα 50 (όχι 20): το weight χρεώνεται ανά κλήση, όχι ανά αποτέλεσμα, άρα
+ * μεγαλύτερη σελίδα σημαίνει λιγότερες σελίδες για το ίδιο βάθος χρόνου, χωρίς επιπλέον
+ * κόστος ανά σελίδα.
  */
 export async function fetchWalletSells(
   wallet: string,
-  options: Omit<FetchWalletActivityOptions, 'wallet' | 'types'> = {},
+  options: FetchWalletSellsOptions = {},
 ): Promise<WalletActivityPage> {
-  return fetchWalletActivity({ ...options, wallet, types: ['sell'] });
+  const { stopAtTimestamp, ...requestOptions } = options;
+  const activities: WalletActivity[] = [];
+  let cursor: string | null = requestOptions.cursor ?? null;
+
+  for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
+    const page = await fetchWalletActivity({
+      limit: 50,
+      ...requestOptions,
+      wallet,
+      types: ['sell'],
+      cursor,
+    });
+    activities.push(...page.activities);
+
+    const pastStopPoint =
+      stopAtTimestamp !== null &&
+      stopAtTimestamp !== undefined &&
+      page.activities.some((activity) => activity.timestamp * 1000 <= stopAtTimestamp);
+    if (pastStopPoint || page.nextCursor === null) {
+      return { activities, nextCursor: null };
+    }
+    cursor = page.nextCursor;
+  }
+
+  return { activities, nextCursor: cursor };
 }
 
 export function parseActivityResponse(raw: unknown): WalletActivityPage {

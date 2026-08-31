@@ -75,7 +75,10 @@ async function resolveOneTrade(trade: PaperTrade): Promise<boolean> {
 
   let walletSellAt: Date | null = null;
   if (triggerWallet !== null) {
-    const sells = await fetchWalletSells(triggerWallet, { limit: 20, priority: 100 });
+    const sells = await fetchWalletSells(triggerWallet, {
+      priority: 100,
+      stopAtTimestamp: trade.entryAt.getTime(),
+    });
     const afterEntry = sells.activities
       .filter((sell) => sell.tokenAddress === trade.tokenAddress)
       .find((sell) => sell.timestamp * 1000 >= trade.entryAt.getTime());
