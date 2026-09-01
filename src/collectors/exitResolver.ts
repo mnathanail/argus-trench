@@ -1,5 +1,5 @@
 import { getDecisionById } from '../db/repositories/decisionLog.js';
-import { closeTrade, countOpenTrades, listOpenTrades, type PaperTrade } from '../db/repositories/paperTrades.js';
+import { closeTrade, countOpenTrades, markTradeChecked, selectOpenTradesForCheck, type PaperTrade } from '../db/repositories/paperTrades.js';
 import type { ExitReason } from '../db/types.js';
 import { fetchWalletSells } from '../gmgn/activity.js';
 import { rethrowIfRateLimited } from '../gmgn/errors.js';
@@ -34,8 +34,9 @@ export interface ExitResolverResult {
 }
 
 export async function runExitResolverCycle(): Promise<ExitResolverResult> {
-  // Batched, ΟΧΙ όλα τα ανοιχτά μαζί — βλ. EXIT_RESOLVER_TRADES_PER_CYCLE.
-  const openTrades = await listOpenTrades(EXIT_RESOLVER_TRADES_PER_CYCLE);
+  // Rotation βάσει "ποιος περιμένει περισσότερο" (last_checked_at ASC), ΟΧΙ oldest-entry
+  // — βλ. migration 0006 / selectOpenTradesForCheck για το γιατί.
+  const openTrades = await selectOpenTradesForCheck(EXIT_RESOLVER_TRADES_PER_CYCLE);
   let closed = 0;
   let failures = 0;
   const failureReasons: string[] = [];
@@ -62,6 +63,11 @@ export async function runExitResolverCycle(): Promise<ExitResolverResult> {
 }
 
 async function resolveOneTrade(trade: PaperTrade): Promise<boolean> {
+  // Σφράγισε ΠΡΩΤΑ, πριν οποιοδήποτε GMGN call — ακόμα κι αν σκάσει rate-limit παρακάτω,
+  // το rotation προχωράει (δεν ξαναεπιλέγεται αμέσως το ίδιο trade στην επόμενη
+  // προσπάθεια). Ίδιο σκεπτικό με markActivityChecked.
+  await markTradeChecked(trade.id);
+
   // Δεν μπορούμε να υπολογίσουμε % κέρδους χωρίς έγκυρη entry price (σπάνιο: μόνο όταν
   // το gate_snapshot δεν είχε 'price' τη στιγμή του entry) — άφησέ το ανοιχτό, μην
   // κλείσεις με ψεύτικα νούμερα.

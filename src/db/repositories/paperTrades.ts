@@ -39,6 +39,9 @@ export interface PaperTrade {
   pnlSol: number | null;
   pnlPct: number | null;
   pnlNetPct: number | null;
+  /** Πότε το exit-resolver το εξέτασε τελευταία φορά — οδηγεί το rotation, βλ.
+   * `selectOpenTradesForCheck`. ΔΙΑΦΟΡΕΤΙΚΟ από `entryAt` (πότε ανοίχτηκε). */
+  lastCheckedAt: Date | null;
 }
 
 interface TradeRow {
@@ -58,11 +61,13 @@ interface TradeRow {
   pnl_sol: string | null;
   pnl_pct: string | null;
   pnl_net_pct: string | null;
+  last_checked_at: Date | null;
 }
 
 const COLUMNS = `id, decision_log_id, token_address, chain, mode, intended_size_pct,
                  bankroll_at_entry, simulated_entry_price, entry_at, status, exit_reason,
-                 simulated_exit_price, exit_at, pnl_sol, pnl_pct, pnl_net_pct`;
+                 simulated_exit_price, exit_at, pnl_sol, pnl_pct, pnl_net_pct,
+                 last_checked_at`;
 
 function toJsonParam(value: unknown): string | null {
   return value === null || value === undefined ? null : JSON.stringify(value);
@@ -86,6 +91,7 @@ function mapTrade(row: TradeRow): PaperTrade {
     pnlSol: toNumOrNull(row.pnl_sol),
     pnlPct: toNumOrNull(row.pnl_pct),
     pnlNetPct: toNumOrNull(row.pnl_net_pct),
+    lastCheckedAt: row.last_checked_at,
   };
 }
 
@@ -171,6 +177,36 @@ export async function listOpenTrades(limit?: number, conn?: Queryable): Promise<
     limit === undefined ? [] : [limit],
   );
   return rows.map(mapTrade);
+}
+
+/**
+ * Τα `limit` ανοιχτά trades που ΔΕΝ έχουν ελεγχθεί εδώ και περισσότερο καιρό —
+ * `NULLS FIRST` σημαίνει ότι ένα ποτέ-μη-ελεγμένο trade έχει πάντα προτεραιότητα.
+ *
+ * ΟΧΙ `ORDER BY entry_at` (αυτό κάνει το `listOpenTrades`): επιβεβαιωμένο real incident
+ * 2026-09-01, αν οι παλαιότερες θέσεις δεν είναι ακόμα κλείσιμες, ο ίδιος πυρήνας
+ * "κολλημένων" trades επιλέγεται σε ΚΑΘΕ κύκλο — `open=51 closed=0` για 8 ώρες, ίδια 5
+ * tokens κάθε φορά. Ίδιο pattern με `selectWalletsForActivityCheck` (migration 0005):
+ * self-healing, καμία κατάσταση διεργασίας να χαθεί σε restart.
+ */
+export async function selectOpenTradesForCheck(
+  limit: number,
+  conn?: Queryable,
+): Promise<PaperTrade[]> {
+  const { rows } = await db(conn).query<TradeRow>(
+    `SELECT ${COLUMNS} FROM paper_trades
+      WHERE status = 'open'
+      ORDER BY last_checked_at ASC NULLS FIRST
+      LIMIT $1`,
+    [limit],
+  );
+  return rows.map(mapTrade);
+}
+
+/** Σφραγίζει ότι μόλις εξετάστηκε — ανεξάρτητα αν έκλεισε ή παρέμεινε ανοιχτό, γιατί το
+ * rotation αφορά "πότε το είδαμε", όχι "τι βρήκαμε". */
+export async function markTradeChecked(id: number, conn?: Queryable): Promise<void> {
+  await db(conn).query(`UPDATE paper_trades SET last_checked_at = now() WHERE id = $1`, [id]);
 }
 
 /** Τροφοδοτεί το concurrent-positions cap. Το cap ζει στο decision engine, όχι εδώ. */
