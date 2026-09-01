@@ -1,5 +1,5 @@
 import { getDecisionById } from '../db/repositories/decisionLog.js';
-import { closeTrade, listOpenTrades, type PaperTrade } from '../db/repositories/paperTrades.js';
+import { closeTrade, countOpenTrades, listOpenTrades, type PaperTrade } from '../db/repositories/paperTrades.js';
 import type { ExitReason } from '../db/types.js';
 import { fetchWalletSells } from '../gmgn/activity.js';
 import { rethrowIfRateLimited } from '../gmgn/errors.js';
@@ -11,7 +11,7 @@ import {
   EXIT_TIMEOUT_MS,
   PAPER_ASSUMED_FEES_PCT,
 } from '../decision/paperTradingConfig.js';
-import { EXIT_RESOLVER_LOOP_PACING_MS } from './intervals.js';
+import { EXIT_RESOLVER_LOOP_PACING_MS, EXIT_RESOLVER_TRADES_PER_CYCLE } from './intervals.js';
 import { delay } from '../util/delay.js';
 
 /**
@@ -33,7 +33,8 @@ export interface ExitResolverResult {
 }
 
 export async function runExitResolverCycle(): Promise<ExitResolverResult> {
-  const openTrades = await listOpenTrades();
+  // Batched, ΟΧΙ όλα τα ανοιχτά μαζί — βλ. EXIT_RESOLVER_TRADES_PER_CYCLE.
+  const openTrades = await listOpenTrades(EXIT_RESOLVER_TRADES_PER_CYCLE);
   let closed = 0;
   let failures = 0;
   const failureReasons: string[] = [];
@@ -52,7 +53,11 @@ export async function runExitResolverCycle(): Promise<ExitResolverResult> {
     await delay(EXIT_RESOLVER_LOOP_PACING_MS);
   }
 
-  return { openTrades: openTrades.length, closed, failures, failureReasons };
+  // Το ΣΥΝΟΛΙΚΟ open count (όχι μόνο το batch) — αλλιώς το log θα έδειχνε "open=10" ενώ
+  // ίσως υπάρχουν 40, ακριβώς το νούμερο που χρειαστήκαμε σήμερα για να διαγνώσουμε το
+  // backlog. Ένα μικρό, σταθερό επιπλέον weight (query, όχι GMGN call) αξίζει τον κόπο.
+  const totalOpen = await countOpenTrades();
+  return { openTrades: totalOpen, closed, failures, failureReasons };
 }
 
 async function resolveOneTrade(trade: PaperTrade): Promise<boolean> {

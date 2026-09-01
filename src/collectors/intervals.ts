@@ -76,6 +76,18 @@ export const EXIT_RESOLVER_RETRY_BACKOFF_MS = [
 ] as const;
 
 /**
+ * Πόσα ανοιχτά trades ελέγχει το exit-resolver ανά κύκλο — τα παλαιότερα πρώτα
+ * (`listOpenTrades` είναι ήδη `ORDER BY entry_at`), όχι όλα μαζί.
+ *
+ * Επιβεβαιωμένο real incident 2026-09-01: με 14-40+ ταυτόχρονα ανοιχτά trades, κάθε ένα
+ * μέχρι `EXIT_RESOLVER_MAX_SELL_PAGES` σελίδες στο `/v1/user/wallet_activity`, το
+ * σύνολο ήταν αρκετό να κρατήσει το endpoint σε συνεχές 429 για 8+ ώρες — και το ίδιο
+ * endpoint χρησιμοποιεί ΚΑΙ το wallet-activity, άρα το πρόβλημα δεν έμενε τοπικό στο
+ * exit-resolver. Batching εδώ, ίδιο σκεπτικό με το `WALLET_ACTIVITY_WALLETS_PER_CYCLE`.
+ */
+export const EXIT_RESOLVER_TRADES_PER_CYCLE = 10;
+
+/**
  * Ξεχωριστό, πιο αργό pacing ΜΟΝΟ για το wallet-discovery holders/stats loop.
  * Επιβεβαιωμένο (2026-08-28, 2ωρο log): με το κοινό 300ms, wallet-activity/scoring
  * (weight 3/call) έγιναν 100%/98% υγιή, αλλά το wallet-discovery (weight 5/call στο

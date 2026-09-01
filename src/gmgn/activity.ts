@@ -120,6 +120,13 @@ export interface FetchWalletSellsOptions
  * ανά σελίδα 50 (όχι 20): το weight χρεώνεται ανά κλήση, όχι ανά αποτέλεσμα, άρα
  * μεγαλύτερη σελίδα σημαίνει λιγότερες σελίδες για το ίδιο βάθος χρόνου, χωρίς επιπλέον
  * κόστος ανά σελίδα.
+ *
+ * ⚠️ Cap μειώθηκε 10→3 σελίδες (2026-09-01, real incident): με πολλά ταυτόχρονα ανοιχτά
+ * trades, 10 σελίδες/trade στο `/v1/user/wallet_activity` κρατούσε το endpoint σε
+ * σταθερό 429 για 8+ ώρες — και το ΙΔΙΟ endpoint χρησιμοποιεί το wallet-activity, άρα το
+ * μπλόκαρε κι αυτό. Trade-off ρητό: κάποια πολύ παλιά sells (>~12-15 ώρες πίσω, ανάλογα
+ * την ενεργότητα του wallet) δε θα εντοπίζονται πια — αποδεκτό, γιατί το timeout (24ω)
+ * ούτως ή άλλως κλείνει τη θέση τελικά, ενώ το endpoint lockout μπλόκαρε ΚΑΙ αυτό.
  */
 export async function fetchWalletSells(
   wallet: string,
@@ -129,7 +136,7 @@ export async function fetchWalletSells(
   const activities: WalletActivity[] = [];
   let cursor: string | null = requestOptions.cursor ?? null;
 
-  for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
+  for (let pageNumber = 0; pageNumber < 3; pageNumber += 1) {
     const page = await fetchWalletActivity({
       limit: 50,
       ...requestOptions,

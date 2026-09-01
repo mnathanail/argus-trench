@@ -461,7 +461,7 @@ test('closeTrade is idempotent — a duplicate exit signal does not rewrite P&L'
     // Delta, όχι absolute: το count είναι table-wide, και μόλις η Φάση 1 αρχίσει να
     // γράφει πραγματικά δεδομένα στην ίδια dev βάση, ένα `=== 1` θα έσπαγε.
     assert.equal(await countOpenTrades(tx), openBefore + 1);
-    assert.ok((await listOpenTrades(tx)).some((t) => t.id === tradeId));
+    assert.ok((await listOpenTrades(undefined, tx)).some((t) => t.id === tradeId));
 
     const exit = {
       exitReason: 'exit_signal' as const,

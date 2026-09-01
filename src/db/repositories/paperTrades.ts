@@ -155,9 +155,20 @@ export async function closeTrade(
   return (result.rowCount ?? 0) > 0;
 }
 
-export async function listOpenTrades(conn?: Queryable): Promise<PaperTrade[]> {
+/**
+ * `limit` προαιρετικό — όταν δίνεται, τα παλαιότερα (κοντύτερα στο timeout, άρα πιο
+ * επείγοντα να ελεγχθούν) πρώτα. Χωρίς αυτό, το exit-resolver χτυπάει ΟΛΑ τα ανοιχτά
+ * trades σε ένα κύκλο· με πολλά ταυτόχρονα ανοιχτά (14-40+), αυτό βάζει υπερβολικό
+ * φορτίο στο ήδη ευαίσθητο `/v1/user/wallet_activity` endpoint (επιβεβαιωμένο real
+ * incident 2026-09-01, 8+ ώρες σταθερό 429 σε αυτό ειδικά, ενώ το wallet_stats endpoint
+ * δούλευε άψογα παράλληλα — άρα per-endpoint όριο, όχι γενικό budget).
+ */
+export async function listOpenTrades(limit?: number, conn?: Queryable): Promise<PaperTrade[]> {
   const { rows } = await db(conn).query<TradeRow>(
-    `SELECT ${COLUMNS} FROM paper_trades WHERE status = 'open' ORDER BY entry_at`,
+    limit === undefined
+      ? `SELECT ${COLUMNS} FROM paper_trades WHERE status = 'open' ORDER BY entry_at`
+      : `SELECT ${COLUMNS} FROM paper_trades WHERE status = 'open' ORDER BY entry_at LIMIT $1`,
+    limit === undefined ? [] : [limit],
   );
   return rows.map(mapTrade);
 }
