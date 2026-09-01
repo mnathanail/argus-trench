@@ -21,7 +21,8 @@ import { delay } from '../util/delay.js';
  * του τι ΘΑ είχε συμβεί. Χωρίς αυτό, τα signal_logged events δεν μπορούν ποτέ να
  * αποτιμηθούν (CLAUDE.md).
  *
- * Ωριαίο interval σκόπιμα — βλ. EXIT_RESOLVER_INTERVAL_MS στο intervals.ts.
+ * Interval στο intervals.ts (EXIT_RESOLVER_INTERVAL_MS) — δες εκεί για το πλήρες
+ * σκεπτικό, ενημερώθηκε 2026-09-01 λόγω throughput κρίσης (βλ. σχόλιο εκεί).
  *
  * ⚠️ Εξαρτάται από το gmgn/kline.ts, ΜΗ επαληθευμένο ακόμα με πραγματικό call.
  */

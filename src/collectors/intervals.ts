@@ -60,13 +60,20 @@ export const WALLET_SCORING_RETRY_BACKOFF_MS = [
 
 /**
 /**
- * Exit-resolver για paper_trades (log_only, Φάση 1). Μία φορά την ώρα, όχι κάθε 15
- * λεπτά — τραβάμε ΠΛΗΡΕΣ price history (market kline) από entry μέχρι τώρα, όχι μόνο
- * τρέχουσα τιμή, άρα το ωριαίο interval δε χάνει ακρίβεια στο ΠΟΤΕ/ΣΕ ΤΙ ΤΙΜΗ χτυπήθηκε
- * ένα tier — χάνει μόνο πόσο γρήγορα το καταγράφουμε στη βάση, που δεν έχει σημασία για
- * log-only ανάλυση.
+ * Exit-resolver για paper_trades (log_only, Φάση 1). Τραβάμε ΠΛΗΡΕΣ price history
+ * (market kline) από entry μέχρι τώρα, όχι μόνο τρέχουσα τιμή — άρα η συχνότητα δεν
+ * επηρεάζει ΠΟΤΕ/ΣΕ ΤΙ ΤΙΜΗ χτυπήθηκε ένα tier, μόνο πόσο γρήγορα το μαθαίνουμε.
+ *
+ * ⚠️ 60 λεπτά → 15 λεπτά (2026-09-01, real incident): με throughput
+ * EXIT_RESOLVER_TRADES_PER_CYCLE/ώρα, ένα burst νέων signals (πραγματικό παράδειγμα: 34
+ * μέσα σε 2 λεπτά) δημιουργεί ουρά που δεν αδειάζει ποτέ — τα παλαιότερα trades είναι
+ * πάντα πρώτα στη σειρά (`listOpenTrades` ORDER BY entry_at) και δεν "φεύγουν" μέχρι να
+ * κλείσουν, άρα νεότερα trades μπορεί να μην ελεγχθούν ΟΥΤΕ ΜΙΑ φορά για ώρες. 4×
+ * συχνότερο, ΙΔΙΟ batch size (αποδεδειγμένα ασφαλές στο rate limit, 5/5 καθαροί κύκλοι)
+ * — προτιμότερο από μεγαλύτερο batch, που θα μεγάλωνε το μέγεθος κάθε burst αντί απλά
+ * να το επαναλαμβάνει συχνότερα.
  */
-export const EXIT_RESOLVER_INTERVAL_MS = 60 * 60 * 1000;
+export const EXIT_RESOLVER_INTERVAL_MS = 15 * 60 * 1000;
 export const EXIT_RESOLVER_LOOP_PACING_MS = 1_000;
 export const EXIT_RESOLVER_INITIAL_DELAY_MS = 45_000;
 export const EXIT_RESOLVER_RETRY_BACKOFF_MS = [
