@@ -328,10 +328,10 @@ test('updateWalletScore stamps last_reviewed_at; setWalletActive filters the act
     assert.ok(scored?.lastReviewedAt instanceof Date);
 
     assert.ok((await listActiveWallets(tx)).some((w) => w.address === 'WalletAct1'));
-    assert.equal(await setWalletActive('WalletAct1', false, tx), true);
+    assert.equal(await setWalletActive('WalletAct1', false, undefined, tx), true);
     assert.ok(!(await listActiveWallets(tx)).some((w) => w.address === 'WalletAct1'));
     // Άγνωστο address δεν είναι σφάλμα — απλά δεν άλλαξε γραμμή.
-    assert.equal(await setWalletActive('NoSuchWallet', false, tx), false);
+    assert.equal(await setWalletActive('NoSuchWallet', false, undefined, tx), false);
   });
 });
 

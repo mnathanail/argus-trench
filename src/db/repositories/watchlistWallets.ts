@@ -20,6 +20,9 @@ export interface WatchlistWallet {
    * ΔΙΑΦΟΡΕΤΙΚΟ από `lastSeenActivityAt` (που είναι η ώρα του ίδιου του on-chain trade).
    * Οδηγεί το activity-check rotation — βλ. `selectWalletsForActivityCheck`. */
   lastActivityCheckedAt: Date | null;
+  /** NULL όταν active. 'manual' (/unwatch) ή 'below_threshold' (auto) όταν όχι — βλ.
+   * `setWalletActive`. Το auto-reactivate ΠΟΤΕ δεν παρακάμπτει ένα 'manual'. */
+  deactivatedReason: string | null;
 }
 
 interface WalletRow {
@@ -36,11 +39,12 @@ interface WalletRow {
   last_seen_tx_hash: string | null;
   last_seen_activity_at: Date | null;
   last_activity_checked_at: Date | null;
+  deactivated_reason: string | null;
 }
 
 const COLUMNS = `id, address, chain, source, win_rate, pnl_multiplier, trade_count,
                  active, added_at, last_reviewed_at, last_seen_tx_hash,
-                 last_seen_activity_at, last_activity_checked_at`;
+                 last_seen_activity_at, last_activity_checked_at, deactivated_reason`;
 
 function mapWallet(row: WalletRow): WatchlistWallet {
   return {
@@ -58,6 +62,7 @@ function mapWallet(row: WalletRow): WatchlistWallet {
     lastSeenTxHash: row.last_seen_tx_hash,
     lastSeenActivityAt: row.last_seen_activity_at,
     lastActivityCheckedAt: row.last_activity_checked_at,
+    deactivatedReason: row.deactivated_reason,
   };
 }
 
@@ -238,13 +243,31 @@ export async function updateWalletScore(
 export async function setWalletActive(
   address: string,
   active: boolean,
+  reason?: 'manual' | 'below_threshold',
   conn?: Queryable,
 ): Promise<boolean> {
+  // active=true πάντα καθαρίζει το reason (NULL) — δεν έχει νόημα deactivated_reason σε
+  // ενεργό wallet. active=false χωρίς ρητό reason προεπιλέγει σε 'manual' — το /unwatch
+  // στο telegram/bot.ts καλεί με 2 ορίσματα, άρα παίρνει αυτόματα 'manual', σωστό.
   const result = await db(conn).query(
-    `UPDATE watchlist_wallets SET active = $2 WHERE address = $1`,
-    [address, active],
+    `UPDATE watchlist_wallets SET active = $2, deactivated_reason = $3 WHERE address = $1`,
+    [address, active, active ? null : (reason ?? 'manual')],
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+/**
+ * Ποια wallets αξίζει να σκοράρουμε — active, ΚΑΙ auto-deactivated (για να δούμε αν
+ * ξαναπέρασαν το threshold), αλλά ΟΧΙ manually /unwatch-ed (ο χρήστης το απέκλεισε
+ * σκόπιμα, δεν έχει νόημα να συνεχίζουμε να ξοδεύουμε weight σκοράροντάς το).
+ */
+export async function listWalletsForScoring(conn?: Queryable): Promise<WatchlistWallet[]> {
+  const { rows } = await db(conn).query<WalletRow>(
+    `SELECT ${COLUMNS} FROM watchlist_wallets
+      WHERE active OR deactivated_reason = 'below_threshold'
+      ORDER BY added_at`,
+  );
+  return rows.map(mapWallet);
 }
 
 export interface NewDiscoveredWallet {
