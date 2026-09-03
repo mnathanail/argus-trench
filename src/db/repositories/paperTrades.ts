@@ -230,6 +230,8 @@ export interface TradeSummary {
   id: number;
   tokenAddress: string;
   triggerWalletAddress: string | null;
+  /** Το watchlist_wallets.name του trigger wallet, αν υπάρχει — βλ. migration 0008. */
+  triggerWalletName: string | null;
   entryAt: Date;
   simulatedEntryPrice: number | null;
   simulatedEntryAmountSol: number | null;
@@ -249,6 +251,7 @@ export async function listRecentTrades(limit: number, conn?: Queryable): Promise
     id: string;
     token_address: string;
     trigger_wallet_address: string | null;
+    trigger_wallet_name: string | null;
     entry_at: Date;
     simulated_entry_price: string | null;
     simulated_entry_amount_sol: string | null;
@@ -257,11 +260,12 @@ export async function listRecentTrades(limit: number, conn?: Queryable): Promise
     exit_at: Date | null;
     pnl_pct: string | null;
   }>(
-    `SELECT t.id, t.token_address, d.trigger_wallet_address, t.entry_at,
-            t.simulated_entry_price, t.simulated_entry_amount_sol,
+    `SELECT t.id, t.token_address, d.trigger_wallet_address, w.name AS trigger_wallet_name,
+            t.entry_at, t.simulated_entry_price, t.simulated_entry_amount_sol,
             t.status, t.exit_reason, t.exit_at, t.pnl_pct
        FROM paper_trades t
        JOIN decision_log d ON d.id = t.decision_log_id
+       LEFT JOIN watchlist_wallets w ON w.address = d.trigger_wallet_address
       ORDER BY t.entry_at DESC
       LIMIT $1`,
     [limit],
@@ -270,6 +274,7 @@ export async function listRecentTrades(limit: number, conn?: Queryable): Promise
     id: toNum(row.id),
     tokenAddress: row.token_address,
     triggerWalletAddress: row.trigger_wallet_address,
+    triggerWalletName: row.trigger_wallet_name,
     entryAt: row.entry_at,
     simulatedEntryPrice: toNumOrNull(row.simulated_entry_price),
     simulatedEntryAmountSol: toNumOrNull(row.simulated_entry_amount_sol),

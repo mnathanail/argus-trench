@@ -126,6 +126,33 @@ test('/watch adds the wallet as active even when scoring fails', async () => {
   assert.match(reply, /scoring απέτυχε/);
 });
 
+test('/watch with a trailing name passes it through, even with spaces', async () => {
+  const deps = stubDeps();
+  let capturedName: string | undefined;
+  deps.upsertWallet = (input) => {
+    capturedName = input.name;
+    return Promise.resolve(wallet(input.address));
+  };
+  deps.fetchStats = () => Promise.reject(new Error('irrelevant here'));
+
+  const reply = await handleCommand(`/watch ${ADDRESS} chris kogias`, deps);
+  assert.equal(capturedName, 'chris kogias');
+  assert.match(reply, /Προστέθηκε \(ενεργό\): .*\(chris kogias\)/);
+});
+
+test('/watch without a name does not overwrite an already-known name (upsertWallet gets undefined, not empty string)', async () => {
+  const deps = stubDeps();
+  let capturedName: string | undefined = 'sentinel — should be overwritten by the call';
+  deps.upsertWallet = (input) => {
+    capturedName = input.name;
+    return Promise.resolve(wallet(input.address));
+  };
+  deps.fetchStats = () => Promise.reject(new Error('irrelevant here'));
+
+  await handleCommand(`/watch ${ADDRESS}`, deps);
+  assert.equal(capturedName, undefined);
+});
+
 test('/watch persists the score using token_num and the realized PnL ratio', async () => {
   const deps = stubDeps();
   const captured: unknown[] = [];
@@ -190,6 +217,15 @@ test('/watchlist lists every active wallet regardless of source, with win/pnl/po
   assert.match(reply, /smart_money \| win 55\.0% \| pnl -10\.0% \| 20 θέσεις/);
 });
 
+test('/watchlist shows the known name alongside the address when one is set', async () => {
+  const deps = stubDeps();
+  deps.listActiveWallets = () =>
+    Promise.resolve([{ ...wallet(ADDRESS), name: 'chriskogias' }]);
+
+  const reply = await handleCommand('/watchlist', deps);
+  assert.match(reply, /• chriskogias \(AV7PjXHL5JXZ1YoYRoN9Dsstg1x2UciBupMCXcJP8gUz\) —/);
+});
+
 test('/list is an alias of /watchlist', async () => {
   const deps = stubDeps();
   deps.listActiveWallets = () => Promise.resolve([wallet(ADDRESS)]);
@@ -214,6 +250,7 @@ test('/trades shows token, trigger wallet, entry, and status for open and closed
         id: 2,
         tokenAddress: 'TokenTwoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2222',
         triggerWalletAddress: ADDRESS,
+        triggerWalletName: null,
         entryAt: new Date('2026-08-28T10:00:00Z'),
         simulatedEntryPrice: 0.0000456,
         simulatedEntryAmountSol: 0.1,
@@ -226,6 +263,7 @@ test('/trades shows token, trigger wallet, entry, and status for open and closed
         id: 1,
         tokenAddress: 'TokenOneAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1111',
         triggerWalletAddress: null,
+        triggerWalletName: null,
         entryAt: new Date('2026-08-28T09:00:00Z'),
         simulatedEntryPrice: 0.0000123,
         simulatedEntryAmountSol: 0.1,
@@ -240,6 +278,30 @@ test('/trades shows token, trigger wallet, entry, and status for open and closed
   assert.match(reply, /Τελευταία 2 trades/);
   assert.match(reply, /Toke…2222.*wallet AV7P…8gUz.*✅ tp_tier_1.*pnl \+50\.0%/);
   assert.match(reply, /Toke…1111.*wallet —.*🟡 open/);
+});
+
+test('/trades shows the known wallet name instead of the short address when one is set', async () => {
+  const deps = stubDeps();
+  deps.listRecentTrades = () =>
+    Promise.resolve([
+      {
+        id: 3,
+        tokenAddress: 'TokenThreeAAAAAAAAAAAAAAAAAAAAAAAAAAAA3333',
+        triggerWalletAddress: ADDRESS,
+        triggerWalletName: 'chriskogias',
+        entryAt: new Date('2026-08-28T12:00:00Z'),
+        simulatedEntryPrice: 0.0000789,
+        simulatedEntryAmountSol: 0.1,
+        status: 'open',
+        exitReason: null,
+        exitAt: null,
+        pnlPct: null,
+      },
+    ]);
+
+  const reply = await handleCommand('/trades', deps);
+  assert.match(reply, /wallet chriskogias \|/);
+  assert.doesNotMatch(reply, /AV7P…8gUz/);
 });
 
 test('/unwatch vetoes an auto-discovered wallet that already passed the algorithmic threshold', async () => {
@@ -288,6 +350,7 @@ function wallet(address: string): WatchlistWallet {
     lastSeenActivityAt: null,
     lastActivityCheckedAt: null,
     deactivatedReason: null,
+    name: null,
   };
 }
 

@@ -28,6 +28,7 @@ export interface CommandDeps {
     address: string;
     source: 'manual';
     active: boolean;
+    name?: string;
   }): Promise<WatchlistWallet>;
   getWallet(address: string): Promise<WatchlistWallet | null>;
   setWalletActive(address: string, active: boolean): Promise<boolean>;
@@ -49,7 +50,7 @@ export interface CommandDeps {
 const HELP = [
   'ArgusTrench — wallet watching',
   '',
-  '/watch <address>     πρόσθεσε wallet στη watchlist (ενεργό αμέσως)',
+  '/watch <address> [name]  πρόσθεσε wallet (όνομα προαιρετικό, ενεργό αμέσως)',
   '/unwatch <address>   απενεργοποίησε wallet (οποιοδήποτε source — χειροκίνητο veto)',
   '/score <address>     τρέχον score + τάση από το ιστορικό',
   '/watchlist           όλα τα ενεργά wallets: source + τρέχον score',
@@ -70,13 +71,16 @@ export async function handleCommand(text: string, deps: CommandDeps): Promise<st
   // Δουλεύει και με /watch@BotName, όπως στέλνει το Telegram σε groups.
   const command = (parts[0] ?? '').toLowerCase().split('@')[0];
   const argument = parts[1];
+  // Ό,τι μείνει μετά τη διεύθυνση είναι προαιρετικό όνομα — /watch <address> <name...>,
+  // επιτρέπει ονόματα με κενά (π.χ. "chris kogias"). Κενό string αν δεν δόθηκε τίποτα.
+  const rest = parts.slice(2).join(' ');
 
   switch (command) {
     case '/start':
     case '/help':
       return HELP;
     case '/watch':
-      return withAddress(argument, (address) => watch(address, deps));
+      return withAddress(argument, (address) => watch(address, rest, deps));
     case '/unwatch':
       return withAddress(argument, (address) => unwatch(address, deps));
     case '/score':
@@ -102,24 +106,34 @@ async function withAddress(
   return handler(argument);
 }
 
-async function watch(address: string, deps: CommandDeps): Promise<string> {
+async function watch(address: string, name: string, deps: CommandDeps): Promise<string> {
   // Πρώτα το upsert: αν το GMGN είναι κάτω, το wallet πρέπει ΠΑΡΑ ΤΑΥΤΑ να μπει στη
   // λίστα. Το scoring είναι πληροφορία, όχι προϋπόθεση.
-  await deps.upsertWallet({ address, source: 'manual', active: true });
+  const trimmedName = name.trim();
+  await deps.upsertWallet({
+    address,
+    source: 'manual',
+    active: true,
+    ...(trimmedName === '' ? {} : { name: trimmedName }),
+  });
 
   let stats: WalletStats;
   try {
     stats = await deps.fetchStats(address);
   } catch (error) {
     return [
-      `✅ Προστέθηκε (ενεργό): ${address}`,
+      `✅ Προστέθηκε (ενεργό): ${address}${trimmedName === '' ? '' : ` (${trimmedName})`}`,
       `⚠️ Το scoring απέτυχε: ${errorText(error)}`,
       'Θα ξανα-σκοραριστεί στον επόμενο κύκλο.',
     ].join('\n');
   }
 
   await persistScore(address, stats, deps);
-  return [`✅ Προστέθηκε (ενεργό): ${address}`, formatStats(stats), advisory(stats)]
+  return [
+    `✅ Προστέθηκε (ενεργό): ${address}${trimmedName === '' ? '' : ` (${trimmedName})`}`,
+    formatStats(stats),
+    advisory(stats),
+  ]
     .filter((line) => line !== '')
     .join('\n');
 }
@@ -177,7 +191,8 @@ async function watchlist(deps: CommandDeps): Promise<string> {
     const win = w.winRate == null ? '—' : formatPercent(w.winRate);
     const pnl = w.pnlMultiplier == null ? '—' : formatPercent(w.pnlMultiplier, true);
     const positions = w.tradeCount ?? '—';
-    return `• ${w.address} — ${w.source} | win ${win} | pnl ${pnl} | ${positions} θέσεις`;
+    const label = w.name == null ? w.address : `${w.name} (${w.address})`;
+    return `• ${label} — ${w.source} | win ${win} | pnl ${pnl} | ${positions} θέσεις`;
   });
   return [`Ενεργά wallets (${wallets.length}):`, ...rows].join('\n');
 }
@@ -191,7 +206,10 @@ async function trades(deps: CommandDeps): Promise<string> {
   if (recent.length === 0) return 'Κανένα trade ακόμα (Φάση 1: μόνο μετά από signal_logged).';
 
   const rows = recent.map((t) => {
-    const wallet = t.triggerWalletAddress === null ? '—' : short(t.triggerWalletAddress);
+    const wallet =
+      t.triggerWalletAddress === null
+        ? '—'
+        : (t.triggerWalletName ?? short(t.triggerWalletAddress));
     const entryPrice = t.simulatedEntryPrice == null ? '—' : t.simulatedEntryPrice.toPrecision(4);
     const amount = t.simulatedEntryAmountSol == null ? '—' : `${t.simulatedEntryAmountSol.toFixed(3)} SOL`;
     const when = t.entryAt.toISOString().replace('T', ' ').slice(0, 16);

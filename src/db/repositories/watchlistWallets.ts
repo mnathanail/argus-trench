@@ -23,6 +23,9 @@ export interface WatchlistWallet {
   /** NULL όταν active. 'manual' (/unwatch) ή 'below_threshold' (auto) όταν όχι — βλ.
    * `setWalletActive`. Το auto-reactivate ΠΟΤΕ δεν παρακάμπτει ένα 'manual'. */
   deactivatedReason: string | null;
+  /** Προαιρετικό, γνωστό όνομα/alias του κατόχου (π.χ. δημόσιο GMGN nickname) — ΜΟΝΟ αν
+   * το ξέρει ο χρήστης, ποτέ αυτόματο. NULL για τα περισσότερα, ειδικά auto-discovered. */
+  name: string | null;
 }
 
 interface WalletRow {
@@ -40,11 +43,12 @@ interface WalletRow {
   last_seen_activity_at: Date | null;
   last_activity_checked_at: Date | null;
   deactivated_reason: string | null;
+  name: string | null;
 }
 
 const COLUMNS = `id, address, chain, source, win_rate, pnl_multiplier, trade_count,
                  active, added_at, last_reviewed_at, last_seen_tx_hash,
-                 last_seen_activity_at, last_activity_checked_at, deactivated_reason`;
+                 last_seen_activity_at, last_activity_checked_at, deactivated_reason, name`;
 
 function mapWallet(row: WalletRow): WatchlistWallet {
   return {
@@ -63,6 +67,7 @@ function mapWallet(row: WalletRow): WatchlistWallet {
     lastSeenActivityAt: row.last_seen_activity_at,
     lastActivityCheckedAt: row.last_activity_checked_at,
     deactivatedReason: row.deactivated_reason,
+    name: row.name,
   };
 }
 
@@ -79,26 +84,33 @@ export interface UpsertWalletInput {
   winRate?: number | null;
   pnlMultiplier?: number | null;
   tradeCount?: number | null;
+  /** undefined = μην αγγίξεις το υπάρχον όνομα (π.χ. re-watch χωρίς νέο όνομα). Δώσε
+   * string για να ορίσεις/αλλάξεις — δεν υπάρχει τρόπος να καθαριστεί σε κενό ρητά εδώ,
+   * δεν χρειάστηκε ακόμα. */
+  name?: string;
 }
 
 /**
  * Idempotent ως προς `address` (UNIQUE). Το `added_at` δε πειράζεται σε conflict, ώστε
- * ένα re-add να μη σβήνει το πότε μπήκε αρχικά το wallet.
+ * ένα re-add να μη σβήνει το πότε μπήκε αρχικά το wallet. Το `name` σε conflict μένει
+ * ως έχει αν δεν δοθεί νέο (COALESCE) — ένα bare re-watch δεν πρέπει να σβήνει όνομα
+ * που είχε ήδη μπει.
  */
 export async function upsertWallet(
   input: UpsertWalletInput,
   conn?: Queryable,
 ): Promise<WatchlistWallet> {
   const { rows } = await db(conn).query<WalletRow>(
-    `INSERT INTO watchlist_wallets (address, chain, source, active, win_rate, pnl_multiplier, trade_count)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
+    `INSERT INTO watchlist_wallets (address, chain, source, active, win_rate, pnl_multiplier, trade_count, name)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
      ON CONFLICT (address) DO UPDATE SET
        chain = EXCLUDED.chain,
        source = EXCLUDED.source,
        active = EXCLUDED.active,
        win_rate = EXCLUDED.win_rate,
        pnl_multiplier = EXCLUDED.pnl_multiplier,
-       trade_count = EXCLUDED.trade_count
+       trade_count = EXCLUDED.trade_count,
+       name = COALESCE(EXCLUDED.name, watchlist_wallets.name)
      RETURNING ${COLUMNS}`,
     [
       input.address,
@@ -108,6 +120,7 @@ export async function upsertWallet(
       input.winRate ?? null,
       input.pnlMultiplier ?? null,
       input.tradeCount ?? null,
+      input.name ?? null,
     ],
   );
   return mapWallet(requireRow(rows, 'upsertWallet'));
