@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { GmgnRateLimitError } from './gmgn/errors.js';
 import {
+  applyJitter,
   ExclusiveCoordinator,
   retryDelayMs,
   runScheduler,
@@ -90,7 +91,15 @@ test('a loop that keeps failing sleeps increasing amounts, and resets to interva
     },
   };
 
-  await runScheduler({ loops: [loop], cooldown, signal: controller.signal, clock });
+  await runScheduler({
+    loops: [loop],
+    cooldown,
+    signal: controller.signal,
+    clock,
+    // Ουδέτερο jitter (multiplier ακριβώς 1.0) — αυτό το test ελέγχει την πρόοδο του
+    // backoff, όχι το jitter· το jitter τεσταρίζεται ξεχωριστά στο applyJitter.
+    random: () => 0.5,
+  });
 
   // 3 συνεχόμενες αποτυχίες: 100, 200, 300 (backoff)· μετά η επιτυχία μηδενίζει τον
   // μετρητή, άρα το επόμενο interval είναι το κανονικό 1000, όχι συνέχεια του backoff.
@@ -171,4 +180,15 @@ test('regular loops are serialized: only one regular loop may be active at a tim
   });
 
   assert.equal(maxRunning, 1);
+});
+
+test('applyJitter: stays within ±15% of the base value across the full random range', () => {
+  assert.equal(applyJitter(1000, () => 0), 850); // κατώτατο άκρο
+  assert.equal(applyJitter(1000, () => 1), 1150); // ανώτατο άκρο
+  assert.equal(applyJitter(1000, () => 0.5), 1000); // ουδέτερο
+});
+
+test('applyJitter: never returns a negative or zero delay for a positive base', () => {
+  const result = applyJitter(60_000, () => 0);
+  assert.ok(result > 0);
 });

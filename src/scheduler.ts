@@ -77,6 +77,8 @@ export interface SchedulerOptions {
   signal?: AbortSignal;
   clock?: SchedulerClock;
   log?: (message: string) => void;
+  /** Injectable για tests — βλ. `applyJitter`. Default: Math.random. */
+  random?: () => number;
 }
 
 interface CoordinatorWaiter {
@@ -195,7 +197,15 @@ async function runLoop(
     // Το interval μετριέται από την ΑΡΧΗ του κύκλου, ώστε ένας αργός κύκλος να μη
     // προσθέτει καθυστέρηση πάνω στην καθυστέρηση.
     const elapsed = clock.now() - startedAt;
-    const intervalMs = failed ? retryDelayMs(loop, consecutiveFailures) : loop.intervalMs;
+    // Jitter ΜΟΝΟ στο retry path — επιβεβαιωμένο real incident 2026-09-02/03: 23+ ώρες
+    // επαναλαμβανόμενο RATE_LIMIT_EXCEEDED (~30s reset το καθένα) παρά τα σταθερά
+    // backoff διαστήματα (μέχρι 60 λεπτά αναμονή ανάμεσα σε προσπάθειες). Πιθανή αιτία:
+    // ένα απόλυτα σταθερό backoff μπορεί να "συγχρονιστεί" ξανά και ξανά με οποιοδήποτε
+    // περιοδικό μοτίβο έχει η πλευρά του GMGN — ίδιο πρόβλημα με resonance σε
+    // κατανεμημένα συστήματα. Δεν είναι αποδεδειγμένη πλήρης εξήγηση, αλλά το jitter
+    // είναι φθηνό, ασφαλές, και καθιερωμένη πρακτική ανεξάρτητα.
+    const baseIntervalMs = failed ? retryDelayMs(loop, consecutiveFailures) : loop.intervalMs;
+    const intervalMs = failed ? applyJitter(baseIntervalMs, options.random ?? Math.random) : baseIntervalMs;
     if (failed) {
       log(
         `[${loop.name}] retry in ${Math.ceil(intervalMs / 1000)}s ` +
@@ -204,6 +214,12 @@ async function runLoop(
     }
     await clock.sleep(Math.max(0, intervalMs - elapsed), options.signal);
   }
+}
+
+/** ±15% γύρω από την τιμή — αρκετό να σπάσει τυχόν συγχρονισμό, όχι τόσο πολύ ώστε να
+ * κάνει το backoff απρόβλεπτο/δυσνόητο στα logs. */
+export function applyJitter(baseMs: number, random: () => number): number {
+  return Math.round(baseMs * (0.85 + random() * 0.3));
 }
 
 /**
