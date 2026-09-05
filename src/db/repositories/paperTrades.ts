@@ -20,6 +20,15 @@ export interface NewPaperTrade {
   /** Το exit plan όπως μπήκε ΤΗ ΣΤΙΓΜΗ του entry, όχι όπως το θυμόμαστε μετά. Πάντα array
    * από order objects (π.χ. [{order_type:'profit_stop',...}, {...}]), ποτέ bare object. */
   conditionOrders?: readonly Record<string, unknown>[] | null;
+  /** Η ΠΡΑΓΜΑΤΙΚΗ στιγμή της on-chain αγοράς (π.χ. buy.timestamp), ΟΧΙ πότε το
+   * επεξεργαστήκαμε — undefined πέφτει σε now() (προεπιλογή, π.χ. αν δεν υπάρχει
+   * διαθέσιμο ιστορικό timestamp). Κρίσιμο για catch-up batches: ένα wallet-activity
+   * cycle που μόλις ξεμπλόκαρε μπορεί να γράψει δεκάδες signals μέσα σε δευτερόλεπτα
+   * για αγορές που στην πραγματικότητα έγιναν σε διάστημα ημερών — entryAt=now() θα
+   * τους έδινε πλασματικό, ταυτόσημο entry_at και θα καθυστερούσε λάθος το 24ωρο
+   * timeout τους. Επιβεβαιωμένο real incident 2026-09-05.
+   */
+  entryAt?: Date;
 }
 
 export interface PaperTrade {
@@ -100,8 +109,8 @@ export async function openTrade(input: NewPaperTrade, conn?: Queryable): Promise
     `INSERT INTO paper_trades (
        decision_log_id, token_address, chain, mode, intended_size_pct, bankroll_at_entry,
        simulated_entry_price, simulated_entry_amount_sol, assumed_slippage_pct,
-       assumed_latency_ms, condition_orders_json
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       assumed_latency_ms, condition_orders_json, entry_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
      RETURNING id`,
     [
       input.decisionLogId,
@@ -115,6 +124,7 @@ export async function openTrade(input: NewPaperTrade, conn?: Queryable): Promise
       input.assumedSlippagePct,
       input.assumedLatencyMs,
       toJsonParam(input.conditionOrders),
+      input.entryAt ?? new Date(),
     ],
   );
   return toNum(requireRow(rows, 'openTrade').id);

@@ -126,6 +126,11 @@ export async function runWalletActivityCycle(
           assumedSlippagePct: PAPER_ASSUMED_SLIPPAGE_PCT,
           assumedLatencyMs: PAPER_ASSUMED_LATENCY_MS,
           conditionOrders: conditionOrdersJson(),
+          // Η ΠΡΑΓΜΑΤΙΚΗ στιγμή της on-chain αγοράς — ΟΧΙ now(). Κρίσιμο σε catch-up
+          // batches (πολλά signals από ένα backlogged wallet γραμμένα μέσα σε
+          // δευτερόλεπτα): χωρίς αυτό, όλα θα έπαιρναν το ίδιο πλασματικό entry_at,
+          // καθυστερώντας λάθος το 24ωρο timeout τους. Επιβεβαιωμένο 2026-09-05.
+          entryAt: new Date(buy.timestamp * 1000),
         },
       );
       if (recorded !== null) signalsRecorded += 1;
