@@ -276,8 +276,35 @@ test('/trades shows token, trigger wallet, entry, and status for open and closed
 
   const reply = await handleCommand('/trades', deps);
   assert.match(reply, /Τελευταία 2 trades/);
-  assert.match(reply, /Toke…2222.*wallet AV7P…8gUz.*✅ tp_tier_1.*pnl \+50\.0%/);
-  assert.match(reply, /Toke…1111.*wallet —.*🟡 open/);
+  assert.match(
+    reply,
+    /Toke…2222 \| in 2026-08-28 10:00 → out 2026-08-28 11:00 \| wallet AV7P…8gUz.*🟢 tp_tier_1.*pnl \+50\.0%/,
+  );
+  assert.match(reply, /Toke…1111 \| in 2026-08-28 09:00 \| wallet —.*🟡 open/);
+});
+
+test('/trades marks a losing closed trade with 🔴, not 🟢', async () => {
+  const deps = stubDeps();
+  deps.listRecentTrades = () =>
+    Promise.resolve([
+      {
+        id: 4,
+        tokenAddress: 'TokenFourAAAAAAAAAAAAAAAAAAAAAAAAAAAA4444',
+        triggerWalletAddress: null,
+        triggerWalletName: null,
+        entryAt: new Date('2026-08-28T09:00:00Z'),
+        simulatedEntryPrice: 0.0000456,
+        simulatedEntryAmountSol: 0.1,
+        status: 'closed',
+        exitReason: 'timeout',
+        exitAt: new Date('2026-08-29T09:00:00Z'),
+        pnlPct: -0.35,
+      },
+    ]);
+
+  const reply = await handleCommand('/trades', deps);
+  assert.match(reply, /🔴 timeout.*pnl -35\.0%/);
+  assert.doesNotMatch(reply, /🟢/);
 });
 
 test('/trades shows the known wallet name instead of the short address when one is set', async () => {

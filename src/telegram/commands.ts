@@ -212,13 +212,17 @@ async function trades(deps: CommandDeps): Promise<string> {
         : (t.triggerWalletName ?? short(t.triggerWalletAddress));
     const entryPrice = t.simulatedEntryPrice == null ? '—' : t.simulatedEntryPrice.toPrecision(4);
     const amount = t.simulatedEntryAmountSol == null ? '—' : `${t.simulatedEntryAmountSol.toFixed(3)} SOL`;
-    const when = t.entryAt.toISOString().replace('T', ' ').slice(0, 16);
+    const entryWhen = t.entryAt.toISOString().replace('T', ' ').slice(0, 16);
 
     if (t.status === 'open') {
-      return `• ${short(t.tokenAddress)} | ${when} | wallet ${wallet} | entry ${entryPrice} (${amount}) | 🟡 open`;
+      return `• ${short(t.tokenAddress)} | in ${entryWhen} | wallet ${wallet} | entry ${entryPrice} (${amount}) | 🟡 open`;
     }
+    const exitWhen = t.exitAt === null ? '—' : t.exitAt.toISOString().replace('T', ' ').slice(0, 16);
     const pnl = t.pnlPct == null ? '—' : formatPercent(t.pnlPct, true);
-    return `• ${short(t.tokenAddress)} | ${when} | wallet ${wallet} | entry ${entryPrice} (${amount}) | ✅ ${t.exitReason ?? 'closed'} | pnl ${pnl}`;
+    // Ρητό πράσινο/κόκκινο αντί μόνο για το πρόσημο του pnl — ζητήθηκε ρητά "ήταν
+    // πράσινα;" να απαντιέται με μια ματιά, όχι διαβάζοντας το ποσοστό.
+    const outcome = t.pnlPct == null ? '⚪' : t.pnlPct > 0 ? '🟢' : '🔴';
+    return `• ${short(t.tokenAddress)} | in ${entryWhen} → out ${exitWhen} | wallet ${wallet} | entry ${entryPrice} (${amount}) | ${outcome} ${t.exitReason ?? 'closed'} | pnl ${pnl}`;
   });
 
   return [`Τελευταία ${recent.length} trades (log_only):`, ...rows].join('\n');

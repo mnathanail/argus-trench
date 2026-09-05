@@ -276,7 +276,11 @@ export async function listRecentTrades(limit: number, conn?: Queryable): Promise
        FROM paper_trades t
        JOIN decision_log d ON d.id = t.decision_log_id
        LEFT JOIN watchlist_wallets w ON w.address = d.trigger_wallet_address
-      ORDER BY t.entry_at DESC
+      -- COALESCE(exit_at, entry_at): το πιο πρόσφατο ΓΕΓΟΝΟΣ, όχι πάντα το entry. Έτσι
+      -- ένα trade που μόλις έκλεισε (ίσως ανοίχτηκε ώρες πριν) εμφανίζεται πρώτο — αυτό
+      -- ζητήθηκε ρητά: μετά από ειδοποίηση "N trades έκλεισαν", το /trades πρέπει να
+      -- δείχνει ΑΚΡΙΒΩΣ αυτά πρώτα, όχι να τα θάβει πίσω από νεότερα ανοίγματα.
+      ORDER BY COALESCE(t.exit_at, t.entry_at) DESC
       LIMIT $1`,
     [limit],
   );
