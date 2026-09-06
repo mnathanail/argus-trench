@@ -381,6 +381,70 @@ function wallet(address: string): WatchlistWallet {
   };
 }
 
+test('/leaderboard shows full (uncut) address, name, and our own result per wallet', async () => {
+  const deps = stubDeps();
+  deps.getWalletLeaderboard = (limit) => {
+    assert.equal(limit, 10, 'default όταν δεν δίνεται όρισμα');
+    return Promise.resolve([
+      {
+        address: ADDRESS,
+        name: 'chriskogias',
+        closedTrades: 12,
+        openTrades: 2,
+        wins: 9,
+        totalProfitSol: 4.8235,
+        totalPnlPct: 4.823,
+        avgPnlPct: 0.402,
+      },
+      {
+        address: 'BAdWalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        name: null,
+        closedTrades: 5,
+        openTrades: 0,
+        wins: 1,
+        totalProfitSol: -0.15,
+        totalPnlPct: -0.15,
+        avgPnlPct: -0.03,
+      },
+    ]);
+  };
+
+  const reply = await handleCommand('/leaderboard', deps);
+  // Ολόκληρη η διεύθυνση πρέπει να φαίνεται, ΟΧΙ κομμένη (π.χ. "AV7P…8gUz").
+  assert.match(reply, new RegExp(`chriskogias — ${ADDRESS}`));
+  assert.match(reply, /12 closed \(9W\/3L, win 75\.0%\) \| 2 ανοιχτά/);
+  assert.match(reply, /Σ \+4\.8235 SOL \(\+482\.3%\) \| μ\.ο\. \+40\.2%\/trade/);
+  // Δεύτερο wallet: χωρίς γνωστό όνομα — μόνο η διεύθυνση, ζημιογόνο (χωρίς + στο SOL).
+  assert.match(reply, /2\. BAdWalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/);
+  assert.match(reply, /Σ -0\.1500 SOL \(-15\.0%\)/);
+});
+
+test('/leaderboard accepts an explicit N, clamped to a sane maximum', async () => {
+  const deps = stubDeps();
+  let capturedLimit = -1;
+  deps.getWalletLeaderboard = (limit) => {
+    capturedLimit = limit;
+    return Promise.resolve([]);
+  };
+
+  await handleCommand('/leaderboard 3', deps);
+  assert.equal(capturedLimit, 3);
+
+  await handleCommand('/leaderboard 9999', deps);
+  assert.equal(capturedLimit, 25, 'clamp — δεν έχει νόημα ένα τεράστιο Telegram μήνυμα');
+
+  await handleCommand('/leaderboard not-a-number', deps);
+  assert.equal(capturedLimit, 10, 'άκυρο όρισμα πέφτει στο default, όχι σε NaN/crash');
+});
+
+test('/leaderboard reports plainly when no wallet has a closed trade yet', async () => {
+  const deps = stubDeps();
+  deps.getWalletLeaderboard = () => Promise.resolve([]);
+
+  const reply = await handleCommand('/leaderboard', deps);
+  assert.match(reply, /Κανένα wallet/);
+});
+
 function stubDeps(statsOverride: Partial<WalletStats> = {}): CommandDeps {
   const stats: WalletStats = {
     walletAddress: ADDRESS,
@@ -404,5 +468,6 @@ function stubDeps(statsOverride: Partial<WalletStats> = {}): CommandDeps {
     recentScores: () => Promise.resolve([]),
     listActiveWallets: () => Promise.resolve([]),
     listRecentTrades: () => Promise.resolve([]),
+    getWalletLeaderboard: () => Promise.resolve([]),
   };
 }

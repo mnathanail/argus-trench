@@ -298,3 +298,77 @@ export async function listRecentTrades(limit: number, conn?: Queryable): Promise
     pnlPct: toNumOrNull(row.pnl_pct),
   }));
 }
+
+export interface WalletLeaderboardEntry {
+  address: string;
+  /** Γνωστό όνομα κατόχου (migration 0008), NULL αν δεν το ξέρουμε. */
+  name: string | null;
+  /** Πόσα από τα ΔΙΚΑ ΜΑΣ trades που πυροδότησε αυτό το wallet έχουν κλείσει με γνωστό
+   * αποτέλεσμα — `no_market_data` (pnl_pct=NULL) ΔΕΝ μετράει, δεν κουβαλάει πληροφορία
+   * για το αν αξίζει να το ακολουθούμε. */
+  closedTrades: number;
+  /** Πόσα ακόμα περιμένουν αποτέλεσμα — context, ΔΕΝ μετράει στα παρακάτω νούμερα. */
+  openTrades: number;
+  wins: number;
+  /** Το ΔΙΚΟ ΜΑΣ αθροιστικό αποτέλεσμα σε SOL — εξαρτάται από το τρέχον
+   * PAPER_BANKROLL_SOL (ακόμα placeholder τη στιγμή που γράφτηκε αυτό), ΟΧΙ από το
+   * πραγματικό PnL του ίδιου του wallet στο GMGN. */
+  totalProfitSol: number;
+  /** Άθροισμα των pnl_pct — η ίδια πληροφορία με το SOL παραπάνω, χωρίς την εξάρτηση
+   * από το bankroll assumption. */
+  totalPnlPct: number;
+  /** Μέσος όρος pnl_pct ανά trade — πόσο "τυπικό" είναι το αποτέλεσμα, λιγότερο
+   * επηρεασμένο από το μέγεθος δείγματος απ' ό,τι το total. */
+  avgPnlPct: number | null;
+}
+
+/**
+ * ΔΙΚΟ ΜΑΣ αποτέλεσμα ακολουθώντας το σήμα κάθε wallet — ΟΧΙ το win_rate/pnl_multiplier
+ * του ίδιου του wallet στο GMGN (αυτό ήδη υπάρχει στο `/watchlist`). Αυτό απαντάει σε
+ * διαφορετική ερώτηση: "πόσο θα είχαμε κερδίσει/χάσει ΕΜΕΙΣ, ακολουθώντας το."
+ *
+ * Ταξινόμηση κατά total_profit_sol DESC — "ποιο wallet μας έβγαλε τα περισσότερα".
+ */
+export async function getWalletLeaderboard(
+  limit: number,
+  conn?: Queryable,
+): Promise<WalletLeaderboardEntry[]> {
+  const { rows } = await db(conn).query<{
+    address: string;
+    name: string | null;
+    closed_trades: string;
+    open_trades: string;
+    wins: string;
+    total_profit_sol: string;
+    total_pnl_pct: string;
+    avg_pnl_pct: string | null;
+  }>(
+    `SELECT dl.trigger_wallet_address AS address,
+            w.name,
+            COUNT(*) FILTER (WHERE pt.status = 'closed' AND pt.pnl_pct IS NOT NULL) AS closed_trades,
+            COUNT(*) FILTER (WHERE pt.status = 'open') AS open_trades,
+            COUNT(*) FILTER (WHERE pt.status = 'closed' AND pt.pnl_pct > 0) AS wins,
+            COALESCE(SUM(pt.pnl_sol) FILTER (WHERE pt.status = 'closed'), 0) AS total_profit_sol,
+            COALESCE(SUM(pt.pnl_pct) FILTER (WHERE pt.status = 'closed'), 0) AS total_pnl_pct,
+            AVG(pt.pnl_pct) FILTER (WHERE pt.status = 'closed') AS avg_pnl_pct
+       FROM paper_trades pt
+       JOIN decision_log dl ON dl.id = pt.decision_log_id
+       LEFT JOIN watchlist_wallets w ON w.address = dl.trigger_wallet_address
+      WHERE dl.trigger_wallet_address IS NOT NULL
+      GROUP BY dl.trigger_wallet_address, w.name
+     HAVING COUNT(*) FILTER (WHERE pt.status = 'closed' AND pt.pnl_pct IS NOT NULL) > 0
+      ORDER BY total_profit_sol DESC
+      LIMIT $1`,
+    [limit],
+  );
+  return rows.map((row) => ({
+    address: row.address,
+    name: row.name,
+    closedTrades: toNum(row.closed_trades),
+    openTrades: toNum(row.open_trades),
+    wins: toNum(row.wins),
+    totalProfitSol: toNum(row.total_profit_sol),
+    totalPnlPct: toNum(row.total_pnl_pct),
+    avgPnlPct: toNumOrNull(row.avg_pnl_pct),
+  }));
+}

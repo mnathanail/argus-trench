@@ -1,7 +1,7 @@
 import type { WalletStats } from '../gmgn/walletStats.js';
 import type { WatchlistWallet } from '../db/repositories/watchlistWallets.js';
 import type { WalletScoreEntry } from '../db/repositories/walletScoreHistory.js';
-import type { TradeSummary } from '../db/repositories/paperTrades.js';
+import type { TradeSummary, WalletLeaderboardEntry } from '../db/repositories/paperTrades.js';
 
 /**
  * Οι εντολές του manual wallet watching. Καθαρά συναρτήσεις πάνω σε injected deps, ώστε
@@ -45,6 +45,7 @@ export interface CommandDeps {
   recentScores(address: string, limit: number): Promise<WalletScoreEntry[]>;
   listActiveWallets(): Promise<WatchlistWallet[]>;
   listRecentTrades(limit: number): Promise<TradeSummary[]>;
+  getWalletLeaderboard(limit: number): Promise<WalletLeaderboardEntry[]>;
 }
 
 const HELP = [
@@ -56,6 +57,7 @@ const HELP = [
   '/watchlist           όλα τα ενεργά wallets: source + τρέχον score',
   '/list                alias του /watchlist',
   '/trades              τελευταία signal_logged trades (log_only, Φάση 1)',
+  '/leaderboard [N]      ΔΙΚΟ ΜΑΣ αποτέλεσμα ανά wallet, ταξινομημένο (default 10)',
   '/help                αυτό το μήνυμα',
 ].join('\n');
 
@@ -90,6 +92,8 @@ export async function handleCommand(text: string, deps: CommandDeps): Promise<st
       return watchlist(deps);
     case '/trades':
       return trades(deps);
+    case '/leaderboard':
+      return leaderboard(argument, deps);
     default:
       return `Άγνωστη εντολή: ${command || '(κενό)'}\n\n${HELP}`;
   }
@@ -226,6 +230,36 @@ async function trades(deps: CommandDeps): Promise<string> {
   });
 
   return [`Τελευταία ${recent.length} trades (log_only):`, ...rows].join('\n');
+}
+
+async function leaderboard(argument: string | undefined, deps: CommandDeps): Promise<string> {
+  const parsed = argument === undefined ? 10 : Number.parseInt(argument, 10);
+  const limit = Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 25) : 10;
+
+  const entries = await deps.getWalletLeaderboard(limit);
+  if (entries.length === 0) {
+    return 'Κανένα wallet με έστω ένα κλεισμένο trade ακόμα.';
+  }
+
+  const rows = entries.map((e, index) => {
+    // Πλήρης διεύθυνση, ΟΧΙ κομμένη (short()) — ζητήθηκε ρητά αδιαμφισβήτητη
+    // ταυτοποίηση εδώ, όχι συντομογραφία σαν το /trades ή το /watchlist.
+    const label = e.name === null ? e.address : `${e.name} — ${e.address}`;
+    const winRate = e.closedTrades === 0 ? '—' : formatPercent(e.wins / e.closedTrades);
+    const totalSol = `${e.totalProfitSol >= 0 ? '+' : ''}${e.totalProfitSol.toFixed(4)} SOL`;
+    const totalPct = formatPercent(e.totalPnlPct, true);
+    const avgPct = e.avgPnlPct === null ? '—' : formatPercent(e.avgPnlPct, true);
+    return (
+      `${index + 1}. ${label}\n` +
+      `   ${e.closedTrades} closed (${e.wins}W/${e.closedTrades - e.wins}L, win ${winRate}) | ${e.openTrades} ανοιχτά\n` +
+      `   Σ ${totalSol} (${totalPct}) | μ.ο. ${avgPct}/trade`
+    );
+  });
+
+  return [
+    `Top ${entries.length} wallets — ΔΙΚΟ ΜΑΣ αποτέλεσμα ακολουθώντας το σήμα τους (log_only, Φάση 1):`,
+    ...rows,
+  ].join('\n');
 }
 
 async function persistScore(address: string, stats: WalletStats, deps: CommandDeps): Promise<void> {
