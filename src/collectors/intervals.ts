@@ -155,3 +155,13 @@ export const WALLET_DISCOVERY_INITIAL_DELAY_MS = 30_000;
 export const WALLET_DISCOVERY_RETRY_BACKOFF_MS = [
   60 * 60 * 1000, // Κάθε αποτυχία — επόμενη προσπάθεια στο επόμενο hourly window
 ] as const;
+
+/**
+ * Ημερήσια αναφορά στο Telegram — μία φορά κάθε 24 ώρες. Η ΩΡΑ (00:05 τοπική ώρα
+ * Αθήνας) υπολογίζεται στο main.ts μέσω `msUntilNextAthensTime`, όχι εδώ — χρειάζεται
+ * το πραγματικό "τώρα" τη στιγμή του process start, το οποίο δεν το ξέρει ένα module με
+ * σταθερές. Δεν αγγίζει κανένα GMGN endpoint — καθαρά δικά μας δεδομένα, δε χρειάζεται
+ * retryBackoff/rate-limit πρόνοια σαν τα υπόλοιπα loops.
+ */
+export const DAILY_DIGEST_INTERVAL_MS = 24 * 60 * 60 * 1000;
+

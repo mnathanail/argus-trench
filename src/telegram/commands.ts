@@ -296,7 +296,7 @@ function advisory(stats: WalletStats): string {
   return reasons.length === 0 ? '' : `⚠️ Άξιο review: ${reasons.join(', ')}. Δεν απενεργοποιήθηκε.`;
 }
 
-function formatPercent(value: number, signed = false): string {
+export function formatPercent(value: number, signed = false): string {
   const sign = signed && value > 0 ? '+' : '';
   return `${sign}${(value * 100).toFixed(1)}%`;
 }
@@ -312,6 +312,6 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function short(address: string): string {
+export function short(address: string): string {
   return `${address.slice(0, 4)}…${address.slice(-4)}`;
 }

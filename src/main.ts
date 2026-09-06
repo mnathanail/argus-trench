@@ -1,9 +1,11 @@
 import { runDiscoveryCycle } from './collectors/discovery.js';
 import { runExitResolverCycle } from './collectors/exitResolver.js';
+import { runDailyDigestCycle } from './collectors/dailyDigest.js';
 import {
   DISCOVERY_INTERVAL_MS,
   DISCOVERY_INITIAL_DELAY_MS,
   DISCOVERY_RETRY_BACKOFF_MS,
+  DAILY_DIGEST_INTERVAL_MS,
   EXIT_RESOLVER_INITIAL_DELAY_MS,
   EXIT_RESOLVER_INTERVAL_MS,
   WALLET_ACTIVITY_INTERVAL_MS,
@@ -23,6 +25,7 @@ import { runWalletDiscoveryCycle } from './collectors/walletDiscovery.js';
 import { config } from './config.js';
 import { closePool } from './db/pool.js';
 import { logicVersion } from './decision/gateConfig.js';
+import { msUntilNextAthensTime } from './util/athensTime.js';
 import { runScheduler, SharedCooldown, type LoopDefinition } from './scheduler.js';
 import { createBotFromEnv, runBot } from './telegram/bot.js';
 
@@ -153,6 +156,18 @@ const loops: LoopDefinition[] = [
       if (result.closed > 0) {
         await notify(`📉 ${result.closed} log_only trade(s) έκλεισαν — δες /trades για λεπτομέρειες`);
       }
+    },
+  },
+  {
+    name: 'daily-digest',
+    intervalMs: DAILY_DIGEST_INTERVAL_MS,
+    // Υπολογίζεται ΤΩΡΑ, στο startup — πόσα ms μέχρι το επόμενο 00:05 τοπική ώρα
+    // Αθήνας. Timezone-aware (DST-safe), βλ. util/athensTime.ts. Κάθε redeploy
+    // ξαναϋπολογίζει από την αρχή, άρα παραμένει σωστό ακόμα και με συχνά restarts.
+    initialDelayMs: msUntilNextAthensTime(0, 5),
+    run: async () => {
+      const message = await runDailyDigestCycle();
+      await notify(message);
     },
   },
 ];
