@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { msUntilNextAthensTime } from './athensTime.js';
+import { msUntilNextAthensTime, startOfAthensDay } from './athensTime.js';
 
 test('msUntilNextAthensTime: target later today (winter, EET/UTC+2) — straightforward same-day math', () => {
   // 2026-01-15 10:00 UTC = 12:00 Αθήνας (χειμώνας, UTC+2). Στόχος 00:05 Αθήνας —
@@ -57,4 +57,34 @@ test('msUntilNextAthensTime: idempotent-ish — calling again from the computed 
   const secondMs = msUntilNextAthensTime(0, 5, firstTarget);
   // Πρέπει να πηγαίνει στην ΕΠΟΜΕΝΗ μέρα, όχι να ξαναγυρίζει στην ίδια στιγμή.
   assert.ok(secondMs > 23 * 60 * 60 * 1000 && secondMs < 25 * 60 * 60 * 1000);
+});
+
+test('startOfAthensDay: right after midnight, "today" is the day that just started (winter, UTC+2)', () => {
+  // 2026-01-15 00:05 Αθήνας (χειμώνας) = 2026-01-14 22:05 UTC.
+  const justAfterMidnight = new Date('2026-01-14T22:05:00Z');
+  const today = startOfAthensDay(justAfterMidnight);
+  assert.equal(today.toISOString(), '2026-01-14T22:00:00.000Z'); // 2026-01-15 00:00 Αθήνας
+});
+
+test('startOfAthensDay: daysAgo=1 gives yesterday, not "24 hours ago" — the actual bug we hit', () => {
+  // Ίδια στιγμή με πάνω — 00:05 Αθήνας, 15/1. Θέλουμε "χθες" = 14/1, όχι ξανά 15/1.
+  const justAfterMidnight = new Date('2026-01-14T22:05:00Z');
+  const yesterday = startOfAthensDay(justAfterMidnight, 1);
+  assert.equal(yesterday.toISOString(), '2026-01-13T22:00:00.000Z'); // 2026-01-14 00:00 Αθήνας
+});
+
+test('startOfAthensDay: daysAgo=1 across the autumn DST transition still gives exactly one calendar day back', () => {
+  // 2026-10-26 00:05 Αθήνας — η ΠΡΩΤΗ μέρα μετά την αλλαγή ώρας (25/10 ήταν η μέρα με
+  // 25 πραγματικές ώρες). "Χθες" πρέπει να είναι 25/10, ΟΧΙ κάτι λάθος λόγω των 25 ωρών.
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Europe/Athens',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  // 2026-10-25 22:05 UTC = 2026-10-26 00:05 EET (μετά την αλλαγή, UTC+2).
+  const now = new Date('2026-10-25T22:05:00Z');
+  const yesterday = startOfAthensDay(now, 1);
+  const parts = Object.fromEntries(formatter.formatToParts(yesterday).map((p) => [p.type, p.value]));
+  assert.equal(`${parts.year}-${parts.month}-${parts.day}`, '2026-10-25');
 });

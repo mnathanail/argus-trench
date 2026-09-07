@@ -1,0 +1,216 @@
+diff --git a/src/collectors/dailyDigest.ts b/src/collectors/dailyDigest.ts
+index 2c1e29a..0d38ced 100644
+--- a/src/collectors/dailyDigest.ts
++++ b/src/collectors/dailyDigest.ts
+@@ -1,5 +1,6 @@
+ import { getDailyDigestData, type DailyDigestData } from '../db/repositories/dailyDigest.js';
+ import { formatPercent, short } from '../telegram/commands.js';
++import { startOfAthensDay } from '../util/athensTime.js';
+ 
+ /**
+  * Καθαρή function, χωρίς DB — παίρνει τα ήδη-υπολογισμένα νούμερα, φτιάχνει το μήνυμα.
+@@ -25,7 +26,7 @@ export function formatDailyDigest(data: DailyDigestData, today: string): string
+   const lines = [
+     `📊 Ημερήσια αναφορά — ${today}`,
+     '',
+-    'Σήμερα:',
++    'Χθες:',
+     `• Νέα trades: ${data.openedToday}`,
+     `• Έκλεισαν: ${data.closedToday} (${data.winsToday}🟢 / ${data.lossesToday}🔴, win rate ${winRateToday})`,
+     `• Κεφάλαιο σε νέες θέσεις: ${data.deployedSolToday.toFixed(4)} SOL`,
+@@ -44,17 +45,28 @@ export function formatDailyDigest(data: DailyDigestData, today: string): string
+   return lines.join('\n');
+ }
+ 
+-/** Η σημερινή ημερομηνία, ΤΟΠΙΚΗ ώρα Αθήνας — για τον τίτλο της αναφοράς. */
+-function athensDateLabel(now: Date): string {
++/** Η ημερομηνία μιας δεδομένης στιγμής, ΤΟΠΙΚΗ ώρα Αθήνας — για τον τίτλο της αναφοράς.
++ * Ονομαστικά "date label", όχι "today" — καλείται με το `yesterdayStart`, αφού η
++ * αναφορά αφορά ΧΘΕΣ (βλ. runDailyDigestCycle). */
++function athensDateLabel(instant: Date): string {
+   return new Intl.DateTimeFormat('el-GR', {
+     timeZone: 'Europe/Athens',
+     year: 'numeric',
+     month: 'long',
+     day: 'numeric',
+-  }).format(now);
++  }).format(instant);
+ }
+ 
++/**
++ * Τρέχει στις 00:05 Αθήνας (βλ. main.ts) — δηλαδή λίγο ΜΕΤΑ τα μεσάνυχτα. Η αναφορά
++ * πρέπει να αφορά τη μέρα που ΜΟΛΙΣ ΤΕΛΕΙΩΣΕ (χθες), όχι τη μέρα που μόλις ξεκίνησε
++ * (σήμερα, 5 λεπτά παλιά) — πραγματικό bug, διορθώθηκε 2026-09-05: το πρώτο μήνυμα
++ * έδειξε σχεδόν άδεια δεδομένα επειδή μετρούσε "σήμερα" αντί για "χθες".
++ */
+ export async function runDailyDigestCycle(): Promise<string> {
+-  const data = await getDailyDigestData();
+-  return formatDailyDigest(data, athensDateLabel(new Date()));
++  const now = new Date();
++  const yesterdayStart = startOfAthensDay(now, 1);
++  const todayStart = startOfAthensDay(now, 0);
++  const data = await getDailyDigestData(yesterdayStart, todayStart);
++  return formatDailyDigest(data, athensDateLabel(yesterdayStart));
+ }
+diff --git a/src/db/repositories/dailyDigest.ts b/src/db/repositories/dailyDigest.ts
+index 607009a..88adb75 100644
+--- a/src/db/repositories/dailyDigest.ts
++++ b/src/db/repositories/dailyDigest.ts
+@@ -1,15 +1,6 @@
+ import { db, type Queryable } from '../tx.js';
+ import { toNum } from '../rows.js';
+ 
+-/**
+- * "Σήμερα" = ημερολογιακή μέρα ΑΘΗΝΑΣ, όχι UTC — standard Postgres idiom:
+- * `now() AT TIME ZONE 'Europe/Athens'` δίνει το τοπικό wall-clock (ως naive timestamp),
+- * `date_trunc('day', ...)` το κόβει σε μεσάνυχτα, και το δεύτερο `AT TIME ZONE` το
+- * ξαναγυρίζει σε πραγματικό timestamptz ερμηνεύοντας το ως τοπική ώρα Αθήνας. Σωστό και
+- * τις μέρες αλλαγής ώρας — το tzdata του ίδιου του Postgres το ξέρει ήδη.
+- */
+-const ATHENS_DAY_START_SQL = `date_trunc('day', now() AT TIME ZONE 'Europe/Athens') AT TIME ZONE 'Europe/Athens'`;
+-
+ export interface BestWorstTrade {
+   tokenAddress: string;
+   pnlPct: number;
+@@ -35,10 +26,19 @@ export interface DailyDigestData {
+ }
+ 
+ /**
++ * `dayStart`/`dayEnd` περνάνε ΕΤΟΙΜΑ από τον caller (βλ. `startOfAthensDay` στο
++ * util/athensTime.ts) — αυτό το επίπεδο δεν αποφασίζει "ποια μέρα", απλά μετράει μέσα
++ * στο [dayStart, dayEnd) που του δόθηκε. Κρατάει το "ποια μέρα θεωρούμε 'σήμερα'"
++ * ξεκάθαρα σε ΕΝΑ σημείο (τον caller), όχι σκόρπιο μέσα σε SQL literals.
++ *
+  * Πολλά απλά queries αντί για ένα γιγάντιο CTE — τρέχει μία φορά τη μέρα, η απλότητα και
+  * η ευκολία επαλήθευσης αξίζουν παραπάνω από την απόδοση εδώ.
+  */
+-export async function getDailyDigestData(conn?: Queryable): Promise<DailyDigestData> {
++export async function getDailyDigestData(
++  dayStart: Date,
++  dayEnd: Date,
++  conn?: Queryable,
++): Promise<DailyDigestData> {
+   const c = db(conn);
+ 
+   const todayCounts = await c.query<{
+@@ -50,29 +50,33 @@ export async function getDailyDigestData(conn?: Queryable): Promise<DailyDigestD
+     profit_pct_today: string;
+   }>(
+     `SELECT
+-       COUNT(*) FILTER (WHERE entry_at >= ${ATHENS_DAY_START_SQL}) AS opened_today,
+-       COUNT(*) FILTER (WHERE exit_at >= ${ATHENS_DAY_START_SQL}) AS closed_today,
+-       COUNT(*) FILTER (WHERE exit_at >= ${ATHENS_DAY_START_SQL} AND pnl_pct > 0) AS wins_today,
+-       COUNT(*) FILTER (WHERE exit_at >= ${ATHENS_DAY_START_SQL} AND pnl_pct <= 0) AS losses_today,
+-       COALESCE(SUM(pnl_sol) FILTER (WHERE exit_at >= ${ATHENS_DAY_START_SQL}), 0) AS profit_sol_today,
+-       COALESCE(SUM(pnl_pct) FILTER (WHERE exit_at >= ${ATHENS_DAY_START_SQL}), 0) AS profit_pct_today
++       COUNT(*) FILTER (WHERE entry_at >= $1 AND entry_at < $2) AS opened_today,
++       COUNT(*) FILTER (WHERE exit_at >= $1 AND exit_at < $2) AS closed_today,
++       COUNT(*) FILTER (WHERE exit_at >= $1 AND exit_at < $2 AND pnl_pct > 0) AS wins_today,
++       COUNT(*) FILTER (WHERE exit_at >= $1 AND exit_at < $2 AND pnl_pct <= 0) AS losses_today,
++       COALESCE(SUM(pnl_sol) FILTER (WHERE exit_at >= $1 AND exit_at < $2), 0) AS profit_sol_today,
++       COALESCE(SUM(pnl_pct) FILTER (WHERE exit_at >= $1 AND exit_at < $2), 0) AS profit_pct_today
+      FROM paper_trades`,
++    [dayStart, dayEnd],
+   );
+ 
+   const deployed = await c.query<{ deployed_sol_today: string }>(
+-    `SELECT COALESCE(SUM(simulated_entry_amount_sol) FILTER (WHERE entry_at >= ${ATHENS_DAY_START_SQL}), 0) AS deployed_sol_today
++    `SELECT COALESCE(SUM(simulated_entry_amount_sol) FILTER (WHERE entry_at >= $1 AND entry_at < $2), 0) AS deployed_sol_today
+        FROM paper_trades`,
++    [dayStart, dayEnd],
+   );
+ 
+   const best = await c.query<{ token_address: string; pnl_pct: string; exit_reason: string | null }>(
+     `SELECT token_address, pnl_pct, exit_reason FROM paper_trades
+-      WHERE exit_at >= ${ATHENS_DAY_START_SQL} AND pnl_pct IS NOT NULL
++      WHERE exit_at >= $1 AND exit_at < $2 AND pnl_pct IS NOT NULL
+       ORDER BY pnl_pct DESC LIMIT 1`,
++    [dayStart, dayEnd],
+   );
+   const worst = await c.query<{ token_address: string; pnl_pct: string; exit_reason: string | null }>(
+     `SELECT token_address, pnl_pct, exit_reason FROM paper_trades
+-      WHERE exit_at >= ${ATHENS_DAY_START_SQL} AND pnl_pct IS NOT NULL
++      WHERE exit_at >= $1 AND exit_at < $2 AND pnl_pct IS NOT NULL
+       ORDER BY pnl_pct ASC LIMIT 1`,
++    [dayStart, dayEnd],
+   );
+ 
+   const allTime = await c.query<{
+diff --git a/src/util/athensTime.test.ts b/src/util/athensTime.test.ts
+index bbe5389..86fe935 100644
+--- a/src/util/athensTime.test.ts
++++ b/src/util/athensTime.test.ts
+@@ -1,7 +1,7 @@
+ import assert from 'node:assert/strict';
+ import { test } from 'node:test';
+ 
+-import { msUntilNextAthensTime } from './athensTime.js';
++import { msUntilNextAthensTime, startOfAthensDay } from './athensTime.js';
+ 
+ test('msUntilNextAthensTime: target later today (winter, EET/UTC+2) — straightforward same-day math', () => {
+   // 2026-01-15 10:00 UTC = 12:00 Αθήνας (χειμώνας, UTC+2). Στόχος 00:05 Αθήνας —
+@@ -58,3 +58,33 @@ test('msUntilNextAthensTime: idempotent-ish — calling again from the computed
+   // Πρέπει να πηγαίνει στην ΕΠΟΜΕΝΗ μέρα, όχι να ξαναγυρίζει στην ίδια στιγμή.
+   assert.ok(secondMs > 23 * 60 * 60 * 1000 && secondMs < 25 * 60 * 60 * 1000);
+ });
++
++test('startOfAthensDay: right after midnight, "today" is the day that just started (winter, UTC+2)', () => {
++  // 2026-01-15 00:05 Αθήνας (χειμώνας) = 2026-01-14 22:05 UTC.
++  const justAfterMidnight = new Date('2026-01-14T22:05:00Z');
++  const today = startOfAthensDay(justAfterMidnight);
++  assert.equal(today.toISOString(), '2026-01-14T22:00:00.000Z'); // 2026-01-15 00:00 Αθήνας
++});
++
++test('startOfAthensDay: daysAgo=1 gives yesterday, not "24 hours ago" — the actual bug we hit', () => {
++  // Ίδια στιγμή με πάνω — 00:05 Αθήνας, 15/1. Θέλουμε "χθες" = 14/1, όχι ξανά 15/1.
++  const justAfterMidnight = new Date('2026-01-14T22:05:00Z');
++  const yesterday = startOfAthensDay(justAfterMidnight, 1);
++  assert.equal(yesterday.toISOString(), '2026-01-13T22:00:00.000Z'); // 2026-01-14 00:00 Αθήνας
++});
++
++test('startOfAthensDay: daysAgo=1 across the autumn DST transition still gives exactly one calendar day back', () => {
++  // 2026-10-26 00:05 Αθήνας — η ΠΡΩΤΗ μέρα μετά την αλλαγή ώρας (25/10 ήταν η μέρα με
++  // 25 πραγματικές ώρες). "Χθες" πρέπει να είναι 25/10, ΟΧΙ κάτι λάθος λόγω των 25 ωρών.
++  const formatter = new Intl.DateTimeFormat('en-US', {
++    timeZone: 'Europe/Athens',
++    year: 'numeric',
++    month: '2-digit',
++    day: '2-digit',
++  });
++  // 2026-10-25 22:05 UTC = 2026-10-26 00:05 EET (μετά την αλλαγή, UTC+2).
++  const now = new Date('2026-10-25T22:05:00Z');
++  const yesterday = startOfAthensDay(now, 1);
++  const parts = Object.fromEntries(formatter.formatToParts(yesterday).map((p) => [p.type, p.value]));
++  assert.equal(`${parts.year}-${parts.month}-${parts.day}`, '2026-10-25');
++});
+diff --git a/src/util/athensTime.ts b/src/util/athensTime.ts
+index ba32f9f..5cecad7 100644
+--- a/src/util/athensTime.ts
++++ b/src/util/athensTime.ts
+@@ -81,3 +81,26 @@ export function msUntilNextAthensTime(
+ 
+   return candidate.getTime() - now.getTime();
+ }
++
++/**
++ * Η αρχή (00:00) μιας Αθηναϊκής ημερολογιακής μέρας, ως πραγματικό UTC instant.
++ * `daysAgo=1` δίνει "χθες" — ΠΡΟΣΟΧΗ: η αριθμητική γίνεται πάνω στο ΗΜΕΡΟΛΟΓΙΑΚΟ
++ * έτος/μήνα/μέρα (με `setUTCDate`, καθαρά calendar math), ΟΧΙ αφαιρώντας 24 πραγματικές
++ * ώρες από ένα instant — μια μέρα αλλαγής ώρας έχει 23 ή 25 πραγματικές ώρες, άρα η
++ * αφαίρεση σε ms θα έδινε λάθος ημερολογιακή μέρα δύο φορές τον χρόνο. Το `UTC` εδώ
++ * χρησιμοποιείται ΜΟΝΟ σαν scratch space για calendar arithmetic, άσχετο από
++ * πραγματική ζώνη ώρας — το πραγματικό αποτέλεσμα προκύπτει από το επόμενο
++ * `athensWallTimeToUtc`.
++ */
++export function startOfAthensDay(now: Date = new Date(), daysAgo = 0): Date {
++  const { year, month, day } = athensDateParts(now);
++  const calendarScratch = new Date(Date.UTC(year, month - 1, day, 12));
++  calendarScratch.setUTCDate(calendarScratch.getUTCDate() - daysAgo);
++  return athensWallTimeToUtc(
++    calendarScratch.getUTCFullYear(),
++    calendarScratch.getUTCMonth() + 1,
++    calendarScratch.getUTCDate(),
++    0,
++    0,
++  );
++}

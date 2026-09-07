@@ -1,5 +1,6 @@
 import { getDailyDigestData, type DailyDigestData } from '../db/repositories/dailyDigest.js';
 import { formatPercent, short } from '../telegram/commands.js';
+import { startOfAthensDay } from '../util/athensTime.js';
 
 /**
  * Καθαρή function, χωρίς DB — παίρνει τα ήδη-υπολογισμένα νούμερα, φτιάχνει το μήνυμα.
@@ -25,7 +26,7 @@ export function formatDailyDigest(data: DailyDigestData, today: string): string 
   const lines = [
     `📊 Ημερήσια αναφορά — ${today}`,
     '',
-    'Σήμερα:',
+    'Χθες:',
     `• Νέα trades: ${data.openedToday}`,
     `• Έκλεισαν: ${data.closedToday} (${data.winsToday}🟢 / ${data.lossesToday}🔴, win rate ${winRateToday})`,
     `• Κεφάλαιο σε νέες θέσεις: ${data.deployedSolToday.toFixed(4)} SOL`,
@@ -44,17 +45,28 @@ export function formatDailyDigest(data: DailyDigestData, today: string): string 
   return lines.join('\n');
 }
 
-/** Η σημερινή ημερομηνία, ΤΟΠΙΚΗ ώρα Αθήνας — για τον τίτλο της αναφοράς. */
-function athensDateLabel(now: Date): string {
+/** Η ημερομηνία μιας δεδομένης στιγμής, ΤΟΠΙΚΗ ώρα Αθήνας — για τον τίτλο της αναφοράς.
+ * Ονομαστικά "date label", όχι "today" — καλείται με το `yesterdayStart`, αφού η
+ * αναφορά αφορά ΧΘΕΣ (βλ. runDailyDigestCycle). */
+function athensDateLabel(instant: Date): string {
   return new Intl.DateTimeFormat('el-GR', {
     timeZone: 'Europe/Athens',
     year: 'numeric',
     month: 'long',
     day: 'numeric',
-  }).format(now);
+  }).format(instant);
 }
 
+/**
+ * Τρέχει στις 00:05 Αθήνας (βλ. main.ts) — δηλαδή λίγο ΜΕΤΑ τα μεσάνυχτα. Η αναφορά
+ * πρέπει να αφορά τη μέρα που ΜΟΛΙΣ ΤΕΛΕΙΩΣΕ (χθες), όχι τη μέρα που μόλις ξεκίνησε
+ * (σήμερα, 5 λεπτά παλιά) — πραγματικό bug, διορθώθηκε 2026-09-05: το πρώτο μήνυμα
+ * έδειξε σχεδόν άδεια δεδομένα επειδή μετρούσε "σήμερα" αντί για "χθες".
+ */
 export async function runDailyDigestCycle(): Promise<string> {
-  const data = await getDailyDigestData();
-  return formatDailyDigest(data, athensDateLabel(new Date()));
+  const now = new Date();
+  const yesterdayStart = startOfAthensDay(now, 1);
+  const todayStart = startOfAthensDay(now, 0);
+  const data = await getDailyDigestData(yesterdayStart, todayStart);
+  return formatDailyDigest(data, athensDateLabel(yesterdayStart));
 }

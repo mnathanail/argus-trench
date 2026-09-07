@@ -1,15 +1,6 @@
 import { db, type Queryable } from '../tx.js';
 import { toNum } from '../rows.js';
 
-/**
- * "Σήμερα" = ημερολογιακή μέρα ΑΘΗΝΑΣ, όχι UTC — standard Postgres idiom:
- * `now() AT TIME ZONE 'Europe/Athens'` δίνει το τοπικό wall-clock (ως naive timestamp),
- * `date_trunc('day', ...)` το κόβει σε μεσάνυχτα, και το δεύτερο `AT TIME ZONE` το
- * ξαναγυρίζει σε πραγματικό timestamptz ερμηνεύοντας το ως τοπική ώρα Αθήνας. Σωστό και
- * τις μέρες αλλαγής ώρας — το tzdata του ίδιου του Postgres το ξέρει ήδη.
- */
-const ATHENS_DAY_START_SQL = `date_trunc('day', now() AT TIME ZONE 'Europe/Athens') AT TIME ZONE 'Europe/Athens'`;
-
 export interface BestWorstTrade {
   tokenAddress: string;
   pnlPct: number;
@@ -35,10 +26,19 @@ export interface DailyDigestData {
 }
 
 /**
+ * `dayStart`/`dayEnd` περνάνε ΕΤΟΙΜΑ από τον caller (βλ. `startOfAthensDay` στο
+ * util/athensTime.ts) — αυτό το επίπεδο δεν αποφασίζει "ποια μέρα", απλά μετράει μέσα
+ * στο [dayStart, dayEnd) που του δόθηκε. Κρατάει το "ποια μέρα θεωρούμε 'σήμερα'"
+ * ξεκάθαρα σε ΕΝΑ σημείο (τον caller), όχι σκόρπιο μέσα σε SQL literals.
+ *
  * Πολλά απλά queries αντί για ένα γιγάντιο CTE — τρέχει μία φορά τη μέρα, η απλότητα και
  * η ευκολία επαλήθευσης αξίζουν παραπάνω από την απόδοση εδώ.
  */
-export async function getDailyDigestData(conn?: Queryable): Promise<DailyDigestData> {
+export async function getDailyDigestData(
+  dayStart: Date,
+  dayEnd: Date,
+  conn?: Queryable,
+): Promise<DailyDigestData> {
   const c = db(conn);
 
   const todayCounts = await c.query<{
@@ -50,29 +50,33 @@ export async function getDailyDigestData(conn?: Queryable): Promise<DailyDigestD
     profit_pct_today: string;
   }>(
     `SELECT
-       COUNT(*) FILTER (WHERE entry_at >= ${ATHENS_DAY_START_SQL}) AS opened_today,
-       COUNT(*) FILTER (WHERE exit_at >= ${ATHENS_DAY_START_SQL}) AS closed_today,
-       COUNT(*) FILTER (WHERE exit_at >= ${ATHENS_DAY_START_SQL} AND pnl_pct > 0) AS wins_today,
-       COUNT(*) FILTER (WHERE exit_at >= ${ATHENS_DAY_START_SQL} AND pnl_pct <= 0) AS losses_today,
-       COALESCE(SUM(pnl_sol) FILTER (WHERE exit_at >= ${ATHENS_DAY_START_SQL}), 0) AS profit_sol_today,
-       COALESCE(SUM(pnl_pct) FILTER (WHERE exit_at >= ${ATHENS_DAY_START_SQL}), 0) AS profit_pct_today
+       COUNT(*) FILTER (WHERE entry_at >= $1 AND entry_at < $2) AS opened_today,
+       COUNT(*) FILTER (WHERE exit_at >= $1 AND exit_at < $2) AS closed_today,
+       COUNT(*) FILTER (WHERE exit_at >= $1 AND exit_at < $2 AND pnl_pct > 0) AS wins_today,
+       COUNT(*) FILTER (WHERE exit_at >= $1 AND exit_at < $2 AND pnl_pct <= 0) AS losses_today,
+       COALESCE(SUM(pnl_sol) FILTER (WHERE exit_at >= $1 AND exit_at < $2), 0) AS profit_sol_today,
+       COALESCE(SUM(pnl_pct) FILTER (WHERE exit_at >= $1 AND exit_at < $2), 0) AS profit_pct_today
      FROM paper_trades`,
+    [dayStart, dayEnd],
   );
 
   const deployed = await c.query<{ deployed_sol_today: string }>(
-    `SELECT COALESCE(SUM(simulated_entry_amount_sol) FILTER (WHERE entry_at >= ${ATHENS_DAY_START_SQL}), 0) AS deployed_sol_today
+    `SELECT COALESCE(SUM(simulated_entry_amount_sol) FILTER (WHERE entry_at >= $1 AND entry_at < $2), 0) AS deployed_sol_today
        FROM paper_trades`,
+    [dayStart, dayEnd],
   );
 
   const best = await c.query<{ token_address: string; pnl_pct: string; exit_reason: string | null }>(
     `SELECT token_address, pnl_pct, exit_reason FROM paper_trades
-      WHERE exit_at >= ${ATHENS_DAY_START_SQL} AND pnl_pct IS NOT NULL
+      WHERE exit_at >= $1 AND exit_at < $2 AND pnl_pct IS NOT NULL
       ORDER BY pnl_pct DESC LIMIT 1`,
+    [dayStart, dayEnd],
   );
   const worst = await c.query<{ token_address: string; pnl_pct: string; exit_reason: string | null }>(
     `SELECT token_address, pnl_pct, exit_reason FROM paper_trades
-      WHERE exit_at >= ${ATHENS_DAY_START_SQL} AND pnl_pct IS NOT NULL
+      WHERE exit_at >= $1 AND exit_at < $2 AND pnl_pct IS NOT NULL
       ORDER BY pnl_pct ASC LIMIT 1`,
+    [dayStart, dayEnd],
   );
 
   const allTime = await c.query<{

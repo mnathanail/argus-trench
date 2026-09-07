@@ -81,3 +81,26 @@ export function msUntilNextAthensTime(
 
   return candidate.getTime() - now.getTime();
 }
+
+/**
+ * Η αρχή (00:00) μιας Αθηναϊκής ημερολογιακής μέρας, ως πραγματικό UTC instant.
+ * `daysAgo=1` δίνει "χθες" — ΠΡΟΣΟΧΗ: η αριθμητική γίνεται πάνω στο ΗΜΕΡΟΛΟΓΙΑΚΟ
+ * έτος/μήνα/μέρα (με `setUTCDate`, καθαρά calendar math), ΟΧΙ αφαιρώντας 24 πραγματικές
+ * ώρες από ένα instant — μια μέρα αλλαγής ώρας έχει 23 ή 25 πραγματικές ώρες, άρα η
+ * αφαίρεση σε ms θα έδινε λάθος ημερολογιακή μέρα δύο φορές τον χρόνο. Το `UTC` εδώ
+ * χρησιμοποιείται ΜΟΝΟ σαν scratch space για calendar arithmetic, άσχετο από
+ * πραγματική ζώνη ώρας — το πραγματικό αποτέλεσμα προκύπτει από το επόμενο
+ * `athensWallTimeToUtc`.
+ */
+export function startOfAthensDay(now: Date = new Date(), daysAgo = 0): Date {
+  const { year, month, day } = athensDateParts(now);
+  const calendarScratch = new Date(Date.UTC(year, month - 1, day, 12));
+  calendarScratch.setUTCDate(calendarScratch.getUTCDate() - daysAgo);
+  return athensWallTimeToUtc(
+    calendarScratch.getUTCFullYear(),
+    calendarScratch.getUTCMonth() + 1,
+    calendarScratch.getUTCDate(),
+    0,
+    0,
+  );
+}
