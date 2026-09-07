@@ -23,8 +23,6 @@ import { delay } from '../util/delay.js';
  *
  * Interval στο intervals.ts (EXIT_RESOLVER_INTERVAL_MS) — δες εκεί για το πλήρες
  * σκεπτικό, ενημερώθηκε 2026-09-01 λόγω throughput κρίσης (βλ. σχόλιο εκεί).
- *
- * ⚠️ Εξαρτάται από το gmgn/kline.ts, ΜΗ επαληθευμένο ακόμα με πραγματικό call.
  */
 export interface ExitResolverResult {
   openTrades: number;
@@ -163,12 +161,26 @@ export function resolveExit(input: ExitCheckInput): ExitCheckResult | null {
   let trailingActive = false;
   let peakSinceActivation = 0;
 
+  // Ποτέ μην αξιολογείς πέρα από το πραγματικό 24ωρο timeout σημείο — αν ελέγξαμε αργά
+  // (π.χ. 2+ μέρες μετά, λόγω καθυστερημένου κύκλου εξαιτίας backlog), μια ΠΡΑΓΜΑΤΙΚΗ
+  // θέση θα είχε ήδη κλείσει στο timeout ΠΡΙΝ προλάβει να δει τιμές/πωλήσεις
+  // μεταγενέστερες. Χωρίς αυτό το cap, ένα καθυστερημένο check θα μπορούσε λανθασμένα να
+  // "δει" ένα tier hit ή wallet-sell που ποτέ δε θα είχε συμβεί πάνω σε πραγματικά
+  // ανοιχτή θέση — επιβεβαιωμένο πραγματικό incident 2026-09-07 (trades ελεγμένα ~73ω
+  // μετά το entry αντί για 24ω).
+  const timeoutBoundary = new Date(input.entryAt.getTime() + EXIT_TIMEOUT_MS);
+  const walletSellWithinWindow =
+    input.walletSellAt !== null && input.walletSellAt.getTime() <= timeoutBoundary.getTime()
+      ? input.walletSellAt
+      : null;
+
   for (const candle of input.candles) {
     const candleTime = new Date(candle.timestamp);
     if (candleTime.getTime() < input.entryAt.getTime()) continue;
+    if (candleTime.getTime() > timeoutBoundary.getTime()) continue;
 
-    if (input.walletSellAt !== null && input.walletSellAt.getTime() <= candleTime.getTime()) {
-      return { exitReason: 'exit_signal', exitPrice: candle.close, exitAt: input.walletSellAt };
+    if (walletSellWithinWindow !== null && walletSellWithinWindow.getTime() <= candleTime.getTime()) {
+      return { exitReason: 'exit_signal', exitPrice: candle.close, exitAt: walletSellWithinWindow };
     }
 
     if (!trailingActive && candle.high >= tier2ActivationPrice) {
@@ -192,29 +204,26 @@ export function resolveExit(input: ExitCheckInput): ExitCheckResult | null {
     }
   }
 
-  // Τίποτα μέσα στο διαθέσιμο ιστορικό — έλεγξε wallet-sell/timeout πέρα από αυτό.
-  const lastClose = input.candles.at(-1)?.close ?? input.entryPrice;
-  if (input.walletSellAt !== null) {
-    return { exitReason: 'exit_signal', exitPrice: lastClose, exitAt: input.walletSellAt };
+  // Τίποτα μέσα στο (τώρα σωστά περιορισμένο σε 24ω) διαθέσιμο ιστορικό — έλεγξε
+  // wallet-sell/timeout πέρα από αυτό. ΞΑΝΑφιλτράρουμε εδώ (όχι μόνο μέσα στο loop),
+  // γιατί χρειαζόμαστε το lastClose ΜΕΣΑ στο παράθυρο, όχι το τελευταίο fetched candle.
+  const withinWindow = input.candles.filter(
+    (c) => c.timestamp >= input.entryAt.getTime() && c.timestamp <= timeoutBoundary.getTime(),
+  );
+  const lastClose = withinWindow.at(-1)?.close ?? input.entryPrice;
+  if (walletSellWithinWindow !== null) {
+    return { exitReason: 'exit_signal', exitPrice: lastClose, exitAt: walletSellWithinWindow };
   }
   if (input.now.getTime() - input.entryAt.getTime() >= EXIT_TIMEOUT_MS) {
-    // Άδειο candles array σε ΟΛΗ τη διάρκεια σημαίνει ότι το GMGN δεν είχε ΚΑΘΟΛΟΥ
+    // Άδειο candles array ΜΕΣΑ ΣΤΟ ΠΑΡΑΘΥΡΟ σημαίνει ότι το GMGN δεν είχε ΚΑΘΟΛΟΥ
     // market data για το token — πολύ πιθανό νεκρό/χωρίς liquidity, όχι "η τιμή έμεινε
     // ίδια". Ξεχωριστό exit_reason, ώστε να μη μπερδεύεται σιωπηλά με γνήσιο flat-price
     // timeout σε μελλοντική ανάλυση (επιβεβαιωμένο πραγματικό incident 2026-08-31: τα
     // δύο ήταν ταυτόσημα στα δεδομένα, pnl_pct=0, μέχρι να διασταυρωθούν με τα logs).
-    if (input.candles.length === 0) {
-      return {
-        exitReason: 'no_market_data',
-        exitPrice: input.entryPrice,
-        exitAt: new Date(input.entryAt.getTime() + EXIT_TIMEOUT_MS),
-      };
+    if (withinWindow.length === 0) {
+      return { exitReason: 'no_market_data', exitPrice: input.entryPrice, exitAt: timeoutBoundary };
     }
-    return {
-      exitReason: 'timeout',
-      exitPrice: lastClose,
-      exitAt: new Date(input.entryAt.getTime() + EXIT_TIMEOUT_MS),
-    };
+    return { exitReason: 'timeout', exitPrice: lastClose, exitAt: timeoutBoundary };
   }
   return null;
 }
