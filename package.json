@@ -17,6 +17,7 @@
     "migrate:status": "tsx src/db/migrate.ts --status",
     "migrate:prod": "node dist/db/migrate.js",
     "reopen-zero-pnl-closed-trades": "tsx scripts/reopen-zero-pnl-closed-trades.ts",
+    "verify-pumpportal-ws": "tsx scripts/verify-pumpportal-ws.ts",
     "db:up": "docker compose up -d --wait db",
     "db:down": "docker compose down",
     "db:reset": "docker compose down -v && docker compose up -d --wait db",
@@ -25,11 +26,13 @@
   "dependencies": {
     "dotenv": "^16.4.0",
     "gmgn-cli": "1.5.8",
-    "pg": "^8.13.0"
+    "pg": "^8.13.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/pg": "^8.11.0",
+    "@types/ws": "^8.5.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }
