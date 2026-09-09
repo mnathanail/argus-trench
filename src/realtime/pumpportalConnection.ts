@@ -9,11 +9,24 @@ import { parseTradeEvent, type PumpPortalTradeEvent } from './pumpportalEvents.j
 export interface WebSocketLike {
   send(data: string): void;
   close(): void;
+  /** Standard WebSocket readyState: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED. */
+  readonly readyState: number;
   on(event: 'open', listener: () => void): void;
   on(event: 'message', listener: (data: unknown) => void): void;
   on(event: 'close', listener: () => void): void;
   on(event: 'error', listener: (error: Error) => void): void;
 }
+
+/**
+ * Standard WebSocket readyState τιμή — βλ. σχόλιο στο `send()`. Πραγματικό incident
+ * 2026-09-09: `connect()` ξεκινάει τη σύνδεση αλλά δεν την ολοκληρώνει αμέσως (το
+ * handshake είναι ασύγχρονο). Ένα subscribe που καλείται πολύ νωρίς μετά το connect()
+ * (π.χ. μετά από ένα γρήγορο DB await, όχι αρκετό χρόνο για το πραγματικό handshake)
+ * έβρισκε το socket ΝΑ ΥΠΑΡΧΕΙ αλλά ΟΧΙ ακόμα OPEN — το πραγματικό ws.send() πετάει
+ * exception σε αυτή την περίπτωση, ΟΧΙ σιωπηλή αποτυχία, και το exception ήταν
+ * ασύλληπτο — ρίχνει ΟΛΟΚΛΗΡΟ το process σε κρας-loop σε κάθε εκκίνηση.
+ */
+const WS_OPEN = 1;
 
 export type CreateSocket = (url: string) => WebSocketLike;
 
@@ -149,10 +162,13 @@ export class PumpPortalConnection {
   }
 
   private send(payload: Record<string, unknown>): void {
-    // Δεν είμαστε συνδεδεμένοι αυτή τη στιγμή — δεν πειράζει, το resubscribeAll() θα το
-    // ξαναστείλει μόλις ανοίξει η επόμενη σύνδεση (το subscribedWallets/Tokens ήδη
-    // ενημερώθηκε πριν φτάσουμε εδώ).
-    if (this.socket === null) return;
+    // Δύο ξεχωριστές περιπτώσεις όπου ΔΕΝ πρέπει να στείλουμε τώρα — και οι δύο είναι
+    // εντάξει, όχι σφάλμα: (1) socket===null, καμία σύνδεση ακόμα· (2) socket υπάρχει
+    // αλλά είναι ακόμα CONNECTING (πραγματικό incident 2026-09-09 — ρίξε ματιά στο
+    // σχόλιο πάνω από το WS_OPEN). Και στις δύο περιπτώσεις, το subscribedWallets/Tokens
+    // ήδη ενημερώθηκε πριν φτάσουμε εδώ — το resubscribeAll() στο επόμενο 'open' θα το
+    // ξαναστείλει, δεν χάνεται τίποτα.
+    if (this.socket === null || this.socket.readyState !== WS_OPEN) return;
     this.socket.send(JSON.stringify(payload));
   }
 

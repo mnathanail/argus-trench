@@ -23,20 +23,29 @@ function at<T>(arr: readonly T[], index: number): T {
   return value;
 }
 
-/** Fake socket — καταγράφει ό,τι στέλνεται, επιτρέπει στο test να προσομοιώσει events. */
+/** Fake socket — καταγράφει ό,τι στέλνεται, επιτρέπει στο test να προσομοιώσει events.
+ * Προσομοιώνει σωστά CONNECTING(0)→OPEN(1)→CLOSED(3), και ρίχνει exception σε send()
+ * όταν δεν είναι OPEN — ΑΚΡΙΒΩΣ όπως το πραγματικό `ws` (πραγματικό incident
+ * 2026-09-09: το production code δεν το πρόσεχε αυτό, το fake socket ΔΕΝ το
+ * προσομοίωνε, άρα το test suite δεν το έπιασε πριν το deploy). */
 class FakeSocket implements WebSocketLike {
   sent: string[] = [];
   closed = false;
+  readyState = 0; // CONNECTING, ίδιο με πραγματικό ws.WebSocket στη δημιουργία
   private openListener: (() => void) | null = null;
   private messageListener: ((data: unknown) => void) | null = null;
   private closeListener: (() => void) | null = null;
   private errorListener: ((error: Error) => void) | null = null;
 
   send(data: string): void {
+    if (this.readyState !== 1) {
+      throw new Error(`WebSocket is not open: readyState ${this.readyState} (CONNECTING)`);
+    }
     this.sent.push(data);
   }
   close(): void {
     this.closed = true;
+    this.readyState = 3;
   }
   on(event: string, listener: never): void {
     if (event === 'open') this.openListener = listener;
@@ -45,12 +54,14 @@ class FakeSocket implements WebSocketLike {
     else if (event === 'error') this.errorListener = listener;
   }
   triggerOpen(): void {
+    this.readyState = 1;
     this.openListener?.();
   }
   triggerMessage(payload: unknown): void {
     this.messageListener?.(JSON.stringify(payload));
   }
   triggerClose(): void {
+    this.readyState = 3;
     this.closeListener?.();
   }
   triggerError(error: Error): void {
@@ -92,6 +103,32 @@ test('on open, resubscribeAll sends everything that was subscribed before connec
   conn.connect();
   at(sockets, 0).triggerOpen();
 
+  assert.deepEqual(at(sockets, 0).sent.map((s) => JSON.parse(s)), [
+    { method: 'subscribeAccountTrade', keys: ['WalletA'] },
+    { method: 'subscribeTokenTrade', keys: ['TokenA'] },
+  ]);
+});
+
+test('REGRESSION 2026-09-09: subscribing right after connect(), before the socket has actually opened, must not throw and must crash-loop the process', () => {
+  // Πραγματικό production incident: connect() ξεκινάει το handshake αλλά δεν το
+  // ολοκληρώνει αμέσως· ένα subscribe που φτάνει όσο είναι ακόμα CONNECTING (readyState
+  // 0) έριξε ολόκληρο το process σε crash-loop, γιατί το πραγματικό ws.send() πετάει
+  // exception αν δεν είναι OPEN — δεν αποτυγχάνει σιωπηλά. Το fake socket εδώ
+  // αναπαράγει ΑΚΡΙΒΩΣ αυτή τη συμπεριφορά (readyState=0 στη δημιουργία, send()
+  // πετάει αν δεν είναι 1/OPEN) — αν το production guard λείπει ή είναι λάθος, αυτό
+  // το test θα ρίξει, όχι απλά θα αποτύχει σε ένα assertion.
+  const { conn, sockets } = setup();
+  conn.connect();
+  assert.equal(at(sockets, 0).readyState, 0, 'το fake socket ξεκινάει CONNECTING, ίδιο με πραγματικό ws');
+
+  assert.doesNotThrow(() => {
+    conn.subscribeToken('TokenA');
+    conn.subscribeWallet('WalletA');
+  });
+  assert.equal(at(sockets, 0).sent.length, 0, 'τίποτα δεν έπρεπε να σταλεί ενώ ήταν ακόμα CONNECTING');
+
+  // Μόλις ανοίξει πραγματικά, η συνδρομή πρέπει να έχει διατηρηθεί και να στέλνεται τώρα.
+  at(sockets, 0).triggerOpen();
   assert.deepEqual(at(sockets, 0).sent.map((s) => JSON.parse(s)), [
     { method: 'subscribeAccountTrade', keys: ['WalletA'] },
     { method: 'subscribeTokenTrade', keys: ['TokenA'] },
