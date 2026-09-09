@@ -3,6 +3,7 @@ import { closeTrade, countOpenTrades, markTradeChecked, selectOpenTradesForCheck
 import type { ExitReason } from '../db/types.js';
 import { fetchWalletSells } from '../gmgn/activity.js';
 import { rethrowIfRateLimited } from '../gmgn/errors.js';
+import { computePnl } from '../decision/pnl.js';
 import { fetchKline, type Candle } from '../gmgn/kline.js';
 import {
   EXIT_TIER_1_PRICE_SCALE,
@@ -113,22 +114,19 @@ async function resolveOneTrade(
 
   // no_market_data = άγνωστο αποτέλεσμα, όχι flat. pnl=null, όχι 0 — βλ. ExitReason.
   const isKnownOutcome = result.exitReason !== 'no_market_data';
-  const pnlPct = isKnownOutcome
-    ? (result.exitPrice - trade.simulatedEntryPrice) / trade.simulatedEntryPrice
+  const pnl = isKnownOutcome
+    ? computePnl(trade.simulatedEntryPrice, result.exitPrice, trade.bankrollAtEntry, trade.intendedSizePct)
     : null;
-  const pnlSol =
-    pnlPct === null ? null : (trade.bankrollAtEntry ?? 0) * (trade.intendedSizePct ?? 0) * pnlPct;
-  const pnlNetPct = pnlPct === null ? null : pnlPct - PAPER_ASSUMED_FEES_PCT;
 
   await closeTrade(trade.id, {
     exitReason: result.exitReason,
     exitTriggerDetail:
       result.exitReason === 'exit_signal' && triggerWallet !== null ? { wallet: triggerWallet } : null,
     simulatedExitPrice: result.exitPrice,
-    pnlSol,
-    pnlPct,
+    pnlSol: pnl?.pnlSol ?? null,
+    pnlPct: pnl?.pnlPct ?? null,
     assumedFeesPct: PAPER_ASSUMED_FEES_PCT,
-    pnlNetPct,
+    pnlNetPct: pnl?.pnlNetPct ?? null,
   });
   if (realtimeConnection) {
     await unsubscribeIfNoLongerNeeded(realtimeConnection, trade.tokenAddress);

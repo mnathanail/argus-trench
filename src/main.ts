@@ -29,6 +29,7 @@ import { logicVersion } from './decision/gateConfig.js';
 import { msUntilNextAthensTime } from './util/athensTime.js';
 import { PumpPortalConnection } from './realtime/pumpportalConnection.js';
 import { subscribeOpenTrades } from './realtime/subscriptionManager.js';
+import { handleRealtimeTradeEvent } from './realtime/realtimeExitHandler.js';
 import { runScheduler, SharedCooldown, type LoopDefinition } from './scheduler.js';
 import { createBotFromEnv, runBot } from './telegram/bot.js';
 
@@ -78,13 +79,25 @@ let successfulDiscoveryCycles = 0;
  * λείπει — καθαρό polling fallback, καμία αλλαγή συμπεριφοράς.
  */
 const pumpportalApiKey = config.pumpportalApiKey();
-const realtimeConnection = pumpportalApiKey
+// `let`, όχι `const` — το onTradeEvent callback χρειάζεται να αναφέρεται στο ίδιο το
+// realtimeConnection (για unsubscribe μετά από κλείσιμο), αλλά δημιουργείται μέσα στην
+// ίδια του τη δήλωση. Δουλεύει σωστά χάρη σε closure: το callback καλείται ΜΟΝΟ αργότερα
+// (όταν έρθει πραγματικό event), μέχρι τότε η ανάθεση θα έχει ήδη ολοκληρωθεί.
+let realtimeConnection: PumpPortalConnection | undefined;
+realtimeConnection = pumpportalApiKey
   ? new PumpPortalConnection({
       apiKey: pumpportalApiKey,
-      onTradeEvent: () => {
-        // TODO Βήμα 6: εδώ θα κουμπώσει η event-driven exit λογική. Προς το παρόν μόνο
-        // subscribe/unsubscribe (Βήμα 5) — το periodic exit-resolver παραμένει το μόνο
-        // που πραγματικά κλείνει trades.
+      onTradeEvent: (event) => {
+        if (!realtimeConnection) return;
+        // ΚΡΙΣΙΜΟ: fire-and-forget με explicit .catch — ένα ασύλληπτο rejection εδώ θα
+        // ρίξει ΟΛΟΚΛΗΡΟ το process (ίδιο μάθημα με το readyState crash σήμερα). Ένα
+        // σφάλμα σε ΕΝΑ event δεν πρέπει ποτέ να σταματήσει τα υπόλοιπα — το periodic
+        // exit-resolver παραμένει δίχτυ ασφαλείας για ό,τι χάσει ένα τέτοιο σφάλμα.
+        handleRealtimeTradeEvent(event, realtimeConnection).catch((error) => {
+          console.error(
+            `[realtime] σφάλμα στο event handler: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
       },
       log: (message) => console.log(message),
     })

@@ -414,3 +414,66 @@ export async function getWalletLeaderboard(
     avgPnlPct: toNumOrNull(row.avg_pnl_pct),
   }));
 }
+
+export interface OpenTradeForTick {
+  id: number;
+  simulatedEntryPrice: number;
+  bankrollAtEntry: number | null;
+  intendedSizePct: number | null;
+  peakPriceSinceEntry: number | null;
+  trailingActive: boolean;
+  triggerWalletAddress: string | null;
+}
+
+/**
+ * Ανοιχτά trades πάνω σε ΕΝΑ συγκεκριμένο token, με ό,τι χρειάζεται το tick-based exit
+ * μοντέλο (peak/trailing state, trigger wallet) — καλείται σε κάθε εισερχόμενο realtime
+ * event, βλ. realtimeExitHandler.ts. Trades με μη-έγκυρη entry price (NULL/0) μένουν
+ * εκτός — δεν μπορούμε να υπολογίσουμε % χωρίς αυτήν, ίδιο guard με το periodic
+ * exit-resolver.
+ */
+export async function listOpenTradesForToken(
+  tokenAddress: string,
+  conn?: Queryable,
+): Promise<OpenTradeForTick[]> {
+  const { rows } = await db(conn).query<{
+    id: string;
+    simulated_entry_price: string;
+    bankroll_at_entry: string | null;
+    intended_size_pct: string | null;
+    peak_price_since_entry: string | null;
+    trailing_active: boolean;
+    trigger_wallet_address: string | null;
+  }>(
+    `SELECT pt.id, pt.simulated_entry_price, pt.bankroll_at_entry, pt.intended_size_pct,
+            pt.peak_price_since_entry, pt.trailing_active, dl.trigger_wallet_address
+       FROM paper_trades pt
+       JOIN decision_log dl ON dl.id = pt.decision_log_id
+      WHERE pt.status = 'open' AND pt.token_address = $1
+        AND pt.simulated_entry_price IS NOT NULL AND pt.simulated_entry_price > 0`,
+    [tokenAddress],
+  );
+  return rows.map((row) => ({
+    id: toNum(row.id),
+    simulatedEntryPrice: toNum(row.simulated_entry_price),
+    bankrollAtEntry: toNumOrNull(row.bankroll_at_entry),
+    intendedSizePct: toNumOrNull(row.intended_size_pct),
+    peakPriceSinceEntry: toNumOrNull(row.peak_price_since_entry),
+    trailingActive: row.trailing_active,
+    triggerWalletAddress: row.trigger_wallet_address,
+  }));
+}
+
+/** Γράφει το νέο live state ΜΕΤΑ από ένα tick που δεν έκλεισε τη θέση — ώστε το επόμενο
+ * tick να ξεκινήσει από το σωστό σημείο (βλ. tickExit.ts). */
+export async function updateTickState(
+  id: number,
+  peakPriceSinceEntry: number,
+  trailingActive: boolean,
+  conn?: Queryable,
+): Promise<void> {
+  await db(conn).query(
+    `UPDATE paper_trades SET peak_price_since_entry = $2, trailing_active = $3 WHERE id = $1`,
+    [id, peakPriceSinceEntry, trailingActive],
+  );
+}
