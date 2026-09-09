@@ -41,4 +41,12 @@ export const config = {
    * επίτηδες: ένα "false"/"0"/"no" δεν πρέπει να ανοίγει live trading κατά λάθος.
    */
   automatedTradesAllowed: () => process.env.GMGN_ALLOW_AUTOMATED_TRADES === '1',
+
+  /**
+   * Optional (όχι required) — το realtime/websocket feature είναι σε σταδιακή
+   * ανάπτυξη, δεν πρέπει να ρίχνει το process αν λείπει ακόμα σε ένα deploy/τοπικό dev.
+   * Ο caller αποφασίζει τι κάνει αν είναι undefined (π.χ. να μην ξεκινήσει καθόλου τη
+   * realtime σύνδεση).
+   */
+  pumpportalApiKey: () => optional('PUMPPORTAL_API_KEY'),
 } as const;
