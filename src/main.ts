@@ -32,6 +32,7 @@ import { subscribeOpenTrades } from './realtime/subscriptionManager.js';
 import { handleRealtimeTradeEvent } from './realtime/realtimeExitHandler.js';
 import { runScheduler, SharedCooldown, type LoopDefinition } from './scheduler.js';
 import { createBotFromEnv, runBot } from './telegram/bot.js';
+import { formatPercent, short } from './telegram/commands.js';
 
 /**
  * Entrypoint. Ένα process για όλα (απόφαση 2026-08-25): Telegram bot + οι collector loops
@@ -93,11 +94,23 @@ realtimeConnection = pumpportalApiKey
         // ρίξει ΟΛΟΚΛΗΡΟ το process (ίδιο μάθημα με το readyState crash σήμερα). Ένα
         // σφάλμα σε ΕΝΑ event δεν πρέπει ποτέ να σταματήσει τα υπόλοιπα — το periodic
         // exit-resolver παραμένει δίχτυ ασφαλείας για ό,τι χάσει ένα τέτοιο σφάλμα.
-        handleRealtimeTradeEvent(event, realtimeConnection).catch((error) => {
-          console.error(
-            `[realtime] σφάλμα στο event handler: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        });
+        // Το notify() είναι ΜΕΣΑ στην ίδια .then() (όχι ξεχωριστό await μετά) ώστε ένα
+        // πρόβλημα στην αποστολή Telegram να πιάνεται ΚΙ ΑΥΤΟ από το ίδιο .catch.
+        handleRealtimeTradeEvent(event, realtimeConnection)
+          .then(async (closedResults) => {
+            for (const r of closedResults) {
+              const outcome = r.pnlPct > 0 ? '🟢' : '🔴';
+              await notify(
+                `⚡ ${outcome} ${r.exitReason} μέσω realtime — ${short(r.tokenAddress)} ` +
+                  `pnl ${formatPercent(r.pnlPct, true)} — δες /trades`,
+              );
+            }
+          })
+          .catch((error) => {
+            console.error(
+              `[realtime] σφάλμα στο event handler: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
       },
       log: (message) => console.log(message),
     })
