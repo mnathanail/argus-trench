@@ -1,0 +1,165 @@
+diff --git a/package.json b/package.json
+index 96586fd..02d4ec3 100644
+--- a/package.json
++++ b/package.json
+@@ -17,6 +17,7 @@
+     "migrate:status": "tsx src/db/migrate.ts --status",
+     "migrate:prod": "node dist/db/migrate.js",
+     "reopen-zero-pnl-closed-trades": "tsx scripts/reopen-zero-pnl-closed-trades.ts",
++    "apply-old-code-trade-corrections": "tsx scripts/apply-old-code-trade-corrections.ts",
+     "recheck-old-code-trades": "tsx scripts/recheck-old-code-trades.ts",
+     "verify-pumpportal-ws": "tsx scripts/verify-pumpportal-ws.ts",
+     "db:up": "docker compose up -d --wait db",
+diff --git a/scripts/apply-old-code-trade-corrections.ts b/scripts/apply-old-code-trade-corrections.ts
+new file mode 100644
+index 0000000..fdbb77b
+--- /dev/null
++++ b/scripts/apply-old-code-trade-corrections.ts
+@@ -0,0 +1,147 @@
++import 'dotenv/config';
++import { Client } from 'pg';
++import { fetchKline } from '../src/gmgn/kline.js';
++import { fetchWalletSells } from '../src/gmgn/activity.js';
++import { resolveExit } from '../src/collectors/exitResolver.js';
++import { computePnl } from '../src/decision/pnl.js';
++import { PAPER_ASSUMED_FEES_PCT } from '../src/decision/paperTradingConfig.js';
++import { GmgnRateLimitError } from '../src/gmgn/errors.js';
++import { delay } from '../src/util/delay.js';
++
++// ΜΟΝΟ τα 3 IDs που το recheck-old-code-trades.ts επιβεβαίωσε ότι άλλαξαν ΚΑΙ έχουν
++// ακόμα διαθέσιμα δεδομένα τιμής (2026-09-09) — ΟΧΙ τα 881/882/883 (κατέληξαν
++// no_market_data στο recheck, δηλαδή το token δεν έχει καν πια ιστορικό στο GMGN).
++// Σκόπιμη απόφαση να ΜΗΝ τα αγγίξουμε αυτά: το τρέχον, αρνητικό τους νούμερο παραμένει
++// η καλύτερη διαθέσιμη εκτίμηση — διαγραφή θα αφαιρούσε επιλεκτικά ζημιές (νεκρά tokens
++// = πιθανότατα χαμένα trades) και θα διόγκωνε τεχνητά το συνολικό track record.
++const TRADE_IDS_TO_FIX = [869, 872, 877];
++
++const MAX_ATTEMPTS = 4;
++const RETRY_WAIT_MS = 90_000;
++
++async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T | null> {
++  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
++    try {
++      return await fn();
++    } catch (error) {
++      if (!(error instanceof GmgnRateLimitError)) throw error;
++      if (attempt === MAX_ATTEMPTS) {
++        console.log(`  ⚠️  ${label}: rate limit, τα παράτησα μετά από ${MAX_ATTEMPTS} προσπάθειες.`);
++        return null;
++      }
++      console.log(`  ...rate limit στο ${label} (προσπάθεια ${attempt}/${MAX_ATTEMPTS}), περιμένω ${RETRY_WAIT_MS / 1000}s...`);
++      await delay(RETRY_WAIT_MS);
++    }
++  }
++  return null;
++}
++
++const DATABASE_URL = process.env.DATABASE_URL;
++if (!DATABASE_URL) {
++  throw new Error('DATABASE_URL is required.');
++}
++
++const client = new Client({ connectionString: DATABASE_URL });
++
++interface Row {
++  id: number;
++  token_address: string;
++  entry_at: Date;
++  simulated_entry_price: string;
++  bankroll_at_entry: string | null;
++  intended_size_pct: string | null;
++  exit_reason: string | null;
++  pnl_pct: string | null;
++  trigger_wallet_address: string | null;
++}
++
++try {
++  await client.connect();
++
++  const { rows } = await client.query<Row>(
++    `SELECT pt.id, pt.token_address, pt.entry_at, pt.simulated_entry_price,
++            pt.bankroll_at_entry, pt.intended_size_pct,
++            pt.exit_reason, pt.pnl_pct, dl.trigger_wallet_address
++       FROM paper_trades pt
++       JOIN decision_log dl ON dl.id = pt.decision_log_id
++      WHERE pt.id = ANY($1)
++      ORDER BY pt.id`,
++    [TRADE_IDS_TO_FIX],
++  );
++
++  console.log(`Βρέθηκαν ${rows.length}/${TRADE_IDS_TO_FIX.length}.\n`);
++
++  for (const row of rows) {
++    const entryPrice = Number(row.simulated_entry_price);
++    const fromSeconds = Math.floor(row.entry_at.getTime() / 1000);
++
++    const rawCandles = await withRetry(`#${row.id} kline`, () =>
++      fetchKline({ tokenAddress: row.token_address, from: fromSeconds }),
++    );
++    if (rawCandles === null) {
++      console.log(`#${row.id}: παραλείπεται εντελώς (rate limit) — ξανατρέξε αργότερα.\n`);
++      continue;
++    }
++    const candles = [...rawCandles].sort((a, b) => a.timestamp - b.timestamp);
++
++    let walletSellAt: Date | null = null;
++    if (row.trigger_wallet_address !== null) {
++      const sells = await withRetry(`#${row.id} wallet-sells`, () =>
++        fetchWalletSells(row.trigger_wallet_address!, { stopAtTimestamp: row.entry_at.getTime() }),
++      );
++      if (sells !== null) {
++        const afterEntry = sells.activities
++          .filter((s) => s.tokenAddress === row.token_address)
++          .find((s) => s.timestamp * 1000 >= row.entry_at.getTime());
++        walletSellAt = afterEntry ? new Date(afterEntry.timestamp * 1000) : null;
++      }
++    }
++
++    const recomputed = resolveExit({
++      entryPrice,
++      entryAt: row.entry_at,
++      candles,
++      walletSellAt,
++      now: new Date(),
++    });
++
++    if (recomputed === null || recomputed.exitReason === 'no_market_data') {
++      console.log(
++        `#${row.id}: ξαναϋπολογίστηκε ως ${recomputed?.exitReason ?? 'ακόμα ανοιχτό'} — ΔΕΝ αναμενόταν, ` +
++          `παραλείπεται χωρίς αλλαγή (χειροκίνητος έλεγχος συνιστάται).\n`,
++      );
++      continue;
++    }
++
++    const pnl = computePnl(
++      entryPrice,
++      recomputed.exitPrice,
++      row.bankroll_at_entry === null ? null : Number(row.bankroll_at_entry),
++      row.intended_size_pct === null ? null : Number(row.intended_size_pct),
++    );
++
++    await client.query(
++      `UPDATE paper_trades
++          SET exit_reason = $2, simulated_exit_price = $3, exit_at = $4,
++              pnl_sol = $5, pnl_pct = $6, assumed_fees_pct = $7, pnl_net_pct = $8
++        WHERE id = $1`,
++      [
++        row.id,
++        recomputed.exitReason,
++        recomputed.exitPrice,
++        recomputed.exitAt,
++        pnl.pnlSol,
++        pnl.pnlPct,
++        PAPER_ASSUMED_FEES_PCT,
++        pnl.pnlNetPct,
++      ],
++    );
++
++    console.log(
++      `#${row.id}: ΕΝΗΜΕΡΩΘΗΚΕ — ${row.exit_reason} (${row.pnl_pct === null ? 'NULL' : (Number(row.pnl_pct) * 100).toFixed(2) + '%'}) ` +
++        `→ ${recomputed.exitReason} (${(pnl.pnlPct * 100).toFixed(2)}%)\n`,
++    );
++  }
++} finally {
++  await client.end();
++}
