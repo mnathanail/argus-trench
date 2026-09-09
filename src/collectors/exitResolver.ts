@@ -13,6 +13,8 @@ import {
 } from '../decision/paperTradingConfig.js';
 import { EXIT_RESOLVER_LOOP_PACING_MS, EXIT_RESOLVER_TRADES_PER_CYCLE } from './intervals.js';
 import { delay } from '../util/delay.js';
+import { unsubscribeIfNoLongerNeeded } from '../realtime/subscriptionManager.js';
+import type { PumpPortalConnection } from '../realtime/pumpportalConnection.js';
 
 /**
  * Κλείνει `paper_trades` (mode='log_only', ανοιγμένα από signal_logged decisions) βάσει
@@ -31,7 +33,9 @@ export interface ExitResolverResult {
   failureReasons: string[];
 }
 
-export async function runExitResolverCycle(): Promise<ExitResolverResult> {
+export async function runExitResolverCycle(
+  realtimeConnection?: PumpPortalConnection,
+): Promise<ExitResolverResult> {
   // Rotation βάσει "ποιος περιμένει περισσότερο" (last_checked_at ASC), ΟΧΙ oldest-entry
   // — βλ. migration 0006 / selectOpenTradesForCheck για το γιατί.
   const openTrades = await selectOpenTradesForCheck(EXIT_RESOLVER_TRADES_PER_CYCLE);
@@ -41,7 +45,7 @@ export async function runExitResolverCycle(): Promise<ExitResolverResult> {
 
   for (const trade of openTrades) {
     try {
-      if (await resolveOneTrade(trade)) closed += 1;
+      if (await resolveOneTrade(trade, realtimeConnection)) closed += 1;
     } catch (error) {
       // Rate limit σταματά ΟΛΟΚΛΗΡΟ τον κύκλο — ίδια λογική με τα άλλα collectors, ίδιος
       // λόγος: τα επόμενα trades δε πρέπει να ξαναχτυπήσουν το API μέσα στο ban.
@@ -60,7 +64,10 @@ export async function runExitResolverCycle(): Promise<ExitResolverResult> {
   return { openTrades: totalOpen, closed, failures, failureReasons };
 }
 
-async function resolveOneTrade(trade: PaperTrade): Promise<boolean> {
+async function resolveOneTrade(
+  trade: PaperTrade,
+  realtimeConnection?: PumpPortalConnection,
+): Promise<boolean> {
   // Σφράγισε ΠΡΩΤΑ, πριν οποιοδήποτε GMGN call — ακόμα κι αν σκάσει rate-limit παρακάτω,
   // το rotation προχωράει (δεν ξαναεπιλέγεται αμέσως το ίδιο trade στην επόμενη
   // προσπάθεια). Ίδιο σκεπτικό με markActivityChecked.
@@ -123,6 +130,9 @@ async function resolveOneTrade(trade: PaperTrade): Promise<boolean> {
     assumedFeesPct: PAPER_ASSUMED_FEES_PCT,
     pnlNetPct,
   });
+  if (realtimeConnection) {
+    await unsubscribeIfNoLongerNeeded(realtimeConnection, trade.tokenAddress);
+  }
   return true;
 }
 

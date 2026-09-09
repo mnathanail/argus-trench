@@ -13,6 +13,8 @@ import {
   WALLET_ACTIVITY_WALLETS_PER_CYCLE,
 } from './intervals.js';
 import { PHASE1_THRESHOLDS, logicVersion } from '../decision/gateConfig.js';
+import { subscribeForNewTrade } from '../realtime/subscriptionManager.js';
+import type { PumpPortalConnection } from '../realtime/pumpportalConnection.js';
 import {
   PAPER_ASSUMED_LATENCY_MS,
   PAPER_ASSUMED_SLIPPAGE_PCT,
@@ -41,6 +43,10 @@ export interface WalletActivityOptions {
   pageSize?: number;
   /** Μέγιστος αριθμός wallets ανά κύκλο· το default εφαρμόζει round-robin polling. */
   walletsPerCycle?: number;
+  /** Optional — αν δοθεί, κάθε νέο trade κάνει αμέσως subscribe στο realtime feed
+   * (token + trigger wallet). Χωρίς αυτό, το loop δουλεύει ακριβώς όπως πριν
+   * (καθαρά polling, καμία αλλαγή συμπεριφοράς) — βλ. main.ts για το πώς περνάει. */
+  realtimeConnection?: PumpPortalConnection;
 }
 
 export interface WalletActivityResult {
@@ -133,7 +139,12 @@ export async function runWalletActivityCycle(
           entryAt: new Date(buy.timestamp * 1000),
         },
       );
-      if (recorded !== null) signalsRecorded += 1;
+      if (recorded !== null) {
+        signalsRecorded += 1;
+        if (options.realtimeConnection) {
+          subscribeForNewTrade(options.realtimeConnection, buy.tokenAddress, wallet.address);
+        }
+      }
     }
 
     // Ο cursor προχωράει ΑΦΟΥ επεξεργαστούμε τη σελίδα: αν σκάσει κάτι στη μέση, ο

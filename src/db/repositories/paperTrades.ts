@@ -227,6 +227,48 @@ export async function countOpenTrades(conn?: Queryable): Promise<number> {
   return toNum(requireRow(rows, 'countOpenTrades').count);
 }
 
+/**
+ * Πόσα ΑΛΛΑ ανοιχτά trades χρειάζονται ακόμα αυτό το token — για το realtime websocket
+ * να ξέρει αν είναι ασφαλές να κάνει unsubscribe μετά το κλείσιμο ΕΝΟΣ trade (μπορεί να
+ * υπάρχει κι άλλο, ξεχωριστό, ακόμα ανοιχτό στο ίδιο token).
+ */
+export async function countOpenTradesForToken(tokenAddress: string, conn?: Queryable): Promise<number> {
+  const { rows } = await db(conn).query<{ count: string }>(
+    `SELECT count(*) AS count FROM paper_trades WHERE status = 'open' AND token_address = $1`,
+    [tokenAddress],
+  );
+  return toNum(requireRow(rows, 'countOpenTradesForToken').count);
+}
+
+export interface OpenTradeSubscriptionTarget {
+  tokenAddress: string;
+  triggerWalletAddress: string | null;
+}
+
+/**
+ * Distinct (token, trigger wallet) ζευγάρια για ΟΛΑ τα ανοιχτά trades — χρησιμοποιείται
+ * ΜΟΝΟ στο startup του realtime websocket, για να ξαναφτιάξει τις συνδρομές που
+ * υπήρχαν πριν το τελευταίο restart (η σύνδεση ξεκινάει πάντα με μηδέν subscriptions,
+ * ασχέτως τι υπήρχε στη βάση).
+ */
+export async function listOpenTradesWithWallet(
+  conn?: Queryable,
+): Promise<OpenTradeSubscriptionTarget[]> {
+  const { rows } = await db(conn).query<{
+    token_address: string;
+    trigger_wallet_address: string | null;
+  }>(
+    `SELECT DISTINCT pt.token_address, dl.trigger_wallet_address
+       FROM paper_trades pt
+       JOIN decision_log dl ON dl.id = pt.decision_log_id
+      WHERE pt.status = 'open'`,
+  );
+  return rows.map((row) => ({
+    tokenAddress: row.token_address,
+    triggerWalletAddress: row.trigger_wallet_address,
+  }));
+}
+
 export async function getTrade(id: number, conn?: Queryable): Promise<PaperTrade | null> {
   const { rows } = await db(conn).query<TradeRow>(
     `SELECT ${COLUMNS} FROM paper_trades WHERE id = $1`,

@@ -24,8 +24,11 @@ import { runWalletActivityCycle } from './collectors/walletActivity.js';
 import { runWalletDiscoveryCycle } from './collectors/walletDiscovery.js';
 import { config } from './config.js';
 import { closePool } from './db/pool.js';
+import { listOpenTradesWithWallet } from './db/repositories/paperTrades.js';
 import { logicVersion } from './decision/gateConfig.js';
 import { msUntilNextAthensTime } from './util/athensTime.js';
+import { PumpPortalConnection } from './realtime/pumpportalConnection.js';
+import { subscribeOpenTrades } from './realtime/subscriptionManager.js';
 import { runScheduler, SharedCooldown, type LoopDefinition } from './scheduler.js';
 import { createBotFromEnv, runBot } from './telegram/bot.js';
 
@@ -68,6 +71,36 @@ async function notify(text: string): Promise<void> {
 const cooldown = new SharedCooldown();
 let successfulDiscoveryCycles = 0;
 
+/**
+ * Optional — undefined αν λείπει το PUMPPORTAL_API_KEY (π.χ. τοπικό dev, ή πριν να
+ * ρυθμιστεί σε ένα deploy). Κάθε σημείο που το χρησιμοποιεί (walletActivity,
+ * exitResolver) το δέχεται ως optional παράμετρο και απλά δεν κάνει τίποτα realtime αν
+ * λείπει — καθαρό polling fallback, καμία αλλαγή συμπεριφοράς.
+ */
+const pumpportalApiKey = config.pumpportalApiKey();
+const realtimeConnection = pumpportalApiKey
+  ? new PumpPortalConnection({
+      apiKey: pumpportalApiKey,
+      onTradeEvent: () => {
+        // TODO Βήμα 6: εδώ θα κουμπώσει η event-driven exit λογική. Προς το παρόν μόνο
+        // subscribe/unsubscribe (Βήμα 5) — το periodic exit-resolver παραμένει το μόνο
+        // που πραγματικά κλείνει trades.
+      },
+      log: (message) => console.log(message),
+    })
+  : undefined;
+
+if (realtimeConnection) {
+  realtimeConnection.connect();
+  const openTargets = await listOpenTradesWithWallet();
+  subscribeOpenTrades(realtimeConnection, openTargets);
+  console.log(
+    `[main] realtime: συνδρομή σε ${openTargets.length} ήδη ανοιχτά trades μετά το startup`,
+  );
+} else {
+  console.log('[main] realtime: PUMPPORTAL_API_KEY λείπει — μόνο polling, καμία websocket σύνδεση');
+}
+
 const loops: LoopDefinition[] = [
   {
     name: 'discovery',
@@ -94,7 +127,7 @@ const loops: LoopDefinition[] = [
     // αόριστον — βλ. intervals.ts.
     retryBackoffMs: WALLET_ACTIVITY_RETRY_BACKOFF_MS,
     run: async () => {
-      const result = await runWalletActivityCycle();
+      const result = await runWalletActivityCycle({ realtimeConnection });
       if (result.walletsPolled === 0) return;
       console.log(
         `[wallet-activity] wallets=${result.walletsPolled} newBuys=${result.newBuys} ` +
@@ -145,7 +178,7 @@ const loops: LoopDefinition[] = [
     initialDelayMs: EXIT_RESOLVER_INITIAL_DELAY_MS,
     retryBackoffMs: EXIT_RESOLVER_RETRY_BACKOFF_MS,
     run: async () => {
-      const result = await runExitResolverCycle();
+      const result = await runExitResolverCycle(realtimeConnection);
       if (result.openTrades === 0 && result.closed === 0 && result.failures === 0) return;
       console.log(
         `[exit-resolver] open=${result.openTrades} closed=${result.closed} failures=${result.failures}` +
