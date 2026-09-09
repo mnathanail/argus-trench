@@ -418,6 +418,7 @@ export async function getWalletLeaderboard(
 export interface OpenTradeForTick {
   id: number;
   simulatedEntryPrice: number;
+  entryAt: Date;
   bankrollAtEntry: number | null;
   intendedSizePct: number | null;
   peakPriceSinceEntry: number | null;
@@ -426,42 +427,69 @@ export interface OpenTradeForTick {
 }
 
 /**
- * Ανοιχτά trades πάνω σε ΕΝΑ συγκεκριμένο token, με ό,τι χρειάζεται το tick-based exit
- * μοντέλο (peak/trailing state, trigger wallet) — καλείται σε κάθε εισερχόμενο realtime
- * event, βλ. realtimeExitHandler.ts. Trades με μη-έγκυρη entry price (NULL/0) μένουν
- * εκτός — δεν μπορούμε να υπολογίσουμε % χωρίς αυτήν, ίδιο guard με το periodic
- * exit-resolver.
+ * Μόνο τα IDs ανοιχτών trades πάνω σε ΕΝΑ token — γρήγορο, ΧΩΡΙΣ lock, μόνο για να
+ * ξέρουμε ΠΟΙΑ trades θα μπορούσαν να μας ενδιαφέρουν σε ένα εισερχόμενο realtime event.
+ * Το πραγματικό, κλειδωμένο fetch γίνεται ανά-trade μέσω `getOpenTradeForTickLocked`,
+ * μέσα σε transaction — βλ. εκεί για το γιατί χρειάζεται lock.
  */
-export async function listOpenTradesForToken(
-  tokenAddress: string,
-  conn?: Queryable,
-): Promise<OpenTradeForTick[]> {
-  const { rows } = await db(conn).query<{
+export async function listOpenTradeIdsForToken(tokenAddress: string, conn?: Queryable): Promise<number[]> {
+  const { rows } = await db(conn).query<{ id: string }>(
+    `SELECT id FROM paper_trades WHERE status = 'open' AND token_address = $1
+       AND simulated_entry_price IS NOT NULL AND simulated_entry_price > 0`,
+    [tokenAddress],
+  );
+  return rows.map((row) => toNum(row.id));
+}
+
+/**
+ * ΚΛΕΙΔΩΜΕΝΗ (`FOR UPDATE`) ανάγνωση ΕΝΟΣ trade — ΠΡΕΠΕΙ να καλείται μέσα σε
+ * transaction (περνάει το `client`, ΟΧΙ optional). Πραγματικό incident 2026-09-09: ένα
+ * δραστήριο token μπορεί να δώσει πολλά ticks μέσα σε δευτερόλεπτα· χωρίς lock, δύο
+ * ταυτόχρονα ticks θα μπορούσαν να διαβάσουν το ΙΔΙΟ (μπαγιάτικο) peak/trailing state,
+ * και το δεύτερο write θα "έσβηνε" σιωπηλά το πρώτο (lost update) — π.χ. ένα πραγματικό
+ * νέο peak να χαθεί, κάνοντας το trailing_stop να πυροδοτήσει σε λάθος σημείο. Το
+ * `FOR UPDATE` κάνει το δεύτερο tick να ΠΕΡΙΜΕΝΕΙ μέχρι να τελειώσει το πρώτο transaction,
+ * βλέποντας μετά το φρέσκο, ενημερωμένο state — όχι μπαγιάτικο.
+ *
+ * Επιστρέφει null αν το trade έκλεισε ήδη (periodic exit-resolver, ή προηγούμενο tick)
+ * ή δεν πληροί πια τα κριτήρια — ο caller απλά δεν κάνει τίποτα σε αυτή την περίπτωση.
+ */
+export async function getOpenTradeForTickLocked(
+  id: number,
+  client: Queryable,
+): Promise<OpenTradeForTick | null> {
+  const { rows } = await db(client).query<{
     id: string;
     simulated_entry_price: string;
+    entry_at: Date;
     bankroll_at_entry: string | null;
     intended_size_pct: string | null;
     peak_price_since_entry: string | null;
     trailing_active: boolean;
     trigger_wallet_address: string | null;
   }>(
-    `SELECT pt.id, pt.simulated_entry_price, pt.bankroll_at_entry, pt.intended_size_pct,
-            pt.peak_price_since_entry, pt.trailing_active, dl.trigger_wallet_address
+    `SELECT pt.id, pt.simulated_entry_price, pt.entry_at, pt.bankroll_at_entry,
+            pt.intended_size_pct, pt.peak_price_since_entry, pt.trailing_active,
+            dl.trigger_wallet_address
        FROM paper_trades pt
        JOIN decision_log dl ON dl.id = pt.decision_log_id
-      WHERE pt.status = 'open' AND pt.token_address = $1
-        AND pt.simulated_entry_price IS NOT NULL AND pt.simulated_entry_price > 0`,
-    [tokenAddress],
+      WHERE pt.id = $1 AND pt.status = 'open'
+        AND pt.simulated_entry_price IS NOT NULL AND pt.simulated_entry_price > 0
+      FOR UPDATE OF pt`,
+    [id],
   );
-  return rows.map((row) => ({
+  const row = rows[0];
+  if (row === undefined) return null;
+  return {
     id: toNum(row.id),
     simulatedEntryPrice: toNum(row.simulated_entry_price),
+    entryAt: row.entry_at,
     bankrollAtEntry: toNumOrNull(row.bankroll_at_entry),
     intendedSizePct: toNumOrNull(row.intended_size_pct),
     peakPriceSinceEntry: toNumOrNull(row.peak_price_since_entry),
     trailingActive: row.trailing_active,
     triggerWalletAddress: row.trigger_wallet_address,
-  }));
+  };
 }
 
 /** Γράφει το νέο live state ΜΕΤΑ από ένα tick που δεν έκλεισε τη θέση — ώστε το επόμενο

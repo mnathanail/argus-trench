@@ -1,0 +1,486 @@
+diff --git a/src/db/repositories/paperTrades.ts b/src/db/repositories/paperTrades.ts
+index 40578f0..9bf8d4e 100644
+--- a/src/db/repositories/paperTrades.ts
++++ b/src/db/repositories/paperTrades.ts
+@@ -418,6 +418,7 @@ export async function getWalletLeaderboard(
+ export interface OpenTradeForTick {
+   id: number;
+   simulatedEntryPrice: number;
++  entryAt: Date;
+   bankrollAtEntry: number | null;
+   intendedSizePct: number | null;
+   peakPriceSinceEntry: number | null;
+@@ -426,42 +427,69 @@ export interface OpenTradeForTick {
+ }
+ 
+ /**
+- * Ανοιχτά trades πάνω σε ΕΝΑ συγκεκριμένο token, με ό,τι χρειάζεται το tick-based exit
+- * μοντέλο (peak/trailing state, trigger wallet) — καλείται σε κάθε εισερχόμενο realtime
+- * event, βλ. realtimeExitHandler.ts. Trades με μη-έγκυρη entry price (NULL/0) μένουν
+- * εκτός — δεν μπορούμε να υπολογίσουμε % χωρίς αυτήν, ίδιο guard με το periodic
+- * exit-resolver.
++ * Μόνο τα IDs ανοιχτών trades πάνω σε ΕΝΑ token — γρήγορο, ΧΩΡΙΣ lock, μόνο για να
++ * ξέρουμε ΠΟΙΑ trades θα μπορούσαν να μας ενδιαφέρουν σε ένα εισερχόμενο realtime event.
++ * Το πραγματικό, κλειδωμένο fetch γίνεται ανά-trade μέσω `getOpenTradeForTickLocked`,
++ * μέσα σε transaction — βλ. εκεί για το γιατί χρειάζεται lock.
+  */
+-export async function listOpenTradesForToken(
+-  tokenAddress: string,
+-  conn?: Queryable,
+-): Promise<OpenTradeForTick[]> {
+-  const { rows } = await db(conn).query<{
++export async function listOpenTradeIdsForToken(tokenAddress: string, conn?: Queryable): Promise<number[]> {
++  const { rows } = await db(conn).query<{ id: string }>(
++    `SELECT id FROM paper_trades WHERE status = 'open' AND token_address = $1
++       AND simulated_entry_price IS NOT NULL AND simulated_entry_price > 0`,
++    [tokenAddress],
++  );
++  return rows.map((row) => toNum(row.id));
++}
++
++/**
++ * ΚΛΕΙΔΩΜΕΝΗ (`FOR UPDATE`) ανάγνωση ΕΝΟΣ trade — ΠΡΕΠΕΙ να καλείται μέσα σε
++ * transaction (περνάει το `client`, ΟΧΙ optional). Πραγματικό incident 2026-09-09: ένα
++ * δραστήριο token μπορεί να δώσει πολλά ticks μέσα σε δευτερόλεπτα· χωρίς lock, δύο
++ * ταυτόχρονα ticks θα μπορούσαν να διαβάσουν το ΙΔΙΟ (μπαγιάτικο) peak/trailing state,
++ * και το δεύτερο write θα "έσβηνε" σιωπηλά το πρώτο (lost update) — π.χ. ένα πραγματικό
++ * νέο peak να χαθεί, κάνοντας το trailing_stop να πυροδοτήσει σε λάθος σημείο. Το
++ * `FOR UPDATE` κάνει το δεύτερο tick να ΠΕΡΙΜΕΝΕΙ μέχρι να τελειώσει το πρώτο transaction,
++ * βλέποντας μετά το φρέσκο, ενημερωμένο state — όχι μπαγιάτικο.
++ *
++ * Επιστρέφει null αν το trade έκλεισε ήδη (periodic exit-resolver, ή προηγούμενο tick)
++ * ή δεν πληροί πια τα κριτήρια — ο caller απλά δεν κάνει τίποτα σε αυτή την περίπτωση.
++ */
++export async function getOpenTradeForTickLocked(
++  id: number,
++  client: Queryable,
++): Promise<OpenTradeForTick | null> {
++  const { rows } = await db(client).query<{
+     id: string;
+     simulated_entry_price: string;
++    entry_at: Date;
+     bankroll_at_entry: string | null;
+     intended_size_pct: string | null;
+     peak_price_since_entry: string | null;
+     trailing_active: boolean;
+     trigger_wallet_address: string | null;
+   }>(
+-    `SELECT pt.id, pt.simulated_entry_price, pt.bankroll_at_entry, pt.intended_size_pct,
+-            pt.peak_price_since_entry, pt.trailing_active, dl.trigger_wallet_address
++    `SELECT pt.id, pt.simulated_entry_price, pt.entry_at, pt.bankroll_at_entry,
++            pt.intended_size_pct, pt.peak_price_since_entry, pt.trailing_active,
++            dl.trigger_wallet_address
+        FROM paper_trades pt
+        JOIN decision_log dl ON dl.id = pt.decision_log_id
+-      WHERE pt.status = 'open' AND pt.token_address = $1
+-        AND pt.simulated_entry_price IS NOT NULL AND pt.simulated_entry_price > 0`,
+-    [tokenAddress],
++      WHERE pt.id = $1 AND pt.status = 'open'
++        AND pt.simulated_entry_price IS NOT NULL AND pt.simulated_entry_price > 0
++      FOR UPDATE OF pt`,
++    [id],
+   );
+-  return rows.map((row) => ({
++  const row = rows[0];
++  if (row === undefined) return null;
++  return {
+     id: toNum(row.id),
+     simulatedEntryPrice: toNum(row.simulated_entry_price),
++    entryAt: row.entry_at,
+     bankrollAtEntry: toNumOrNull(row.bankroll_at_entry),
+     intendedSizePct: toNumOrNull(row.intended_size_pct),
+     peakPriceSinceEntry: toNumOrNull(row.peak_price_since_entry),
+     trailingActive: row.trailing_active,
+     triggerWalletAddress: row.trigger_wallet_address,
+-  }));
++  };
+ }
+ 
+ /** Γράφει το νέο live state ΜΕΤΑ από ένα tick που δεν έκλεισε τη θέση — ώστε το επόμενο
+diff --git a/src/realtime/realtimeExitHandler.test.ts b/src/realtime/realtimeExitHandler.test.ts
+new file mode 100644
+index 0000000..302fbd7
+--- /dev/null
++++ b/src/realtime/realtimeExitHandler.test.ts
+@@ -0,0 +1,114 @@
++import assert from 'node:assert/strict';
++import { test } from 'node:test';
++
++import { decideForTick, type TickDecisionInput } from './realtimeExitHandler.js';
++import type { PumpPortalTradeEvent } from './pumpportalEvents.js';
++
++const ENTRY_AT = new Date('2026-09-09T00:00:00Z');
++const WALLET = 'WalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1';
++const TOKEN = 'TokenAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1';
++
++function trade(overrides: Partial<TickDecisionInput> = {}): TickDecisionInput {
++  return {
++    simulatedEntryPrice: 1,
++    entryAt: ENTRY_AT,
++    peakPriceSinceEntry: null,
++    trailingActive: false,
++    triggerWalletAddress: WALLET,
++    ...overrides,
++  };
++}
++
++function buyEvent(overrides: Partial<PumpPortalTradeEvent> = {}): PumpPortalTradeEvent {
++  return {
++    signature: 'sig',
++    mint: TOKEN,
++    traderPublicKey: 'SomeOtherTrader1111111111111111111111111',
++    txType: 'buy',
++    tokenAmount: 100,
++    solAmount: 1,
++    vTokensInBondingCurve: 500_000_000,
++    vSolInBondingCurve: 50, // τιμή = 1e-7... απλοποιώ πιο κάτω με ρητά νούμερα
++    marketCapSol: 100,
++    pool: 'pump',
++    ...overrides,
++  };
++}
++
++/** Βοηθητικό: φτιάχνει event με ΣΥΓΚΕΚΡΙΜΕΝΗ τιμή (vSol/vTokens = price ακριβώς). */
++function eventAtPrice(price: number, overrides: Partial<PumpPortalTradeEvent> = {}): PumpPortalTradeEvent {
++  return buyEvent({ vSolInBondingCurve: price, vTokensInBondingCurve: 1, ...overrides });
++}
++
++test('ΕΥΡΗΜΑ #1: a tick arriving after the real 24h boundary is ignored, even if the price would otherwise trigger tp_tier_1', () => {
++  const justPastBoundary = new Date(ENTRY_AT.getTime() + 25 * 60 * 60 * 1000); // 25h μετά
++  const decision = decideForTick(trade(), eventAtPrice(1.6), justPastBoundary); // +60%, θα ήταν tp_tier_1
++  assert.deepEqual(decision, { type: 'ignore' });
++});
++
++test('a tick just under the 24h boundary is processed normally (not incorrectly ignored)', () => {
++  const justBeforeBoundary = new Date(ENTRY_AT.getTime() + 23 * 60 * 60 * 1000); // 23h μετά
++  const decision = decideForTick(trade(), eventAtPrice(1.6), justBeforeBoundary);
++  assert.equal(decision.type, 'close');
++});
++
++test('ΕΥΡΗΜΑ #1 (variant): a wallet-sell arriving after the 24h boundary is ignored too, not just price ticks', () => {
++  const justPastBoundary = new Date(ENTRY_AT.getTime() + 25 * 60 * 60 * 1000);
++  const lateSell = eventAtPrice(1.1, { txType: 'sell', traderPublicKey: WALLET });
++  const decision = decideForTick(trade(), lateSell, justPastBoundary);
++  assert.deepEqual(decision, { type: 'ignore' });
++});
++
++test('exit_signal: a sell BY the trigger wallet closes immediately, regardless of price', () => {
++  const sellEvent = eventAtPrice(0.5, { txType: 'sell', traderPublicKey: WALLET }); // τιμή θα ήταν ζημιά
++  const decision = decideForTick(trade(), sellEvent, ENTRY_AT);
++  assert.equal(decision.type, 'close');
++  if (decision.type === 'close') {
++    assert.equal(decision.exitReason, 'exit_signal');
++    assert.equal(decision.exitPrice, 0.5);
++  }
++});
++
++test('a sell by a DIFFERENT wallet (not the trigger wallet) does not count as exit_signal — falls through to price-tick handling', () => {
++  const sellEvent = eventAtPrice(0.5, { txType: 'sell', traderPublicKey: 'SomeoneElseEntirely111111111111111111111' });
++  const decision = decideForTick(trade(), sellEvent, ENTRY_AT);
++  assert.notEqual(decision.type === 'close' && decision.exitReason, 'exit_signal');
++});
++
++test('a buy event (not a sell) from the trigger wallet does not trigger exit_signal', () => {
++  const buyByTrigger = eventAtPrice(1.6, { txType: 'buy', traderPublicKey: WALLET });
++  const decision = decideForTick(trade(), buyByTrigger, ENTRY_AT);
++  assert.equal(decision.type, 'close');
++  if (decision.type === 'close') assert.equal(decision.exitReason, 'tp_tier_1');
++});
++
++test('a token that migrated off the bonding curve (pool !== "pump") is ignored, not treated as a price of 0', () => {
++  const migratedEvent = eventAtPrice(1.6, { pool: 'raydium' });
++  const decision = decideForTick(trade(), migratedEvent, ENTRY_AT);
++  assert.deepEqual(decision, { type: 'ignore' });
++});
++
++test('a tick that raises the peak without triggering any exit returns an update decision', () => {
++  const decision = decideForTick(trade({ peakPriceSinceEntry: 1.1 }), eventAtPrice(1.3), ENTRY_AT);
++  assert.deepEqual(decision, { type: 'update', newPeakPriceSinceEntry: 1.3, newTrailingActive: false });
++});
++
++test('a tick that changes nothing (price below the already-known peak, trailing still inactive) is ignored — no wasted write', () => {
++  const decision = decideForTick(trade({ peakPriceSinceEntry: 1.3 }), eventAtPrice(1.2), ENTRY_AT);
++  assert.deepEqual(decision, { type: 'ignore' });
++});
++
++test('trailing_stop fires correctly through the full decision path (activation on one tick, stop on a later one)', () => {
++  const afterActivation = decideForTick(trade(), eventAtPrice(2.0), ENTRY_AT); // +100%, ενεργοποίηση
++  assert.equal(afterActivation.type, 'update');
++  const peak = afterActivation.type === 'update' ? afterActivation.newPeakPriceSinceEntry : 0;
++  const trailingActive = afterActivation.type === 'update' ? afterActivation.newTrailingActive : false;
++
++  const afterDrop = decideForTick(
++    trade({ peakPriceSinceEntry: peak, trailingActive }),
++    eventAtPrice(1.1), // κάτω από 2.0*(1-0.4)=1.2
++    ENTRY_AT,
++  );
++  assert.equal(afterDrop.type, 'close');
++  if (afterDrop.type === 'close') assert.equal(afterDrop.exitReason, 'trailing_stop');
++});
+diff --git a/src/realtime/realtimeExitHandler.ts b/src/realtime/realtimeExitHandler.ts
+index a69c470..f7a2770 100644
+--- a/src/realtime/realtimeExitHandler.ts
++++ b/src/realtime/realtimeExitHandler.ts
+@@ -1,11 +1,14 @@
+ import {
+   closeTrade,
+-  listOpenTradesForToken,
++  getOpenTradeForTickLocked,
++  listOpenTradeIdsForToken,
+   updateTickState,
+   type OpenTradeForTick,
+ } from '../db/repositories/paperTrades.js';
++import { withTransaction } from '../db/tx.js';
++import type { Queryable } from '../db/tx.js';
+ import { computePnl } from '../decision/pnl.js';
+-import { PAPER_ASSUMED_FEES_PCT } from '../decision/paperTradingConfig.js';
++import { EXIT_TIMEOUT_MS, PAPER_ASSUMED_FEES_PCT } from '../decision/paperTradingConfig.js';
+ import { checkTick } from './tickExit.js';
+ import { priceFromTradeEvent, type PumpPortalTradeEvent } from './pumpportalEvents.js';
+ import { unsubscribeIfNoLongerNeeded } from './subscriptionManager.js';
+@@ -17,60 +20,49 @@ export interface RealtimeCloseResult {
+   pnlPct: number;
+ }
+ 
++export type TickDecision =
++  | {
++      type: 'close';
++      exitReason: 'tp_tier_1' | 'trailing_stop' | 'exit_signal';
++      exitPrice: number;
++      exitTriggerDetail: Record<string, unknown> | null;
++    }
++  | { type: 'update'; newPeakPriceSinceEntry: number; newTrailingActive: boolean }
++  | { type: 'ignore' };
++
++export type TickDecisionInput = Pick<
++  OpenTradeForTick,
++  'simulatedEntryPrice' | 'entryAt' | 'peakPriceSinceEntry' | 'trailingActive' | 'triggerWalletAddress'
++>;
++
+ /**
+- * Καλείται σε ΚΑΘΕ εισερχόμενο trade event (και τα δύο subscription types καταλήγουν
+- * εδώ, ίδιο σχήμα event — βλ. pumpportalEvents.ts). Κοιτάει ΜΟΝΟ ανοιχτά trades πάνω
+- * στο ΙΔΙΟ token με το event (`event.mint`) — αυτό καλύπτει και τα δύο σενάρια:
+- *   1. Το event είναι μια πώληση ΤΟΥ trigger wallet πάνω στο δικό μας token → exit_signal,
+- *      ανεξάρτητα τιμής.
+- *   2. Οτιδήποτε άλλο πάνω στο ίδιο token → tick τιμής, έλεγχος tier1/trailing.
+- *
+- * ΔΕΝ κλείνει ποτέ trades λόγω 24ωρου timeout — αυτό παραμένει δουλειά του periodic
+- * exit-resolver (τίποτα δεν "συμβαίνει" σε συγκεκριμένο tick όταν απλά περνάει ο χρόνος).
++ * Καθαρή απόφαση — τι πρέπει να συμβεί για ΕΝΑ trade δεδομένου ΕΝΟΣ event, χωρίς καμία
++ * επαφή με DB/socket. Ξεχωριστό από την εκτέλεση (handleOneTrade) ώστε να τεσταρίζεται
++ * πλήρως χωρίς πραγματική βάση — ίδιο σκεπτικό με το resolveExit/checkTick.
+  *
+- * Επιστρέφει ό,τι έκλεισε πραγματικά σε αυτό το event — ο caller (main.ts) αποφασίζει
+- * τι να κάνει με αυτή την πληροφορία (π.χ. Telegram notify), ίδιο σκεπτικό με το
+- * runExitResolverCycle's `closed` count. Χωρίς αυτό, τα realtime closes γίνονταν
+- * σιωπηλά — πραγματικό κενό, εντοπίστηκε 2026-09-09 όταν ρωτήθηκε ρητά.
++ * Δύο πραγματικά ευρήματα πλήρους ελέγχου 2026-09-09 ενσωματωμένα εδώ:
++ * 1. ΠΟΤΕ μην αξιολογείς πέρα από το πραγματικό 24ωρο όριο — ίδιο σκεπτικό με το
++ *    resolveExit boundary fix (2026-09-07), που είχε ξεχαστεί σε αυτό το νεότερο
++ *    μονοπάτι. `now` περνάει ρητά (όχι Date.now() εσωτερικά) ακριβώς για να τεσταρίζεται.
++ * 2. exit_signal έχει προτεραιότητα έναντι του price tick στο ΙΔΙΟ event — ίδιο
++ *    σκεπτικό με το resolveExit's "wallet exit_signal takes priority over a tier hit
++ *    in the same candle".
+  */
+-export async function handleRealtimeTradeEvent(
+-  event: PumpPortalTradeEvent,
+-  connection: PumpPortalConnection,
+-): Promise<RealtimeCloseResult[]> {
+-  const openTrades = await listOpenTradesForToken(event.mint);
+-  if (openTrades.length === 0) return [];
++export function decideForTick(trade: TickDecisionInput, event: PumpPortalTradeEvent, now: Date): TickDecision {
++  if (now.getTime() - trade.entryAt.getTime() >= EXIT_TIMEOUT_MS) return { type: 'ignore' };
+ 
+-  const closed: RealtimeCloseResult[] = [];
+-  for (const trade of openTrades) {
+-    const result = await handleOneTrade(trade, event, connection);
+-    if (result !== null) closed.push(result);
+-  }
+-  return closed;
+-}
+-
+-async function handleOneTrade(
+-  trade: OpenTradeForTick,
+-  event: PumpPortalTradeEvent,
+-  connection: PumpPortalConnection,
+-): Promise<RealtimeCloseResult | null> {
+-  // Σενάριο 1: το trigger wallet μόλις πούλησε αυτό ακριβώς το token — exit_signal,
+-  // ανεξάρτητα από την τιμή.
+   if (event.txType === 'sell' && event.traderPublicKey === trade.triggerWalletAddress) {
+     const price = priceFromTradeEvent(event) ?? trade.simulatedEntryPrice;
+-    return closeAndUnsubscribe(
+-      trade,
+-      event.mint,
+-      'exit_signal',
+-      price,
+-      { wallet: trade.triggerWalletAddress },
+-      connection,
+-    );
++    return {
++      type: 'close',
++      exitReason: 'exit_signal',
++      exitPrice: price,
++      exitTriggerDetail: { wallet: trade.triggerWalletAddress },
++    };
+   }
+ 
+-  // Σενάριο 2: tick τιμής — μόνο αν έχουμε πραγματική τιμή (π.χ. όχι αν το token
+-  // μετακόμισε εκτός bonding curve, βλ. priceFromTradeEvent).
+   const price = priceFromTradeEvent(event);
+-  if (price === null) return null;
++  if (price === null) return { type: 'ignore' }; // π.χ. το token μετακόμισε εκτός bonding curve
+ 
+   const result = checkTick({
+     entryPrice: trade.simulatedEntryPrice,
+@@ -80,42 +72,93 @@ async function handleOneTrade(
+   });
+ 
+   if (result.exit !== null) {
+-    return closeAndUnsubscribe(trade, event.mint, result.exit.exitReason, result.exit.exitPrice, null, connection);
++    return {
++      type: 'close',
++      exitReason: result.exit.exitReason,
++      exitPrice: result.exit.exitPrice,
++      exitTriggerDetail: null,
++    };
+   }
+ 
+-  // Τίποτα δεν έκλεισε — γράψε το ενημερωμένο state για το επόμενο tick.
+   if (
+     result.newPeakPriceSinceEntry !== trade.peakPriceSinceEntry ||
+     result.newTrailingActive !== trade.trailingActive
+   ) {
+-    await updateTickState(trade.id, result.newPeakPriceSinceEntry, result.newTrailingActive);
++    return {
++      type: 'update',
++      newPeakPriceSinceEntry: result.newPeakPriceSinceEntry,
++      newTrailingActive: result.newTrailingActive,
++    };
+   }
+-  return null;
++
++  return { type: 'ignore' };
+ }
+ 
+-async function closeAndUnsubscribe(
++/**
++ * Καλείται σε ΚΑΘΕ εισερχόμενο trade event. ΚΛΕΙΔΩΜΕΝΗ ανάγνωση ανά trade (transaction +
++ * `FOR UPDATE`) — ένα δραστήριο token μπορεί να δώσει πολλά ticks μέσα σε δευτερόλεπτα·
++ * χωρίς lock, δύο ταυτόχρονα ticks θα διάβαζαν το ίδιο μπαγιάτικο peak/trailing state,
++ * και το δεύτερο write θα "έσβηνε" σιωπηλά το πρώτο (lost update). Πραγματικό εύρημα
++ * πλήρους ελέγχου 2026-09-09.
++ */
++export async function handleRealtimeTradeEvent(
++  event: PumpPortalTradeEvent,
++  connection: PumpPortalConnection,
++): Promise<RealtimeCloseResult[]> {
++  const candidateIds = await listOpenTradeIdsForToken(event.mint);
++  if (candidateIds.length === 0) return [];
++
++  const closed: RealtimeCloseResult[] = [];
++  for (const id of candidateIds) {
++    const result = await withTransaction(async (client) => {
++      const trade = await getOpenTradeForTickLocked(id, client);
++      // null: έκλεισε ήδη (periodic exit-resolver, ή προηγούμενο tick στο ίδιο batch)
++      // ανάμεσα στο listOpenTradeIdsForToken() και εδώ — εντάξει, τίποτα να κάνουμε.
++      if (trade === null) return null;
++      return handleOneTrade(trade, event, connection, client);
++    });
++    if (result !== null) closed.push(result);
++  }
++  return closed;
++}
++
++async function handleOneTrade(
+   trade: OpenTradeForTick,
+-  tokenAddress: string,
+-  exitReason: 'tp_tier_1' | 'trailing_stop' | 'exit_signal',
+-  exitPrice: number,
+-  exitTriggerDetail: Record<string, unknown> | null,
++  event: PumpPortalTradeEvent,
+   connection: PumpPortalConnection,
++  conn: Queryable,
+ ): Promise<RealtimeCloseResult | null> {
+-  const pnl = computePnl(trade.simulatedEntryPrice, exitPrice, trade.bankrollAtEntry, trade.intendedSizePct);
+-  const closed = await closeTrade(trade.id, {
+-    exitReason,
+-    exitTriggerDetail,
+-    simulatedExitPrice: exitPrice,
+-    pnlSol: pnl.pnlSol,
+-    pnlPct: pnl.pnlPct,
+-    assumedFeesPct: PAPER_ASSUMED_FEES_PCT,
+-    pnlNetPct: pnl.pnlNetPct,
+-  });
+-  // closeTrade έχει `WHERE status='open'` guard — αν το periodic exit-resolver το είχε
+-  // ήδη κλείσει ανάμεσα στο listOpenTradesForToken() και εδώ (σπάνιο race, αλλά πιθανό),
+-  // closed θα είναι false. Δεν είναι σφάλμα — απλά κάποιος άλλος πρόλαβε πρώτος, άρα
+-  // ΔΕΝ επιστρέφουμε αποτέλεσμα (δεν πρέπει να ειδοποιήσουμε δύο φορές).
+-  if (!closed) return null;
+-  await unsubscribeIfNoLongerNeeded(connection, tokenAddress);
+-  return { tokenAddress, exitReason, pnlPct: pnl.pnlPct };
++  const decision = decideForTick(trade, event, new Date());
++
++  switch (decision.type) {
++    case 'ignore':
++      return null;
++    case 'update':
++      await updateTickState(trade.id, decision.newPeakPriceSinceEntry, decision.newTrailingActive, conn);
++      return null;
++    case 'close': {
++      const pnl = computePnl(
++        trade.simulatedEntryPrice,
++        decision.exitPrice,
++        trade.bankrollAtEntry,
++        trade.intendedSizePct,
++      );
++      const closed = await closeTrade(
++        trade.id,
++        {
++          exitReason: decision.exitReason,
++          exitTriggerDetail: decision.exitTriggerDetail,
++          simulatedExitPrice: decision.exitPrice,
++          pnlSol: pnl.pnlSol,
++          pnlPct: pnl.pnlPct,
++          assumedFeesPct: PAPER_ASSUMED_FEES_PCT,
++          pnlNetPct: pnl.pnlNetPct,
++        },
++        conn,
++      );
++      if (!closed) return null;
++      await unsubscribeIfNoLongerNeeded(connection, event.mint, conn);
++      return { tokenAddress: event.mint, exitReason: decision.exitReason, pnlPct: pnl.pnlPct };
++    }
++  }
+ }
+diff --git a/src/realtime/subscriptionManager.ts b/src/realtime/subscriptionManager.ts
+index 311319e..2a320f8 100644
+--- a/src/realtime/subscriptionManager.ts
++++ b/src/realtime/subscriptionManager.ts
+@@ -1,4 +1,5 @@
+ import { countOpenTradesForToken, type OpenTradeSubscriptionTarget } from '../db/repositories/paperTrades.js';
++import type { Queryable } from '../db/tx.js';
+ import type { PumpPortalConnection } from './pumpportalConnection.js';
+ 
+ /** Μόνο ό,τι χρειαζόμαστε από τη σύνδεση — επιτρέπει fake object στα tests χωρίς να
+@@ -44,12 +45,19 @@ export function subscribeForNewTrade(
+  * Καλείται αμέσως μετά το κλείσιμο ενός trade (exitResolver.ts, ή ο event-driven
+  * exit handler). Unsubscribe ΜΟΝΟ αν κανένα ΑΛΛΟ ανοιχτό trade δεν χρειάζεται ακόμα το
+  * ίδιο token — δύο ξεχωριστά trades στο ίδιο token θα ήταν σπάνιο αλλά όχι αδύνατο.
++ *
++ * `conn` — ΠΕΡΑΣΕ το ΙΔΙΟ transaction client αν το close που μόλις έγινε ήταν μέρος
++ * transaction (π.χ. ο realtime handler): χωρίς αυτό, το μέτρημα θα έτρεχε σε ΑΛΛΗ
++ * σύνδεση που δε βλέπει ακόμα το δικό μας uncommitted close — θα μετρούσε λάθος το
++ * trade που μόλις κλείσαμε σαν ακόμα ανοιχτό, και δε θα έκανε ποτέ unsubscribe.
++ * Επιβεβαιωμένο πραγματικό εύρημα πλήρους ελέγχου 2026-09-09.
+  */
+ export async function unsubscribeIfNoLongerNeeded(
+   connection: UnsubscribeCapable,
+   tokenAddress: string,
++  conn?: Queryable,
+ ): Promise<void> {
+-  const stillNeeded = await countOpenTradesForToken(tokenAddress);
++  const stillNeeded = await countOpenTradesForToken(tokenAddress, conn);
+   if (stillNeeded === 0) {
+     connection.unsubscribeToken(tokenAddress);
+   }
