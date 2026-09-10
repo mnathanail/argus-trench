@@ -7,6 +7,20 @@ import type { PumpPortalConnection } from './pumpportalConnection.js';
 type SubscribeCapable = Pick<PumpPortalConnection, 'subscribeToken' | 'subscribeWallet'>;
 type UnsubscribeCapable = Pick<PumpPortalConnection, 'unsubscribeToken'>;
 
+/** Καλείται μία φορά στο startup — συνδρομές για ΟΛΑ τα ενεργά wallets της watchlist,
+ * όχι μόνο όσα έχουν ήδη ανοιχτό trade. Χρειάζεται ώστε η ΑΝΙΧΝΕΥΣΗ νέων αγορών
+ * (realtimeEntryHandler.ts) να δουλεύει από την πρώτη στιγμή — χωρίς αυτό, θα
+ * μαθαίναμε για μια αγορά ενός wallet μόνο ΑΦΟΥ το wallet ήδη είχε ανοιχτό trade, κάτι
+ * αδύνατο πριν καν την πρώτη του αγορά. */
+export function subscribeAllActiveWallets(
+  connection: SubscribeCapable,
+  walletAddresses: readonly string[],
+): void {
+  for (const address of walletAddresses) {
+    connection.subscribeWallet(address);
+  }
+}
+
 /**
  * Καλείται μία φορά στο startup — συνδρομές για ΟΛΑ τα ήδη ανοιχτά trades. Χρειάζεται
  * γιατί μια φρέσκια σύνδεση ξεκινάει πάντα με μηδέν subscriptions, ασχέτως τι υπήρχε στη

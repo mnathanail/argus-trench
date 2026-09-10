@@ -8,9 +8,6 @@ import {
   DAILY_DIGEST_INTERVAL_MS,
   EXIT_RESOLVER_INITIAL_DELAY_MS,
   EXIT_RESOLVER_INTERVAL_MS,
-  WALLET_ACTIVITY_INTERVAL_MS,
-  WALLET_ACTIVITY_INITIAL_DELAY_MS,
-  WALLET_ACTIVITY_RETRY_BACKOFF_MS,
   WALLET_DISCOVERY_INTERVAL_MS,
   WALLET_DISCOVERY_INITIAL_DELAY_MS,
   WALLET_DISCOVERY_RETRY_BACKOFF_MS,
@@ -20,16 +17,17 @@ import {
   EXIT_RESOLVER_RETRY_BACKOFF_MS,
 } from './collectors/intervals.js';
 import { runWalletScoringCycle } from './collectors/scoring.js';
-import { runWalletActivityCycle } from './collectors/walletActivity.js';
 import { runWalletDiscoveryCycle } from './collectors/walletDiscovery.js';
 import { config } from './config.js';
 import { closePool } from './db/pool.js';
+import { listActiveWallets } from './db/repositories/watchlistWallets.js';
 import { listOpenTradesWithWallet } from './db/repositories/paperTrades.js';
 import { logicVersion } from './decision/gateConfig.js';
 import { msUntilNextAthensTime } from './util/athensTime.js';
 import { PumpPortalConnection } from './realtime/pumpportalConnection.js';
-import { subscribeOpenTrades } from './realtime/subscriptionManager.js';
+import { subscribeAllActiveWallets, subscribeOpenTrades } from './realtime/subscriptionManager.js';
 import { handleRealtimeTradeEvent } from './realtime/realtimeExitHandler.js';
+import { handleRealtimeEntryEvent } from './realtime/realtimeEntryHandler.js';
 import { runScheduler, SharedCooldown, type LoopDefinition } from './scheduler.js';
 import { createBotFromEnv, runBot } from './telegram/bot.js';
 import { formatPercent, short } from './telegram/commands.js';
@@ -96,6 +94,11 @@ realtimeConnection = pumpportalApiKey
         // exit-resolver παραμένει δίχτυ ασφαλείας για ό,τι χάσει ένα τέτοιο σφάλμα.
         // Το notify() είναι ΜΕΣΑ στην ίδια .then() (όχι ξεχωριστό await μετά) ώστε ένα
         // πρόβλημα στην αποστολή Telegram να πιάνεται ΚΙ ΑΥΤΟ από το ίδιο .catch.
+        //
+        // Entry και exit είναι ΔΥΟ ανεξάρτητες αλυσίδες, ΟΧΙ μία μετά την άλλη — ένα
+        // πρόβλημα στη μία δεν πρέπει ποτέ να εμποδίσει την άλλη (π.χ. ένα trade που
+        // μόλις άνοιξε στο ΙΔΙΟ token με ένα trade που κλείνει, και τα δύο πρέπει να
+        // προχωρήσουν ανεξάρτητα).
         handleRealtimeTradeEvent(event, realtimeConnection)
           .then(async (closedResults) => {
             for (const r of closedResults) {
@@ -108,7 +111,22 @@ realtimeConnection = pumpportalApiKey
           })
           .catch((error) => {
             console.error(
-              `[realtime] σφάλμα στο event handler: ${error instanceof Error ? error.message : String(error)}`,
+              `[realtime] σφάλμα στο exit handler: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+
+        handleRealtimeEntryEvent(event, realtimeConnection)
+          .then(async (entry) => {
+            if (entry === null) return;
+            const walletLabel = entry.walletName ?? short(entry.walletAddress);
+            await notify(
+              `⚡🎯 νέο trade (realtime) — ${short(entry.tokenAddress)} | wallet ${walletLabel} ` +
+                `| entry ${entry.entryPrice.toPrecision(4)} — δες /trades`,
+            );
+          })
+          .catch((error) => {
+            console.error(
+              `[realtime] σφάλμα στο entry handler: ${error instanceof Error ? error.message : String(error)}`,
             );
           });
       },
@@ -120,8 +138,14 @@ if (realtimeConnection) {
   realtimeConnection.connect();
   const openTargets = await listOpenTradesWithWallet();
   subscribeOpenTrades(realtimeConnection, openTargets);
+  const activeWallets = await listActiveWallets();
+  subscribeAllActiveWallets(
+    realtimeConnection,
+    activeWallets.map((w) => w.address),
+  );
   console.log(
-    `[main] realtime: συνδρομή σε ${openTargets.length} ήδη ανοιχτά trades μετά το startup`,
+    `[main] realtime: συνδρομή σε ${openTargets.length} ήδη ανοιχτά trades και ` +
+      `${activeWallets.length} ενεργά wallets μετά το startup`,
   );
 } else {
   console.log('[main] realtime: PUMPPORTAL_API_KEY λείπει — μόνο polling, καμία websocket σύνδεση');
@@ -142,25 +166,6 @@ const loops: LoopDefinition[] = [
             `sampled=${result.sampledCandidates} (pass=${result.sampledPassed} ` +
             `fail=${result.sampledFailed}) rows=${result.rowsWritten}`,
         );
-      }
-    },
-  },
-  {
-    name: 'wallet-activity',
-    intervalMs: WALLET_ACTIVITY_INTERVAL_MS,
-    initialDelayMs: WALLET_ACTIVITY_INITIAL_DELAY_MS,
-    // Με backoff, ένας γεμάτος κύκλος δεν ξαναχτυπά την ίδια συμφόρηση κάθε 60s επ'
-    // αόριστον — βλ. intervals.ts.
-    retryBackoffMs: WALLET_ACTIVITY_RETRY_BACKOFF_MS,
-    run: async () => {
-      const result = await runWalletActivityCycle({ realtimeConnection });
-      if (result.walletsPolled === 0) return;
-      console.log(
-        `[wallet-activity] wallets=${result.walletsPolled} newBuys=${result.newBuys} ` +
-          `signals=${result.signalsRecorded}`,
-      );
-      if (result.signalsRecorded > 0) {
-        await notify(`🎯 ${result.signalsRecorded} signal(s) καταγράφηκαν (Φάση 1: χωρίς trade)`);
       }
     },
   },
@@ -187,7 +192,7 @@ const loops: LoopDefinition[] = [
     // Αυξανόμενο retry αντί για σταθερό 60s — βλ. intervals.ts για το σκεπτικό.
     retryBackoffMs: WALLET_DISCOVERY_RETRY_BACKOFF_MS,
     run: async () => {
-      const result = await runWalletDiscoveryCycle();
+      const result = await runWalletDiscoveryCycle({ realtimeConnection });
       console.log(
         `[wallet-discovery] tokens=${result.tokensScanned} candidates=${result.uniqueCandidates} ` +
           `discovered=${result.discovered} belowThreshold=${result.belowThreshold} ` +

@@ -3,6 +3,7 @@ import { LAUNCHPAD_PLATFORMS } from '../decision/gateConfig.js';
 import { rethrowIfRateLimited } from '../gmgn/errors.js';
 import { fetchTokenHolders, type HolderTag, type TokenHolder } from '../gmgn/holders.js';
 import { fetchTrenches, type TrenchCandidate } from '../gmgn/trenches.js';
+import type { PumpPortalConnection } from '../realtime/pumpportalConnection.js';
 import { fetchWalletStats, type WalletStats } from '../gmgn/walletStats.js';
 import { WALLET_DISCOVERY_LOOP_PACING_MS } from './intervals.js';
 import { ADVISORY_TOKEN_COUNT_FLOOR, ADVISORY_WIN_RATE_FLOOR } from '../telegram/commands.js';
@@ -47,6 +48,10 @@ export interface WalletDiscoveryOptions {
   includeRenowned?: boolean;
   /** Πόσους holders να ζητήσει ανά token/tag call. */
   holdersLimitPerToken?: number;
+  /** Optional — αν δοθεί, κάθε νέο wallet κάνει αμέσως subscribeWallet στο realtime feed,
+   * ώστε η ανίχνευση αγορών του (realtimeEntryHandler.ts) να ξεκινήσει από τη στιγμή της
+   * ανακάλυψης — χωρίς αυτό, θα χρειαζόταν restart για να το «δει» το websocket. */
+  realtimeConnection?: PumpPortalConnection;
 }
 
 export interface WalletDiscoveryResult {
@@ -134,8 +139,12 @@ export async function runWalletDiscoveryCycle(
       pnlMultiplier: stats.realizedPnlRatio,
       tradeCount: stats.tokenCount,
     });
-    if (inserted) discovered += 1;
-    else alreadyKnown += 1;
+    if (inserted) {
+      discovered += 1;
+      if (options.realtimeConnection) {
+        options.realtimeConnection.subscribeWallet(candidate.address);
+      }
+    } else alreadyKnown += 1;
   }
 
   return {

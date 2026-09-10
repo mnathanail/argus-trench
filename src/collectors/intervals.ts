@@ -29,13 +29,15 @@ export const WALLET_ACTIVITY_LOOP_PACING_MS = 1_000;
 /** Περιορίζει το burst· όλο το watchlist περνάει κυκλικά σε διαδοχικά ticks. */
 export const WALLET_ACTIVITY_WALLETS_PER_CYCLE = 2;
 /**
- * 50 → 200 (2026-09-04): σκόπιμη προτεραιότητα φάσης — τώρα θέλουμε ΟΓΚΟ σημάτων για να
- * επιβεβαιώσουμε ότι πιάνουμε σωστά σήματα, όχι throughput κλεισίματος. Trade-off ρητό:
- * δεν αλλάζει καθόλου πόσο γρήγορα κλείνει το exit-resolver (παραμένει η ίδια, αργή
- * ουρά όσο διαρκεί το ξεχωριστό GMGN rate-limit ζήτημα) — απλά επιτρέπει να συσσωρευτεί
- * μεγαλύτερο backlog ανοιχτών trades αντί να μπλοκάρει εντελώς νέα signals στο 50.
+ * 50 → 200 (2026-09-04) → 800 (2026-09-10): με την είσοδο πλέον δουλειά του realtime
+ * websocket (όχι πια GMGN polling μέσω wallet-activity.ts, αφαιρέθηκε από τα
+ * προγραμματισμένα loops — παραμένει στον κώδικα σαν fallback), αυτό το όριο δεν
+ * προστατεύει πια από GMGN rate limits· είναι απλά ένα γενικό ανώτατο όριο συνολικού
+ * ανοιχτού exposure. Σε paper trading, χωρίς πραγματικό κεφάλαιο σε κίνδυνο, δεν έχει
+ * νόημα να μπλοκάρει τόσο νωρίς — ανεβαίνει σημαντικά ώστε να μη χαθεί κανένα σήμα ενώ
+ * το periodic exit-resolver αδειάζει το (ξεχωριστό, ακόμα GMGN-based) backlog timeouts.
  */
-export const WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE = 200;
+export const WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE = 800;
 export const WALLET_ACTIVITY_INITIAL_DELAY_MS = 5_000;
 
 /**
