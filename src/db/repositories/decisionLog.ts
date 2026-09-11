@@ -128,6 +128,16 @@ export interface UpsertedDecision {
  *    θα διαφωνούσαν (επιβεβαιωμένο σε production row, 2026-08-26: candidate_source
  *    'sample_window', gate_passed=false, decision='skipped_gate', αλλά trigger_type
  *    ακόμα 'smart_money_buy' με wallet από παλιότερο, ξεχωριστό cycle).
+ * 4. `linked_trade_id IS NULL` στο ίδιο WHERE — ΞΕΧΩΡΙΣΤΟ, μεταγενέστερο εύρημα
+ *    (2026-09-11): το `decision <> 'entered'` ΜΟΝΟ ΤΟΥ δεν αρκούσε — άφηνε απροστάτευτα
+ *    τα `signal_logged` rows (Φάση 1, ΕΧΕΙ ήδη trade συνδεδεμένο μέσω recordSignal). Ένα
+ *    LATER discovery cycle που ξαναπερνούσε από το ΙΔΙΟ (token, candidate_source) έσβηνε
+ *    σιωπηλά wallet/trigger_type ΠΙΣΩ σε 'none', ΑΚΟΜΑ ΚΙ ΟΤΑΝ το gate συνέχιζε να
+ *    περνάει — πραγματικά, ήδη-καταγεγραμμένα trades έχαναν την απόδοση wallet τους ώρες
+ *    αργότερα, χωρίς κανένα ορατό σφάλμα. `linked_trade_id IS NULL` προστατεύει ΚΑΘΕ row
+ *    που έχει ήδη πραγματικό trade πάνω του, ασχέτως decision value — μια φορά
+ *    συνδεδεμένο, το row είναι πλέον ιστορικό αρχείο, όχι κάτι που το discovery πρέπει
+ *    να ξαναγράφει.
  */
 export async function upsertDecisions(
   inputs: readonly NewDecisionLog[],
@@ -164,6 +174,7 @@ export async function upsertDecisions(
       last_evaluated_at            = now(),
       evaluation_count             = decision_log.evaluation_count + 1
     WHERE decision_log.decision <> 'entered'
+      AND decision_log.linked_trade_id IS NULL
     RETURNING id, token_address, evaluation_count
     `,
     [

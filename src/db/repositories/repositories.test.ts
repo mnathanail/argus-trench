@@ -11,7 +11,7 @@ import { after, test } from 'node:test';
 import type pg from 'pg';
 import { closePool, getPool } from '../pool.js';
 import { insertDecision, insertDecisions, upsertDecisions, recordTrigger, gatePassRate } from './decisionLog.js';
-import { recordEntry } from './entries.js';
+import { recordEntry, recordSignal } from './entries.js';
 import {
   closeTrade,
   countOpenTrades,
@@ -162,6 +162,70 @@ test('upsertDecisions clears a stale trigger once the gate re-evaluates as faile
     assert.equal(rows[0]?.gate_passed, false);
     assert.equal(rows[0]?.trigger_type, 'none');
     assert.equal(rows[0]?.trigger_wallet_address, null);
+  });
+});
+
+test('upsertDecisions never clobbers a row that already has a linked trade — even if the gate still passes', async () => {
+  // Πραγματικό production incident 2026-09-11: πολλαπλά ήδη-καταγεγραμμένα trades
+  // (wallet, trigger_type, decision) έχαναν σιωπηλά την απόδοση wallet τους ΩΡΕΣ μετά
+  // το entry, όταν το discovery ξαναπερνούσε από το ΙΔΙΟ (token, candidate_source) — ΑΚΟΜΑ
+  // ΚΙ ΕΝΩ το gate συνέχιζε να περνάει. Το `decision <> 'entered'` guard δεν προστάτευε
+  // τα 'signal_logged' rows (Φάση 1) — μόνο το `linked_trade_id IS NULL` τα προστατεύει
+  // σωστά, ασχέτως decision value.
+  await inRollback(async (tx) => {
+    await upsertDecisions(
+      [{ ...baseDecision, candidateSource: 'gated_pool', gatePassed: true, decision: 'skipped_no_trigger' }],
+      tx,
+    );
+    await upsertWallet(
+      { address: 'WalletTrigger2222222222222222222222222222', source: 'manual', active: true },
+      tx,
+    );
+
+    // Πραγματική ροή παραγωγής: recordSignal (ΟΧΙ μόνο recordTrigger) — σφραγίζει
+    // trigger ΚΑΙ ανοίγει trade ΚΑΙ συνδέει linked_trade_id, ατομικά.
+    const recorded = await recordSignal(
+      {
+        tokenAddress: baseDecision.tokenAddress,
+        logicVersion: baseDecision.logicVersion,
+        triggerType: 'smart_money_buy',
+        triggerWalletAddress: 'WalletTrigger2222222222222222222222222222',
+        triggerWalletSnapshot: { win_rate: 0.6 },
+        decision: 'signal_logged',
+        decisionReasonText: 'trusted wallet buy — gate είχε περάσει',
+      },
+      {
+        tokenAddress: baseDecision.tokenAddress,
+        intendedSizePct: 0.01,
+        bankrollAtEntry: 10,
+        simulatedEntryPrice: 0.000123,
+        simulatedEntryAmountSol: 0.1,
+        assumedSlippagePct: 0.5,
+        assumedLatencyMs: 200,
+      },
+      tx,
+    );
+    assert.ok(recorded !== null);
+
+    // Cycle 2: το discovery ξαναπερνάει από το ΙΔΙΟ (token, candidate_source) — το gate
+    // ΣΥΝΕΧΙΖΕΙ να περνάει (συνηθισμένο σενάριο, όχι το "gate απέτυχε" του άλλου test).
+    await upsertDecisions(
+      [{ ...baseDecision, candidateSource: 'gated_pool', gatePassed: true, decision: 'skipped_no_trigger' }],
+      tx,
+    );
+
+    const { rows } = await tx.query(
+      `SELECT decision, gate_passed, trigger_type, trigger_wallet_address, linked_trade_id
+         FROM decision_log
+        WHERE token_address = $1 AND logic_version = $2 AND candidate_source = 'gated_pool'`,
+      [baseDecision.tokenAddress, baseDecision.logicVersion],
+    );
+    // Το πραγματικό trigger ΠΡΕΠΕΙ να επιβιώσει αναλλοίωτο — όχι να ξαναγυρίσει σε
+    // 'none'/'skipped_no_trigger' όπως έκανε πριν το fix.
+    assert.equal(rows[0]?.decision, 'signal_logged');
+    assert.equal(rows[0]?.trigger_type, 'smart_money_buy');
+    assert.equal(rows[0]?.trigger_wallet_address, 'WalletTrigger2222222222222222222222222222');
+    assert.equal(rows[0]?.linked_trade_id, recorded?.tradeId);
   });
 });
 
