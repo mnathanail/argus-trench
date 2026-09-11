@@ -57,6 +57,19 @@ export const LIVE_BANKROLL_SOL = 1;
 export const LIVE_POSITION_SIZE_PCT = 0.05;
 export const LIVE_POSITION_SIZE_SOL = LIVE_BANKROLL_SOL * LIVE_POSITION_SIZE_PCT;
 
+/**
+ * Από το GMGN's δικό τους reference "AI Trader" demo (gmgn-demos/aitrader, εξετάστηκε
+ * 2026-09-11) — δικές τους, ήδη σκεπτόμενες επιλογές για ρίσκο σε live trading:
+ *   kill_switch_consec_losses: 3, daily_loss_cap_sol: 0.5 (πάνω σε 10 SOL equity — 5%)
+ * Το `daily_loss_cap` εδώ ΔΕΝ είναι απλή αναλογία (0.05 SOL θα ήταν πολύ σφιχτό —
+ * μία μόνο ζημιά stop-loss στο μισό μιας θέσης θα το έφτανε) — υπολογισμένο ώστε να
+ * αφήνει περιθώριο για ~5 stop-lossed trades πριν σταματήσει, όχι 2.
+ * kill-switch: ΣΤΑΘΕΡΟ μέχρι χειροκίνητο reset, ΟΧΙ αυτόματη επαναφορά — ρητή απόφαση
+ * χρήστη 2026-09-11, βλ. liveRiskGate.ts + migration 0010.
+ */
+export const LIVE_KILL_SWITCH_CONSEC_LOSSES = 3;
+export const LIVE_DAILY_LOSS_CAP_SOL = 0.15;
+
 export function conditionOrdersJson(): Record<string, unknown>[] {
   return [
     { order_type: 'profit_stop', price_scale: '50', sell_ratio: '50' },

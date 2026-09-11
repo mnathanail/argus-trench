@@ -505,3 +505,38 @@ export async function updateTickState(
     [id, peakPriceSinceEntry, trailingActive],
   );
 }
+
+/**
+ * Τα `limit` πιο πρόσφατα ΚΛΕΙΣΜΕΝΑ `mode='live'` trades, νεότερο πρώτα — για το
+ * kill-switch (μέτρημα συνεχόμενων ζημιών, βλ. liveRiskGate.ts). ΜΟΝΟ `live`, ΟΧΙ
+ * `paper`/`log_only` — μια κακή σειρά υποθετικών trades δεν πρέπει ποτέ να σταματήσει
+ * πραγματικό trading, ούτε το αντίστροφο έχει νόημα.
+ */
+export async function getRecentClosedLiveTrades(
+  limit: number,
+  conn?: Queryable,
+): Promise<{ pnlSol: number | null }[]> {
+  const { rows } = await db(conn).query<{ pnl_sol: string | null }>(
+    `SELECT pnl_sol FROM paper_trades
+      WHERE mode = 'live' AND status = 'closed'
+      ORDER BY exit_at DESC
+      LIMIT $1`,
+    [limit],
+  );
+  return rows.map((row) => ({ pnlSol: toNumOrNull(row.pnl_sol) }));
+}
+
+/**
+ * Άθροισμα ΜΟΝΟ των ζημιών (όχι καθαρό pnl — τα κέρδη δεν "αγοράζουν πίσω" χώρο κάτω
+ * από το όριο, ίδιο σκεπτικό με το GMGN reference demo) για `mode='live'` trades που
+ * έκλεισαν "σήμερα" σε ώρα Αθήνας — ίδιο boundary convention με το daily digest.
+ */
+export async function getTodayRealizedLossSol(startOfAthensDay: Date, conn?: Queryable): Promise<number> {
+  const { rows } = await db(conn).query<{ realized_loss: string }>(
+    `SELECT COALESCE(SUM(GREATEST(-pnl_sol, 0)), 0) AS realized_loss
+       FROM paper_trades
+      WHERE mode = 'live' AND status = 'closed' AND exit_at >= $1`,
+    [startOfAthensDay],
+  );
+  return toNum(requireRow(rows, 'getTodayRealizedLossSol').realized_loss);
+}

@@ -445,6 +445,43 @@ test('/leaderboard reports plainly when no wallet has a closed trade yet', async
   assert.match(reply, /Κανένα wallet/);
 });
 
+test('/live_status: shows inactive when the kill-switch is not halted', async () => {
+  const deps = stubDeps();
+  deps.getLiveHaltState = () => Promise.resolve({ haltedAt: null, haltedReason: null });
+  const reply = await handleCommand('/live_status', deps);
+  assert.match(reply, /ανενεργό/);
+});
+
+test('/live_status: shows the halt reason when the kill-switch is active', async () => {
+  const deps = stubDeps();
+  deps.getLiveHaltState = () =>
+    Promise.resolve({ haltedAt: new Date('2026-09-11T10:00:00Z'), haltedReason: '3 συνεχόμενες ζημιές' });
+  const reply = await handleCommand('/live_status', deps);
+  assert.match(reply, /ΕΝΕΡΓΟ/);
+  assert.match(reply, /3 συνεχόμενες ζημιές/);
+});
+
+test('/resume_live: says there is nothing to clear when not halted', async () => {
+  const deps = stubDeps();
+  deps.getLiveHaltState = () => Promise.resolve({ haltedAt: null, haltedReason: null });
+  const reply = await handleCommand('/resume_live', deps);
+  assert.match(reply, /τίποτα να καθαρίσω/);
+});
+
+test('/resume_live: clears the halt and confirms when it was active', async () => {
+  const deps = stubDeps();
+  deps.getLiveHaltState = () =>
+    Promise.resolve({ haltedAt: new Date('2026-09-11T10:00:00Z'), haltedReason: '3 συνεχόμενες ζημιές' });
+  let cleared = false;
+  deps.clearLiveHalt = () => {
+    cleared = true;
+    return Promise.resolve();
+  };
+  const reply = await handleCommand('/resume_live', deps);
+  assert.ok(cleared);
+  assert.match(reply, /καθαρίστηκε/);
+});
+
 function stubDeps(statsOverride: Partial<WalletStats> = {}): CommandDeps {
   const stats: WalletStats = {
     walletAddress: ADDRESS,
@@ -469,5 +506,7 @@ function stubDeps(statsOverride: Partial<WalletStats> = {}): CommandDeps {
     listActiveWallets: () => Promise.resolve([]),
     listRecentTrades: () => Promise.resolve([]),
     getWalletLeaderboard: () => Promise.resolve([]),
+    getLiveHaltState: () => Promise.resolve({ haltedAt: null, haltedReason: null }),
+    clearLiveHalt: () => Promise.resolve(),
   };
 }

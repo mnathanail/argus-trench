@@ -46,6 +46,8 @@ export interface CommandDeps {
   listActiveWallets(): Promise<WatchlistWallet[]>;
   listRecentTrades(limit: number): Promise<TradeSummary[]>;
   getWalletLeaderboard(limit: number): Promise<WalletLeaderboardEntry[]>;
+  getLiveHaltState(): Promise<{ haltedAt: Date | null; haltedReason: string | null }>;
+  clearLiveHalt(): Promise<void>;
 }
 
 const HELP = [
@@ -58,6 +60,8 @@ const HELP = [
   '/list                alias του /watchlist',
   '/trades              τελευταία signal_logged trades (log_only, Φάση 1)',
   '/leaderboard [N]      ΔΙΚΟ ΜΑΣ αποτέλεσμα ανά wallet, ταξινομημένο (default 10)',
+  '/live_status          kill-switch state για live trading',
+  '/resume_live          χειροκίνητο reset του kill-switch (μόνο αφού το ελέγξεις)',
   '/help                αυτό το μήνυμα',
 ].join('\n');
 
@@ -94,6 +98,10 @@ export async function handleCommand(text: string, deps: CommandDeps): Promise<st
       return trades(deps);
     case '/leaderboard':
       return leaderboard(argument, deps);
+    case '/live_status':
+      return liveStatus(deps);
+    case '/resume_live':
+      return resumeLive(deps);
     default:
       return `Άγνωστη εντολή: ${command || '(κενό)'}\n\n${HELP}`;
   }
@@ -230,6 +238,27 @@ async function trades(deps: CommandDeps): Promise<string> {
   });
 
   return [`Τελευταία ${recent.length} trades (log_only):`, ...rows].join('\n');
+}
+
+async function liveStatus(deps: CommandDeps): Promise<string> {
+  const halt = await deps.getLiveHaltState();
+  if (halt.haltedAt === null) {
+    return '🟢 Live trading kill-switch: ανενεργό (κανονική λειτουργία)';
+  }
+  return (
+    `🔴 Live trading kill-switch: ΕΝΕΡΓΟ από ${halt.haltedAt.toISOString()}\n` +
+    `Λόγος: ${halt.haltedReason ?? '(άγνωστος)'}\n\n` +
+    `Κανένα νέο live trade δεν θα εκτελεστεί μέχρι /resume_live.`
+  );
+}
+
+async function resumeLive(deps: CommandDeps): Promise<string> {
+  const halt = await deps.getLiveHaltState();
+  if (halt.haltedAt === null) {
+    return 'Το kill-switch δεν ήταν ενεργό — τίποτα να καθαρίσω.';
+  }
+  await deps.clearLiveHalt();
+  return `✅ Kill-switch καθαρίστηκε (ήταν ενεργό από ${halt.haltedAt.toISOString()}, λόγος: ${halt.haltedReason ?? '(άγνωστος)'}). Live trading συνεχίζει κανονικά.`;
 }
 
 async function leaderboard(argument: string | undefined, deps: CommandDeps): Promise<string> {
