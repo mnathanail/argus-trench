@@ -34,6 +34,10 @@ export const ROUTE_WEIGHTS = {
   'track follow-wallet': 3,
   'track kol': 1,
   'track smartmoney': 1,
+  // Επίσημα βάρη από .agents/skills/gmgn-swap/SKILL.md (2026-09-11) — ΟΧΙ εικασία.
+  swap: 5,
+  'order get': 1,
+  'order quote': 2,
 } as const;
 
 export type RouteKey = keyof typeof ROUTE_WEIGHTS;
