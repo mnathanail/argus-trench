@@ -42,6 +42,11 @@ export type ExitReason =
   | 'trailing_stop'
   | 'exit_signal'
   | 'timeout'
+  /** Νέο 2026-09-11 — πρώτη φορά πραγματικό κεφάλαιο (live trading). Απλό, σταθερό
+   * -50% από entry, ΟΧΙ από peak (διαφορετικό από trailing_stop) — προτεραιότητα έναντι
+   * όλων των άλλων ελέγχων στο checkTick, δεν χρειάζεται CHECK constraint στη βάση
+   * (ίδιο μοτίβο με το `decision` column). */
+  | 'stop_loss'
   /** GMGN kline επέστρεψε άδειο candles array για ΟΛΗ τη διάρκεια — πολύ πιθανό νεκρό/
    * χωρίς-liquidity token, όχι ότι η τιμή έμεινε ίδια. Άγνωστο αποτέλεσμα, pnl=null,
    * ΟΧΙ 0 — βλ. exitResolver.ts. Επιβεβαιώθηκε σε πραγματικό incident 2026-08-31 (η

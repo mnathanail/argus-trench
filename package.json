@@ -20,6 +20,7 @@
     "apply-old-code-trade-corrections": "tsx scripts/apply-old-code-trade-corrections.ts",
     "recheck-old-code-trades": "tsx scripts/recheck-old-code-trades.ts",
     "verify-pumpportal-ws": "tsx scripts/verify-pumpportal-ws.ts",
+    "verify-live-balance": "tsx scripts/verify-live-balance.ts",
     "db:up": "docker compose up -d --wait db",
     "db:down": "docker compose down",
     "db:reset": "docker compose down -v && docker compose up -d --wait db",

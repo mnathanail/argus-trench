@@ -31,7 +31,31 @@ export const EXIT_TIER_1_PRICE_SCALE = 1.5; // +50%
 export const EXIT_TIER_2_ACTIVATION_SCALE = 2.0; // +100%
 export const EXIT_TIER_2_DRAWDOWN_PCT = 0.4; // -40% από το peak μετά την ενεργοποίηση
 
+/**
+ * Νέο 2026-09-11, πρώτη φορά πραγματικό κεφάλαιο. -50% από το ENTRY (όχι από peak,
+ * διαφορετικό από το EXIT_TIER_2_DRAWDOWN_PCT) — καθαρή προστασία downside, ελέγχεται
+ * πρώτο απ' όλα στο checkTick. Το GMGN CLI υποστηρίζει ήδη native `stop_loss` order
+ * type (`order strategy create --sub-order-type stop_loss`) που θα εκτελούνταν από τη
+ * ΔΙΚΗ ΤΟΥΣ υποδομή, ανεξάρτητα από το αν το δικό μας process είναι ζωντανό — πιο
+ * robust μακροπρόθεσμα, αλλά εντελώς ανεπιβεβαίωτο ακόμα στην πράξη. Ξεκινάμε με τον
+ * δικό μας, ήδη δοκιμασμένο μηχανισμό (checkTick) — το native GMGN stop_loss είναι
+ * σκόπιμα ένα ΕΠΟΜΕΝΟ, ξεχωριστό βήμα, όχι κάτι που τρέχουμε να προλάβουμε τώρα.
+ */
+export const STOP_LOSS_PCT = 0.5;
+
 export const EXIT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Πρώτη φορά πραγματικό κεφάλαιο (2026-09-11) — ξεκινάμε με 1 SOL, 5% ανά trade,
+ * ΣΤΑΘΕΡΟ ποσό (όχι % του τρέχοντος διαθέσιμου, που θα συρρικνωνόταν με κάθε trade) —
+ * απλούστερο να σκεφτείς, ίδιο πνεύμα με το PAPER_BANKROLL_SOL/PAPER_POSITION_SIZE_PCT.
+ * ΞΕΧΩΡΙΣΤΕΣ σταθερές από τις PAPER_* — σκόπιμα, ώστε να μπορούν να αλλάξουν ανεξάρτητα
+ * στο μέλλον (π.χ. αν αυξηθεί το πραγματικό bankroll χωρίς να αλλάξει η παραδοχή
+ * μεγέθους για τα ιστορικά/hypothetical trades).
+ */
+export const LIVE_BANKROLL_SOL = 1;
+export const LIVE_POSITION_SIZE_PCT = 0.05;
+export const LIVE_POSITION_SIZE_SOL = LIVE_BANKROLL_SOL * LIVE_POSITION_SIZE_PCT;
 
 export function conditionOrdersJson(): Record<string, unknown>[] {
   return [

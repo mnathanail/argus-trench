@@ -16,14 +16,14 @@ import type { PumpPortalConnection } from './pumpportalConnection.js';
 
 export interface RealtimeCloseResult {
   tokenAddress: string;
-  exitReason: 'tp_tier_1' | 'trailing_stop' | 'exit_signal';
+  exitReason: 'tp_tier_1' | 'trailing_stop' | 'stop_loss' | 'exit_signal';
   pnlPct: number;
 }
 
 export type TickDecision =
   | {
       type: 'close';
-      exitReason: 'tp_tier_1' | 'trailing_stop' | 'exit_signal';
+      exitReason: 'tp_tier_1' | 'trailing_stop' | 'stop_loss' | 'exit_signal';
       exitPrice: number;
       exitTriggerDetail: Record<string, unknown> | null;
     }

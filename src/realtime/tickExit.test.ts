@@ -115,3 +115,50 @@ test('checkTick: a sequence of ticks — activation, new peak, then a drop that 
   assert.equal(state.exit?.exitReason, 'trailing_stop');
   assert.ok(Math.abs((state.exit?.exitPrice ?? 0) - 1.8) < 1e-9);
 });
+
+// --- stop_loss: νέο 2026-09-11, πρώτη φορά πραγματικό κεφάλαιο ---------------------
+
+test('checkTick: a 50% drop from entry triggers stop_loss', () => {
+  const result = checkTick({
+    entryPrice: ENTRY_PRICE,
+    peakPriceSinceEntry: null,
+    trailingActive: false,
+    currentPrice: 0.5, // ακριβώς στο όριο
+  });
+  assert.equal(result.exit?.exitReason, 'stop_loss');
+  assert.equal(result.exit?.exitPrice, 0.5);
+});
+
+test('checkTick: a drop that stays above the stop-loss threshold does not trigger it', () => {
+  const result = checkTick({
+    entryPrice: ENTRY_PRICE,
+    peakPriceSinceEntry: null,
+    trailingActive: false,
+    currentPrice: 0.51, // λίγο πάνω από το -50% όριο
+  });
+  assert.notEqual(result.exit?.exitReason, 'stop_loss');
+});
+
+test('checkTick: stop_loss is checked from ENTRY, not from peak — even after trailing has activated', () => {
+  // Ακραίο σενάριο: μεγάλο pump (ενεργοποίηση trailing), μετά κατάρρευση κάτω από το
+  // 50% του ΑΡΧΙΚΟΥ entry — το stop_loss πρέπει να πυροδοτήσει, όχι το trailing_stop
+  // (αν και μαθηματικά ένα τόσο μεγάλο crash θα πυροδοτούσε ούτως ή άλλως και τα δύο).
+  const result = checkTick({
+    entryPrice: ENTRY_PRICE,
+    peakPriceSinceEntry: 3.0,
+    trailingActive: true,
+    currentPrice: 0.4, // κάτω από το 0.5 του entry
+  });
+  assert.equal(result.exit?.exitReason, 'stop_loss');
+});
+
+test('checkTick: stop_loss takes priority even on the very first tick, before any tier logic runs', () => {
+  const result = checkTick({
+    entryPrice: ENTRY_PRICE,
+    peakPriceSinceEntry: null,
+    trailingActive: false,
+    currentPrice: 0.3, // βαθιά κάτω από όλα τα thresholds
+  });
+  assert.equal(result.exit?.exitReason, 'stop_loss');
+  assert.equal(result.exit?.exitPrice, 0.5); // πάντα στο -50% όριο, όχι στην ωμή τιμή του tick
+});

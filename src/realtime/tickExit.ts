@@ -2,6 +2,7 @@ import {
   EXIT_TIER_1_PRICE_SCALE,
   EXIT_TIER_2_ACTIVATION_SCALE,
   EXIT_TIER_2_DRAWDOWN_PCT,
+  STOP_LOSS_PCT,
 } from '../decision/paperTradingConfig.js';
 
 export interface TickCheckInput {
@@ -16,7 +17,7 @@ export interface TickCheckInput {
 }
 
 export interface TickExit {
-  exitReason: 'tp_tier_1' | 'trailing_stop';
+  exitReason: 'tp_tier_1' | 'trailing_stop' | 'stop_loss';
   exitPrice: number;
 }
 
@@ -41,13 +42,27 @@ export interface TickCheckResult {
  * ξεχωριστά στον orchestration layer (realtimeExitHandler.ts), το πρώτο γιατί δεν είναι
  * τιμή, το δεύτερο γιατί δεν "συμβαίνει" σε κανένα συγκεκριμένο tick, παραμένει δουλειά
  * του periodic exit-resolver.
+ *
+ * `stop_loss` προστέθηκε 2026-09-11, πρώτη φορά πραγματικό κεφάλαιο — ΠΑΝΤΑ ελέγχεται
+ * ΠΡΩΤΟ, πριν από tier1/trailing: -50% από το entry (ΟΧΙ από peak, διαφορετικό από το
+ * trailing_stop) είναι καθαρή προστασία downside, δεν πρέπει ποτέ να «χαθεί» πίσω από
+ * κάποιον άλλο έλεγχο. Ισχύει ΑΣΧΕΤΑ αν το trailing έχει ήδη ενεργοποιηθεί.
  */
 export function checkTick(input: TickCheckInput): TickCheckResult {
   const tier1Price = input.entryPrice * EXIT_TIER_1_PRICE_SCALE;
   const tier2ActivationPrice = input.entryPrice * EXIT_TIER_2_ACTIVATION_SCALE;
+  const stopLossPrice = input.entryPrice * (1 - STOP_LOSS_PCT);
 
   const peak = Math.max(input.peakPriceSinceEntry ?? input.entryPrice, input.currentPrice);
   let trailingActive = input.trailingActive;
+
+  if (input.currentPrice <= stopLossPrice) {
+    return {
+      exit: { exitReason: 'stop_loss', exitPrice: stopLossPrice },
+      newPeakPriceSinceEntry: peak,
+      newTrailingActive: trailingActive,
+    };
+  }
 
   if (!trailingActive && input.currentPrice >= tier2ActivationPrice) {
     // Ίδιο σκεπτικό με το resolveExit: προτίμησε "συνέχισε ανοδικά" (trailing) αντί για
