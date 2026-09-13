@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { getLiveSolBalance, getLiveSolWalletAddress } from '../src/gmgn/portfolio.js';
+import { fetchLiveSolWallet, getLiveSolBalance } from '../src/gmgn/portfolio.js';
 import { executeLiveBuy, SwapFailedError, AutomatedTradesDisabledError } from '../src/gmgn/swap.js';
 
 // Χρήση: npm run test-live-buy -- <token_address> [amount_sol]
@@ -7,9 +7,13 @@ import { executeLiveBuy, SwapFailedError, AutomatedTradesDisabledError } from '.
 //
 // ΠΡΑΓΜΑΤΙΚΟ, ΑΝΕΚΚΛΗΤΟ swap — πραγματικά χρήματα, πραγματική on-chain συναλλαγή.
 // Δεν καταγράφει τίποτα στη βάση μας, δεν πουλάει αυτόματα μετά — μόνο το ελάχιστο
-// δυνατό, χειροκίνητο πρώτο τεστ, ένα βήμα τη φορά (ίδιο πνεύμα με κάθε verification
-// script μέχρι τώρα). Μετά την αγορά, έλεγξε το wallet σου στο https://solscan.io
-// πριν αποφασίσεις το επόμενο βήμα (πούλα χειροκίνητα, ή σύνδεση στο αυτόματο pipeline).
+// δυνατό, χειροκίνητο πρώτο τεστ, ένα βήμα τη φορά. Μετά την αγορά, έλεγξε το wallet
+// σου στο https://solscan.io πριν αποφασίσεις το επόμενο βήμα.
+//
+// Μόνο 2 κλήσεις `portfolio info` συνολικά (address+balance μαζί στην αρχή, μόνο
+// balance στο τέλος) — πραγματικό incident 2026-09-11: η πρώτη εκδοχή αυτού του script
+// έκανε 4 ξεχωριστές κλήσεις στο ΙΔΙΟ endpoint, συνεισφέροντας σε πραγματικό 429 πάνω σε
+// ένα ήδη πιεσμένο, κοινό rate-limit bucket με τα υπόλοιπα collectors μας.
 
 const tokenAddress = process.argv[2];
 const amountSol = process.argv[3] ? Number(process.argv[3]) : 0.005;
@@ -23,14 +27,13 @@ if (!Number.isFinite(amountSol) || amountSol <= 0) {
   process.exit(1);
 }
 if (amountSol > 0.02) {
-  // Ασφαλιστική δικλείδα εδώ, ξεχωριστή από οτιδήποτε άλλο — αυτό το script είναι
-  // ρητά ΜΟΝΟ για μικρά, δοκιμαστικά ποσά. Για μεγαλύτερα, χρησιμοποίησε το κανονικό pipeline.
   console.error(`Το ${amountSol} SOL είναι πολύ μεγάλο για δοκιμαστικό script — μέγιστο 0.02.`);
   process.exit(1);
 }
 
-console.log(`Wallet: ${await getLiveSolWalletAddress()}`);
-const balanceBefore = await getLiveSolBalance();
+const wallet = await fetchLiveSolWallet();
+console.log(`Wallet: ${wallet.address}`);
+const balanceBefore = wallet.balances.find((b) => b.symbol === 'SOL')?.balance ?? 0;
 console.log(`Υπόλοιπο πριν: ${balanceBefore} SOL`);
 
 if (balanceBefore < amountSol) {
@@ -41,8 +44,7 @@ if (balanceBefore < amountSol) {
 console.log(`\nΑγορά ${amountSol} SOL → ${tokenAddress} ...\n`);
 
 try {
-  const wallet = await getLiveSolWalletAddress();
-  const result = await executeLiveBuy(wallet, tokenAddress, amountSol);
+  const result = await executeLiveBuy(wallet.address, tokenAddress, amountSol);
   console.log('Αποτέλεσμα:');
   console.log(JSON.stringify(result, null, 2));
 
@@ -60,9 +62,6 @@ try {
     console.error(`\n❌ Το swap απέτυχε ρητά (status: ${error.status}): ${error.message}`);
   } else {
     console.error(`\n❌ Απρόσμενο σφάλμα: ${error instanceof Error ? error.message : String(error)}`);
-    // Δείξε το ΠΛΗΡΕΣ, ωμό output αν υπάρχει (GmgnCliError/GmgnRateLimitError το κρατάνε
-    // ολόκληρο στο .output — το summarized .message δείχνει μόνο την πρώτη γραμμή, που
-    // μπορεί να είναι παραπλανητική αν η ταξινόμηση του σφάλματος ήταν λάθος).
     if (error !== null && typeof error === 'object' && 'output' in error) {
       console.error('\n--- Πλήρες, ωμό output ---');
       console.error((error as { output: unknown }).output);

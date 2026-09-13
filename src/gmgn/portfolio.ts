@@ -28,6 +28,24 @@ export interface PortfolioBalance {
   balance: number;
 }
 
+export interface LiveSolWallet {
+  address: string;
+  balances: PortfolioBalance[];
+}
+
+/**
+ * ΕΝΑ κλήση καλύπτει ΚΑΙ διεύθυνση ΚΑΙ balances — χρησιμοποίησε αυτό αντί για ξεχωριστά
+ * `getLiveSolWalletAddress()` + `getLiveSolBalance()` όποτε χρειάζεσαι και τα δύο μαζί
+ * (π.χ. πριν από ένα swap). Πραγματικό incident 2026-09-11: το πρώτο test-live-buy
+ * script καλούσε το `portfolio info` 4 φορές σε ένα μόνο run (address×2, balance×2) —
+ * περιττή σπατάλη πάνω σε ένα ήδη πιεσμένο, ΚΟΙΝΟ rate-limit bucket με τα υπόλοιπα
+ * collectors μας (wallet-scoring/discovery), και συνέβαλε στο πρώτο πραγματικό 429.
+ */
+export async function fetchLiveSolWallet(options: RunOptions = {}): Promise<LiveSolWallet> {
+  const raw = await runCli('portfolio info', ['portfolio', 'info'], options);
+  return { address: parsePortfolioInfoSolAddress(raw), balances: parsePortfolioInfoSolBalances(raw) };
+}
+
 export async function fetchSolWalletBalances(options: RunOptions = {}): Promise<PortfolioBalance[]> {
   const raw = await runCli('portfolio info', ['portfolio', 'info'], options);
   return parsePortfolioInfoSolBalances(raw);
