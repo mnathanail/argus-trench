@@ -31,7 +31,7 @@ if (amountSol > 0.02) {
   process.exit(1);
 }
 
-const wallet = await fetchLiveSolWallet();
+const wallet = await fetchLiveSolWallet({ priority: 1000 });
 console.log(`Wallet: ${wallet.address}`);
 const balanceBefore = wallet.balances.find((b) => b.symbol === 'SOL')?.balance ?? 0;
 console.log(`Υπόλοιπο πριν: ${balanceBefore} SOL`);
@@ -71,5 +71,5 @@ try {
   process.exit(1);
 }
 
-const balanceAfter = await getLiveSolBalance();
+const balanceAfter = await getLiveSolBalance({ priority: 1000 });
 console.log(`\nΥπόλοιπο μετά: ${balanceAfter} SOL (διαφορά: ${(balanceAfter - balanceBefore).toFixed(9)})`);

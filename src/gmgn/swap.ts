@@ -20,6 +20,15 @@ const LAMPORTS_PER_SOL = 1_000_000_000;
 const POLL_ATTEMPTS = 3;
 const POLL_INTERVAL_MS = 5_000;
 
+/** Πραγματικές συναλλαγές έχουν προτεραιότητα έναντι ΟΛΩΝ των υπόλοιπων routine
+ * collectors (wallet-scoring/discovery/exit-resolver) στην ΚΟΙΝΗ ουρά του rate limiter —
+ * υψηλότερη ακόμα κι από το exit-resolver's δικό του 100-200 (βλ. collectors/exitResolver.ts).
+ * Δεν λύνει το αν το bucket είναι ήδη μπλοκαρισμένο (429 recovery window, βλ.
+ * rateLimiter.ts) — μόνο εξασφαλίζει ότι, μόλις υπάρξει διαθέσιμος χώρος, το trade
+ * εξυπηρετείται ΠΡΩΤΟ, όχι πίσω από μια ουρά αναμονής routine κλήσεων.
+ */
+const TRADE_PRIORITY = 1000;
+
 const FILLED_STATUSES = new Set(['confirmed', 'processed', 'successful']);
 const FAILED_STATUSES = new Set(['failed', 'expired']);
 
@@ -110,6 +119,7 @@ export async function executeLiveBuy(
   options: RunOptions = {},
 ): Promise<SwapExecutionResult> {
   if (!config.automatedTradesAllowed()) throw new AutomatedTradesDisabledError();
+  const tradeOptions: RunOptions = { priority: TRADE_PRIORITY, ...options };
 
   const raw = await runCli(
     'swap',
@@ -124,14 +134,14 @@ export async function executeLiveBuy(
       '--anti-mev',
       '--yes',
     ],
-    options,
+    tradeOptions,
   );
   const result = parseSwapResponse(raw);
   if (FAILED_STATUSES.has(result.status)) {
     throw new SwapFailedError(`swap status=${result.status}`, result.status);
   }
   if (result.orderId === null) return result; // ασυνήθιστο, αλλά τίποτα άλλο να κάνουμε
-  return pollUntilTerminal(result.orderId, result, options);
+  return pollUntilTerminal(result.orderId, result, tradeOptions);
 }
 
 /**
@@ -145,6 +155,7 @@ export async function executeLiveSell(
   options: RunOptions = {},
 ): Promise<SwapExecutionResult> {
   if (!config.automatedTradesAllowed()) throw new AutomatedTradesDisabledError();
+  const tradeOptions: RunOptions = { priority: TRADE_PRIORITY, ...options };
 
   const raw = await runCli(
     'swap',
@@ -159,12 +170,12 @@ export async function executeLiveSell(
       '--anti-mev',
       '--yes',
     ],
-    options,
+    tradeOptions,
   );
   const result = parseSwapResponse(raw);
   if (FAILED_STATUSES.has(result.status)) {
     throw new SwapFailedError(`swap status=${result.status}`, result.status);
   }
   if (result.orderId === null) return result;
-  return pollUntilTerminal(result.orderId, result, options);
+  return pollUntilTerminal(result.orderId, result, tradeOptions);
 }
