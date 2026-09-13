@@ -58,6 +58,29 @@ export function parsePortfolioInfoSolBalances(raw: unknown): PortfolioBalance[] 
   });
 }
 
+/** Η ίδια η διεύθυνση του sol-chain wallet — χρειάζεται σαν `--from` στο swap. Ίδιο
+ * defensive-parsing σκεπτικό με το getLiveSolBalance: πετάει αντί να επιστρέψει κάτι
+ * ψεύτικο αν λείπει. */
+export function parsePortfolioInfoSolAddress(raw: unknown): string {
+  const response = expectObject(raw, 'portfolio.info');
+  const wallets = expectArray(response['wallets'], 'portfolio.info.wallets');
+  const solWalletRaw = wallets.find((w) => {
+    if (typeof w !== 'object' || w === null) return false;
+    return (w as Record<string, unknown>)['chain'] === 'sol';
+  });
+  if (solWalletRaw === undefined) {
+    throw new GmgnResponseError('no sol-chain wallet in response', 'portfolio.info.wallets');
+  }
+  const solWallet = expectObject(solWalletRaw, 'portfolio.info.wallets[chain=sol]');
+  return expectString(solWallet['address'], 'portfolio.info.wallets[chain=sol].address');
+}
+
+/** Η ίδια η διεύθυνση του sol-chain wallet — χρειάζεται σαν `--from` στο swap. */
+export async function getLiveSolWalletAddress(options: RunOptions = {}): Promise<string> {
+  const raw = await runCli('portfolio info', ['portfolio', 'info'], options);
+  return parsePortfolioInfoSolAddress(raw);
+}
+
 /** Το πραγματικό, τρέχον υπόλοιπο SOL του live trading wallet. Πετάει (δεν επιστρέφει 0
  * σιωπηλά) αν το response δεν έχει καν wallet SOL entry — ο caller αποφασίζει πώς να
  * φερθεί σε τέτοιο σφάλμα (η δική μας πρόθεση: fallback σε 'paper' mode, βλ. tradeMode.ts,

@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { parsePortfolioInfoSolBalances } from './portfolio.js';
+import { parsePortfolioInfoSolAddress, parsePortfolioInfoSolBalances } from './portfolio.js';
 import { GmgnResponseError } from './errors.js';
-
 /** Ακριβώς το response που έστειλε ο χρήστης 2026-09-11, μετά από πραγματική κατάθεση
  * 0.0208... SOL — δεν είναι φτιαγμένο fixture, είναι το πραγματικό production JSON. */
 const REAL_FUNDED_RESPONSE = {
@@ -61,4 +60,12 @@ test('parsePortfolioInfoSolBalances: throws (does not silently return empty) whe
 
 test('parsePortfolioInfoSolBalances: throws on a completely unexpected shape', () => {
   assert.throws(() => parsePortfolioInfoSolBalances({ unexpected: true }), GmgnResponseError);
+});
+
+test('parsePortfolioInfoSolAddress: extracts the real sol-chain wallet address', () => {
+  assert.equal(parsePortfolioInfoSolAddress(REAL_FUNDED_RESPONSE), 'yFb3v4wfoc7fSrxXXJ9YTM6JwMVZdnus5fmKe2A6gH5');
+});
+
+test('parsePortfolioInfoSolAddress: throws when there is no sol-chain wallet', () => {
+  assert.throws(() => parsePortfolioInfoSolAddress({ wallets: [] }), GmgnResponseError);
 });

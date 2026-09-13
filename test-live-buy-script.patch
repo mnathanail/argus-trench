@@ -1,0 +1,147 @@
+diff --git a/package.json b/package.json
+index db08c17..7763c26 100644
+--- a/package.json
++++ b/package.json
+@@ -21,6 +21,7 @@
+     "recheck-old-code-trades": "tsx scripts/recheck-old-code-trades.ts",
+     "verify-pumpportal-ws": "tsx scripts/verify-pumpportal-ws.ts",
+     "verify-live-balance": "tsx scripts/verify-live-balance.ts",
++    "test-live-buy": "tsx scripts/test-live-buy.ts",
+     "db:up": "docker compose up -d --wait db",
+     "db:down": "docker compose down",
+     "db:reset": "docker compose down -v && docker compose up -d --wait db",
+diff --git a/scripts/test-live-buy.ts b/scripts/test-live-buy.ts
+new file mode 100644
+index 0000000..1971b1f
+--- /dev/null
++++ b/scripts/test-live-buy.ts
+@@ -0,0 +1,68 @@
++import 'dotenv/config';
++import { getLiveSolBalance, getLiveSolWalletAddress } from '../src/gmgn/portfolio.js';
++import { executeLiveBuy, SwapFailedError, AutomatedTradesDisabledError } from '../src/gmgn/swap.js';
++
++// Χρήση: npm run test-live-buy -- <token_address> [amount_sol]
++//   π.χ.  npm run test-live-buy -- 8CD94taK17MdP2A2GdBdgcAJWW5sxyHoYLUtqkripump 0.005
++//
++// ΠΡΑΓΜΑΤΙΚΟ, ΑΝΕΚΚΛΗΤΟ swap — πραγματικά χρήματα, πραγματική on-chain συναλλαγή.
++// Δεν καταγράφει τίποτα στη βάση μας, δεν πουλάει αυτόματα μετά — μόνο το ελάχιστο
++// δυνατό, χειροκίνητο πρώτο τεστ, ένα βήμα τη φορά (ίδιο πνεύμα με κάθε verification
++// script μέχρι τώρα). Μετά την αγορά, έλεγξε το wallet σου στο https://solscan.io
++// πριν αποφασίσεις το επόμενο βήμα (πούλα χειροκίνητα, ή σύνδεση στο αυτόματο pipeline).
++
++const tokenAddress = process.argv[2];
++const amountSol = process.argv[3] ? Number(process.argv[3]) : 0.005;
++
++if (tokenAddress === undefined) {
++  console.error('Χρήση: npm run test-live-buy -- <token_address> [amount_sol=0.005]');
++  process.exit(1);
++}
++if (!Number.isFinite(amountSol) || amountSol <= 0) {
++  console.error(`Μη έγκυρο ποσό: ${process.argv[3]}`);
++  process.exit(1);
++}
++if (amountSol > 0.02) {
++  // Ασφαλιστική δικλείδα εδώ, ξεχωριστή από οτιδήποτε άλλο — αυτό το script είναι
++  // ρητά ΜΟΝΟ για μικρά, δοκιμαστικά ποσά. Για μεγαλύτερα, χρησιμοποίησε το κανονικό pipeline.
++  console.error(`Το ${amountSol} SOL είναι πολύ μεγάλο για δοκιμαστικό script — μέγιστο 0.02.`);
++  process.exit(1);
++}
++
++console.log(`Wallet: ${await getLiveSolWalletAddress()}`);
++const balanceBefore = await getLiveSolBalance();
++console.log(`Υπόλοιπο πριν: ${balanceBefore} SOL`);
++
++if (balanceBefore < amountSol) {
++  console.error(`Ανεπαρκές υπόλοιπο: έχεις ${balanceBefore} SOL, ζητάς αγορά ${amountSol} SOL.`);
++  process.exit(1);
++}
++
++console.log(`\nΑγορά ${amountSol} SOL → ${tokenAddress} ...\n`);
++
++try {
++  const wallet = await getLiveSolWalletAddress();
++  const result = await executeLiveBuy(wallet, tokenAddress, amountSol);
++  console.log('Αποτέλεσμα:');
++  console.log(JSON.stringify(result, null, 2));
++
++  if (result.filled) {
++    console.log(`\n✅ Εκτελέστηκε. Τιμή: ${result.executedPrice ?? '(άγνωστη)'}`);
++    if (result.txHash) console.log(`Tx: https://solscan.io/tx/${result.txHash}`);
++  } else {
++    console.log(`\n⚠️  Ακόμα σε εξέλιξη μετά το polling (status: ${result.status}) — έλεγξε χειροκίνητα:`);
++    if (result.orderId) console.log(`gmgn-cli order get --chain sol --order-id ${result.orderId} --raw`);
++  }
++} catch (error) {
++  if (error instanceof AutomatedTradesDisabledError) {
++    console.error(`\n🚫 ${error.message}\nΘέσε GMGN_ALLOW_AUTOMATED_TRADES=1 στο περιβάλλον για να συνεχίσεις.`);
++  } else if (error instanceof SwapFailedError) {
++    console.error(`\n❌ Το swap απέτυχε ρητά (status: ${error.status}): ${error.message}`);
++  } else {
++    console.error(`\n❌ Απρόσμενο σφάλμα: ${error instanceof Error ? error.message : String(error)}`);
++  }
++  process.exit(1);
++}
++
++const balanceAfter = await getLiveSolBalance();
++console.log(`\nΥπόλοιπο μετά: ${balanceAfter} SOL (διαφορά: ${(balanceAfter - balanceBefore).toFixed(9)})`);
+diff --git a/src/gmgn/portfolio.test.ts b/src/gmgn/portfolio.test.ts
+index 1807325..1ec630b 100644
+--- a/src/gmgn/portfolio.test.ts
++++ b/src/gmgn/portfolio.test.ts
+@@ -1,9 +1,8 @@
+ import assert from 'node:assert/strict';
+ import { test } from 'node:test';
+ 
+-import { parsePortfolioInfoSolBalances } from './portfolio.js';
++import { parsePortfolioInfoSolAddress, parsePortfolioInfoSolBalances } from './portfolio.js';
+ import { GmgnResponseError } from './errors.js';
+-
+ /** Ακριβώς το response που έστειλε ο χρήστης 2026-09-11, μετά από πραγματική κατάθεση
+  * 0.0208... SOL — δεν είναι φτιαγμένο fixture, είναι το πραγματικό production JSON. */
+ const REAL_FUNDED_RESPONSE = {
+@@ -62,3 +61,11 @@ test('parsePortfolioInfoSolBalances: throws (does not silently return empty) whe
+ test('parsePortfolioInfoSolBalances: throws on a completely unexpected shape', () => {
+   assert.throws(() => parsePortfolioInfoSolBalances({ unexpected: true }), GmgnResponseError);
+ });
++
++test('parsePortfolioInfoSolAddress: extracts the real sol-chain wallet address', () => {
++  assert.equal(parsePortfolioInfoSolAddress(REAL_FUNDED_RESPONSE), 'yFb3v4wfoc7fSrxXXJ9YTM6JwMVZdnus5fmKe2A6gH5');
++});
++
++test('parsePortfolioInfoSolAddress: throws when there is no sol-chain wallet', () => {
++  assert.throws(() => parsePortfolioInfoSolAddress({ wallets: [] }), GmgnResponseError);
++});
+diff --git a/src/gmgn/portfolio.ts b/src/gmgn/portfolio.ts
+index cd775e3..36e8355 100644
+--- a/src/gmgn/portfolio.ts
++++ b/src/gmgn/portfolio.ts
+@@ -58,6 +58,29 @@ export function parsePortfolioInfoSolBalances(raw: unknown): PortfolioBalance[]
+   });
+ }
+ 
++/** Η ίδια η διεύθυνση του sol-chain wallet — χρειάζεται σαν `--from` στο swap. Ίδιο
++ * defensive-parsing σκεπτικό με το getLiveSolBalance: πετάει αντί να επιστρέψει κάτι
++ * ψεύτικο αν λείπει. */
++export function parsePortfolioInfoSolAddress(raw: unknown): string {
++  const response = expectObject(raw, 'portfolio.info');
++  const wallets = expectArray(response['wallets'], 'portfolio.info.wallets');
++  const solWalletRaw = wallets.find((w) => {
++    if (typeof w !== 'object' || w === null) return false;
++    return (w as Record<string, unknown>)['chain'] === 'sol';
++  });
++  if (solWalletRaw === undefined) {
++    throw new GmgnResponseError('no sol-chain wallet in response', 'portfolio.info.wallets');
++  }
++  const solWallet = expectObject(solWalletRaw, 'portfolio.info.wallets[chain=sol]');
++  return expectString(solWallet['address'], 'portfolio.info.wallets[chain=sol].address');
++}
++
++/** Η ίδια η διεύθυνση του sol-chain wallet — χρειάζεται σαν `--from` στο swap. */
++export async function getLiveSolWalletAddress(options: RunOptions = {}): Promise<string> {
++  const raw = await runCli('portfolio info', ['portfolio', 'info'], options);
++  return parsePortfolioInfoSolAddress(raw);
++}
++
+ /** Το πραγματικό, τρέχον υπόλοιπο SOL του live trading wallet. Πετάει (δεν επιστρέφει 0
+  * σιωπηλά) αν το response δεν έχει καν wallet SOL entry — ο caller αποφασίζει πώς να
+  * φερθεί σε τέτοιο σφάλμα (η δική μας πρόθεση: fallback σε 'paper' mode, βλ. tradeMode.ts,
