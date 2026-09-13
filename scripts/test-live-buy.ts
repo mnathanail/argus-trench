@@ -60,6 +60,14 @@ try {
     console.error(`\n❌ Το swap απέτυχε ρητά (status: ${error.status}): ${error.message}`);
   } else {
     console.error(`\n❌ Απρόσμενο σφάλμα: ${error instanceof Error ? error.message : String(error)}`);
+    // Δείξε το ΠΛΗΡΕΣ, ωμό output αν υπάρχει (GmgnCliError/GmgnRateLimitError το κρατάνε
+    // ολόκληρο στο .output — το summarized .message δείχνει μόνο την πρώτη γραμμή, που
+    // μπορεί να είναι παραπλανητική αν η ταξινόμηση του σφάλματος ήταν λάθος).
+    if (error !== null && typeof error === 'object' && 'output' in error) {
+      console.error('\n--- Πλήρες, ωμό output ---');
+      console.error((error as { output: unknown }).output);
+      console.error('--- τέλος ---');
+    }
   }
   process.exit(1);
 }
