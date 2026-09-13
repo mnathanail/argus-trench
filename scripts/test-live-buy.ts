@@ -7,13 +7,27 @@ import { executeLiveBuy, SwapFailedError, AutomatedTradesDisabledError } from '.
 //
 // ΠΡΑΓΜΑΤΙΚΟ, ΑΝΕΚΚΛΗΤΟ swap — πραγματικά χρήματα, πραγματική on-chain συναλλαγή.
 // Δεν καταγράφει τίποτα στη βάση μας, δεν πουλάει αυτόματα μετά — μόνο το ελάχιστο
-// δυνατό, χειροκίνητο πρώτο τεστ, ένα βήμα τη φορά. Μετά την αγορά, έλεγξε το wallet
-// σου στο https://solscan.io πριν αποφασίσεις το επόμενο βήμα.
+// δυνατό, χειροκίνητο πρώτο τεστ. Μετά την αγορά, έλεγξε το wallet σου στο
+// https://solscan.io πριν αποφασίσεις το επόμενο βήμα.
 //
-// Μόνο 2 κλήσεις `portfolio info` συνολικά (address+balance μαζί στην αρχή, μόνο
-// balance στο τέλος) — πραγματικό incident 2026-09-11: η πρώτη εκδοχή αυτού του script
-// έκανε 4 ξεχωριστές κλήσεις στο ΙΔΙΟ endpoint, συνεισφέροντας σε πραγματικό 429 πάνω σε
-// ένα ήδη πιεσμένο, κοινό rate-limit bucket με τα υπόλοιπα collectors μας.
+// ΟΛΟΚΛΗΡΟ το script είναι τώρα μέσα σε ΕΝΑ try/catch (πραγματικό incident 2026-09-13:
+// οι αρχικές/τελικές κλήσεις portfolio-info ήταν ΕΚΤΟΣ try/catch, άρα ένα rate-limit
+// σφάλμα εκεί έριχνε ωμό, ασύλληπτο crash αντί για το καθαρό, μορφοποιημένο μήνυμα).
+
+function printError(error: unknown): void {
+  if (error instanceof AutomatedTradesDisabledError) {
+    console.error(`\n🚫 ${error.message}\nΘέσε GMGN_ALLOW_AUTOMATED_TRADES=1 στο περιβάλλον για να συνεχίσεις.`);
+  } else if (error instanceof SwapFailedError) {
+    console.error(`\n❌ Το swap απέτυχε ρητά (status: ${error.status}): ${error.message}`);
+  } else {
+    console.error(`\n❌ Σφάλμα: ${error instanceof Error ? error.message : String(error)}`);
+    if (error !== null && typeof error === 'object' && 'output' in error) {
+      console.error('\n--- Πλήρες, ωμό output ---');
+      console.error((error as { output: unknown }).output);
+      console.error('--- τέλος ---');
+    }
+  }
+}
 
 const tokenAddress = process.argv[2];
 const amountSol = process.argv[3] ? Number(process.argv[3]) : 0.005;
@@ -31,19 +45,19 @@ if (amountSol > 0.02) {
   process.exit(1);
 }
 
-const wallet = await fetchLiveSolWallet({ priority: 1000 });
-console.log(`Wallet: ${wallet.address}`);
-const balanceBefore = wallet.balances.find((b) => b.symbol === 'SOL')?.balance ?? 0;
-console.log(`Υπόλοιπο πριν: ${balanceBefore} SOL`);
-
-if (balanceBefore < amountSol) {
-  console.error(`Ανεπαρκές υπόλοιπο: έχεις ${balanceBefore} SOL, ζητάς αγορά ${amountSol} SOL.`);
-  process.exit(1);
-}
-
-console.log(`\nΑγορά ${amountSol} SOL → ${tokenAddress} ...\n`);
-
 try {
+  const wallet = await fetchLiveSolWallet({ priority: 1000 });
+  console.log(`Wallet: ${wallet.address}`);
+  const balanceBefore = wallet.balances.find((b) => b.symbol === 'SOL')?.balance ?? 0;
+  console.log(`Υπόλοιπο πριν: ${balanceBefore} SOL`);
+
+  if (balanceBefore < amountSol) {
+    console.error(`Ανεπαρκές υπόλοιπο: έχεις ${balanceBefore} SOL, ζητάς αγορά ${amountSol} SOL.`);
+    process.exit(1);
+  }
+
+  console.log(`\nΑγορά ${amountSol} SOL → ${tokenAddress} ...\n`);
+
   const result = await executeLiveBuy(wallet.address, tokenAddress, amountSol);
   console.log('Αποτέλεσμα:');
   console.log(JSON.stringify(result, null, 2));
@@ -55,21 +69,10 @@ try {
     console.log(`\n⚠️  Ακόμα σε εξέλιξη μετά το polling (status: ${result.status}) — έλεγξε χειροκίνητα:`);
     if (result.orderId) console.log(`gmgn-cli order get --chain sol --order-id ${result.orderId} --raw`);
   }
+
+  const balanceAfter = await getLiveSolBalance({ priority: 1000 });
+  console.log(`\nΥπόλοιπο μετά: ${balanceAfter} SOL (διαφορά: ${(balanceAfter - balanceBefore).toFixed(9)})`);
 } catch (error) {
-  if (error instanceof AutomatedTradesDisabledError) {
-    console.error(`\n🚫 ${error.message}\nΘέσε GMGN_ALLOW_AUTOMATED_TRADES=1 στο περιβάλλον για να συνεχίσεις.`);
-  } else if (error instanceof SwapFailedError) {
-    console.error(`\n❌ Το swap απέτυχε ρητά (status: ${error.status}): ${error.message}`);
-  } else {
-    console.error(`\n❌ Απρόσμενο σφάλμα: ${error instanceof Error ? error.message : String(error)}`);
-    if (error !== null && typeof error === 'object' && 'output' in error) {
-      console.error('\n--- Πλήρες, ωμό output ---');
-      console.error((error as { output: unknown }).output);
-      console.error('--- τέλος ---');
-    }
-  }
+  printError(error);
   process.exit(1);
 }
-
-const balanceAfter = await getLiveSolBalance({ priority: 1000 });
-console.log(`\nΥπόλοιπο μετά: ${balanceAfter} SOL (διαφορά: ${(balanceAfter - balanceBefore).toFixed(9)})`);
