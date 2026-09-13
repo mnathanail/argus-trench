@@ -57,8 +57,15 @@ export const WALLET_ACTIVITY_RETRY_BACKOFF_MS = [
 /**
  * Re-scoring για ΟΛΑ τα active wallets (κάθε source) — βλ. `collectors/scoring.ts`.
  * Όχι τόσο πυκνά που να τρώει το budget με N wallets × weight 3.
+ *
+ * 5min → 15min (2026-09-13): φάση δοκιμών του live trading — αυτό ήταν ο μεγαλύτερος
+ * καταναλωτής rate-limit budget στο project (weight 3 ΑΝΑ wallet, ΧΩΡΙΣ batch — με 108
+ * ενεργά wallets, ~324 weight κάθε κύκλο). Repeated 429 από αυτό το loop συνέβαλε σε
+ * μηδενισμό του κοινού bucket ακριβώς τη στιγμή που δοκιμάζαμε το πρώτο πραγματικό
+ * swap. Τα scores δεν αλλάζουν αρκετά μέσα σε λίγα λεπτά ώστε να δικαιολογούν τόσο
+ * συχνό re-scoring — 15 λεπτά αφήνει αρκετό, αδιάκοπο χρόνο στο bucket να ανακάμψει.
  */
-export const WALLET_SCORING_INTERVAL_MS = 300_000;
+export const WALLET_SCORING_INTERVAL_MS = 900_000;
 export const WALLET_SCORING_LOOP_PACING_MS = 1_000;
 export const WALLET_SCORING_INITIAL_DELAY_MS = 15_000;
 export const WALLET_SCORING_RETRY_BACKOFF_MS = [
