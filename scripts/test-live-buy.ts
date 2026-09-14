@@ -1,6 +1,9 @@
 import 'dotenv/config';
+import { activateTradeProxyIfConfigured } from '../src/util/tradeProxy.js';
 import { fetchLiveSolWallet, getLiveSolBalance } from '../src/gmgn/portfolio.js';
 import { executeLiveBuy, SwapFailedError, AutomatedTradesDisabledError } from '../src/gmgn/swap.js';
+
+activateTradeProxyIfConfigured();
 
 // Χρήση: npm run test-live-buy -- <token_address> [amount_sol]
 //   π.χ.  npm run test-live-buy -- 8CD94taK17MdP2A2GdBdgcAJWW5sxyHoYLUtqkripump 0.005

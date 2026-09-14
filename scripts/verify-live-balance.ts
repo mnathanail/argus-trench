@@ -1,5 +1,8 @@
 import 'dotenv/config';
+import { activateTradeProxyIfConfigured } from '../src/util/tradeProxy.js';
 import { runCli } from '../src/gmgn/exec.js';
+
+activateTradeProxyIfConfigured();
 
 // Χρήση: npm run verify-live-balance
 //

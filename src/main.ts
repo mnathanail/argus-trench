@@ -31,6 +31,9 @@ import { handleRealtimeEntryEvent } from './realtime/realtimeEntryHandler.js';
 import { runScheduler, SharedCooldown, type LoopDefinition } from './scheduler.js';
 import { createBotFromEnv, runBot } from './telegram/bot.js';
 import { formatPercent, short } from './telegram/commands.js';
+import { activateTradeProxyIfConfigured } from './util/tradeProxy.js';
+
+activateTradeProxyIfConfigured(); // ΠΡΩΤΟ, πριν από οτιδήποτε άλλο — βλ. σχόλιο στο module.
 
 /**
  * Entrypoint. Ένα process για όλα (απόφαση 2026-08-25): Telegram bot + οι collector loops
