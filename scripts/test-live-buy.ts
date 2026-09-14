@@ -43,8 +43,11 @@ if (!Number.isFinite(amountSol) || amountSol <= 0) {
   console.error(`Μη έγκυρο ποσό: ${process.argv[3]}`);
   process.exit(1);
 }
-if (amountSol > 0.02) {
-  console.error(`Το ${amountSol} SOL είναι πολύ μεγάλο για δοκιμαστικό script — μέγιστο 0.02.`);
+if (amountSol > 0.06) {
+  // 0.02 → 0.06 (2026-09-14): το πραγματικό, προγραμματισμένο μέγεθος θέσης είναι 0.05
+  // SOL (5% του 1 SOL bankroll) — το παλιό όριο 0.02 δεν επέτρεπε καν να δοκιμάσουμε το
+  // πραγματικό, τελικό μέγεθος. Μικρό περιθώριο πάνω από το 0.05, όχι απεριόριστο.
+  console.error(`Το ${amountSol} SOL είναι πολύ μεγάλο για δοκιμαστικό script — μέγιστο 0.06.`);
   process.exit(1);
 }
 
