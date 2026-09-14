@@ -137,7 +137,9 @@ async function confirmSignature(signature: string): Promise<void> {
   );
 }
 
-async function trade(
+const MIGRATED_TOKEN_INDICATOR = 'Failed to find pump.fun bonding curve';
+
+async function submitTrade(
   apiKey: string,
   action: 'buy' | 'sell',
   mint: string,
@@ -171,6 +173,34 @@ async function trade(
   const signature = obj['signature'];
   await confirmSignature(signature); // πετάει αν αποτύχει ή δεν επιβεβαιωθεί καθόλου
   return { signature, confirmed: true };
+}
+
+/**
+ * Δοκιμάζει πρώτα το δοσμένο pool (default 'pump' — τα δικά μας tokens είναι σχεδόν
+ * πάντα ακόμα στο bonding curve). Αν το PumpPortal ρητά απαντήσει ότι το token έχει
+ * «αποφοιτήσει» (πραγματικό incident 2026-09-14: ένα ήδη-gated token μας είχε ήδη
+ * μεταναστεύσει στο PumpSwap μέχρι να προλάβουμε να αγοράσουμε), ξαναδοκιμάζει ΜΙΑ
+ * φορά με `pool: 'pump-amm'` — ακριβώς όπως προτείνει το ίδιο το μήνυμα σφάλματος του
+ * PumpPortal. Δεν κάνει τυφλό retry σε ΟΠΟΙΟΔΗΠΟΤΕ σφάλμα — μόνο σε αυτή τη συγκεκριμένη,
+ * αναγνωρίσιμη περίπτωση.
+ */
+async function trade(
+  apiKey: string,
+  action: 'buy' | 'sell',
+  mint: string,
+  amount: number | string,
+  denominatedInSol: boolean,
+  slippagePct: number,
+  pool: string,
+): Promise<TradeResult> {
+  try {
+    return await submitTrade(apiKey, action, mint, amount, denominatedInSol, slippagePct, pool);
+  } catch (error) {
+    const isMigrated =
+      error instanceof PumpPortalTradeError && pool !== 'pump-amm' && error.body.includes(MIGRATED_TOKEN_INDICATOR);
+    if (!isMigrated) throw error;
+    return submitTrade(apiKey, action, mint, amount, denominatedInSol, slippagePct, 'pump-amm');
+  }
 }
 
 /**
