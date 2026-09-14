@@ -144,6 +144,7 @@ async function trade(
   amount: number | string,
   denominatedInSol: boolean,
   slippagePct: number,
+  pool: string,
 ): Promise<TradeResult> {
   const response = await fetch(`${BASE_URL}/trade?api-key=${encodeURIComponent(apiKey)}`, {
     method: 'POST',
@@ -155,7 +156,7 @@ async function trade(
       denominatedInSol: denominatedInSol ? 'true' : 'false',
       slippage: slippagePct,
       priorityFee: 0.00001,
-      pool: 'auto',
+      pool,
     }),
   });
   const text = await response.text();
@@ -172,14 +173,33 @@ async function trade(
   return { signature, confirmed: true };
 }
 
-/** Αγορά — ποσό σε SOL. */
-export async function pumpPortalBuy(apiKey: string, mint: string, amountSol: number, slippagePct = 15): Promise<TradeResult> {
-  return trade(apiKey, 'buy', mint, amountSol, true, slippagePct);
+/**
+ * Αγορά — ποσό σε SOL. `pool: 'pump'` ρητά, ΟΧΙ 'auto' — πραγματικό incident 2026-09-14:
+ * το 'auto' απέτυχε με "Pool account not found" σε ένα φρέσκο, ήδη gated token μας. Τα
+ * δικά μας tokens είναι σχεδόν πάντα ακόμα στο bonding curve (έτσι δουλεύει όλο το
+ * σύστημα ανίχνευσης) — το ρητό 'pump' είναι πιο άμεσο, πιθανότατα πιο αξιόπιστο από το
+ * αυτόματο detection για ΑΚΡΙΒΩΣ αυτή την περίπτωση.
+ */
+export async function pumpPortalBuy(
+  apiKey: string,
+  mint: string,
+  amountSol: number,
+  slippagePct = 15,
+  pool = 'pump',
+): Promise<TradeResult> {
+  return trade(apiKey, 'buy', mint, amountSol, true, slippagePct, pool);
 }
 
-/** Πώληση — ΟΛΟΚΛΗΡΗ η θέση. */
-export async function pumpPortalSellAll(apiKey: string, mint: string, slippagePct = 20): Promise<TradeResult> {
-  return trade(apiKey, 'sell', mint, '100%', false, slippagePct);
+/** Πώληση — ΟΛΟΚΛΗΡΗ η θέση. Ίδιο `pool: 'pump'` default — αν ένα trade έχει «αποφοιτήσει»
+ * ανάμεσα σε entry/exit (σπάνιο στο δικό μας 24ωρο παράθυρο), ο caller μπορεί να περάσει
+ * ρητά διαφορετικό pool. */
+export async function pumpPortalSellAll(
+  apiKey: string,
+  mint: string,
+  slippagePct = 20,
+  pool = 'pump',
+): Promise<TradeResult> {
+  return trade(apiKey, 'sell', mint, '100%', false, slippagePct, pool);
 }
 
 export { TRADE_FEE_PCT };
