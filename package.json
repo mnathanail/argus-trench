@@ -23,6 +23,7 @@
     "verify-live-balance": "tsx scripts/verify-live-balance.ts",
     "test-live-buy": "tsx scripts/test-live-buy.ts",
     "create-pumpportal-wallet": "tsx scripts/create-pumpportal-wallet.ts",
+    "test-pumpportal-buy": "tsx scripts/test-pumpportal-buy.ts",
     "db:up": "docker compose up -d --wait db",
     "db:down": "docker compose down",
     "db:reset": "docker compose down -v && docker compose up -d --wait db",
