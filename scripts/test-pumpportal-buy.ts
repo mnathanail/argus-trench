@@ -1,6 +1,11 @@
 import 'dotenv/config';
 import { config } from '../src/config.js';
-import { pumpPortalBuy, PumpPortalTradeError, PumpPortalTradeFailedError } from '../src/pumpportal/trading.js';
+import {
+  pumpPortalBuy,
+  PumpPortalTradeError,
+  PumpPortalTradeFailedError,
+  Token2022UnsupportedError,
+} from '../src/pumpportal/trading.js';
 
 // Χρήση: npm run test-pumpportal-buy -- <token_address> [amount_sol]
 //   π.χ.  npm run test-pumpportal-buy -- 8CD94taK17MdP2A2GdBdgcAJWW5sxyHoYLUtqkripump 0.005
@@ -39,7 +44,9 @@ try {
   console.log(`Signature: ${result.signature}`);
   console.log(`Tx: https://solscan.io/tx/${result.signature}`);
 } catch (error) {
-  if (error instanceof PumpPortalTradeFailedError) {
+  if (error instanceof Token2022UnsupportedError) {
+    console.error(`⏭️  ${error.message}`);
+  } else if (error instanceof PumpPortalTradeFailedError) {
     console.error(`❌ Η συναλλαγή απέτυχε ΣΤΟ CHAIN (επιβεβαιωμένο, όχι απλά αναφορά API): ${error.message}`);
     console.error(`Tx: https://solscan.io/tx/${error.signature}`);
   } else if (error instanceof PumpPortalTradeError) {

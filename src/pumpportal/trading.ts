@@ -62,6 +62,50 @@ export class PumpPortalTradeFailedError extends Error {
   }
 }
 
+/** Πετάει όταν το mint είναι Token-2022 — πραγματικό, επαναλαμβανόμενο incident
+ * 2026-09-14: το PumpPortal δεν ξέρει ακόμα να χτίσει σωστά bonding-curve buy πάνω σε
+ * Token-2022 mints (AnchorError "UnsupportedQuoteMint"). Πέρα από το τεχνικό ζήτημα,
+ * το Token-2022 έχει και γνωστά, πραγματικά risk patterns (π.χ. "Permanent Delegate" —
+ * ο εκδότης μπορεί να κατάσχει/κάψει tokens οποτεδήποτε) που μια αυξανόμενη rug-pull
+ * βιομηχανία εκμεταλλεύεται — το να το αποφεύγουμε δεν είναι μόνο workaround, είναι και
+ * λογικό μέτρο προστασίας. */
+export class Token2022UnsupportedError extends Error {
+  constructor(readonly mint: string) {
+    super(`${mint} είναι Token-2022 mint — μη υποστηριζόμενο από το PumpPortal, παραλείπεται.`);
+    this.name = 'Token2022UnsupportedError';
+  }
+}
+
+const TOKEN_2022_PROGRAM_ID = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+
+/** Ελέγχει αν το mint ανήκει στο Token-2022 program (owner του mint account) — μέσω
+ * απλού getAccountInfo, όχι πλήρους Solana SDK. Επιστρέφει false (όχι throw) σε
+ * αμφίβολη/αποτυχημένη κατάσταση — προτιμούμε να αφήσουμε το ίδιο το trade attempt να
+ * αποκαλύψει το πρόβλημα (ήδη το χειριζόμαστε καθαρά) παρά να μπλοκάρουμε κάτι έγκυρο
+ * λόγω παροδικού σφάλματος σε αυτόν τον προληπτικό έλεγχο. */
+export async function isToken2022Mint(mint: string): Promise<boolean> {
+  const rpcUrl = process.env.SOLANA_RPC_URL ?? DEFAULT_RPC_URL;
+  try {
+    const response = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getAccountInfo',
+        params: [mint, { encoding: 'base64' }],
+      }),
+    });
+    const data: unknown = await response.json();
+    const obj = typeof data === 'object' && data !== null ? (data as Record<string, unknown>) : {};
+    const result = typeof obj['result'] === 'object' && obj['result'] !== null ? (obj['result'] as Record<string, unknown>) : null;
+    const value = typeof result?.['value'] === 'object' && result['value'] !== null ? (result['value'] as Record<string, unknown>) : null;
+    return value?.['owner'] === TOKEN_2022_PROGRAM_ID;
+  } catch {
+    return false; // δικτυακό/παροδικό σφάλμα στον έλεγχο — άστο να το αποκαλύψει το ίδιο το trade
+  }
+}
+
 /**
  * ΜΙΑ φορά, χειροκίνητα — δημιουργεί ΝΕΟ wallet+apiKey. ΔΕΝ το καλούμε ποτέ αυτόματα.
  */
@@ -217,6 +261,7 @@ export async function pumpPortalBuy(
   slippagePct = 15,
   pool = 'pump',
 ): Promise<TradeResult> {
+  if (await isToken2022Mint(mint)) throw new Token2022UnsupportedError(mint);
   return trade(apiKey, 'buy', mint, amountSol, true, slippagePct, pool);
 }
 
