@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { config } from '../src/config.js';
-import { pumpPortalSellAll, PumpPortalTradeError } from '../src/pumpportal/trading.js';
+import { pumpPortalSellAll, PumpPortalTradeError, PumpPortalTradeFailedError } from '../src/pumpportal/trading.js';
 
 // Χρήση: npm run test-pumpportal-sell -- <token_address>
 //
@@ -24,17 +24,20 @@ console.log(`Πώληση ΟΛΟΚΛΗΡΗΣ της θέσης σε ${tokenAddre
 
 try {
   const result = await pumpPortalSellAll(apiKey, tokenAddress);
-  console.log('✅ Εκτελέστηκε.');
+  console.log('✅ Επιβεβαιωμένο on-chain (confirmed, όχι μόνο υποβλήθηκε).');
   console.log(`Signature: ${result.signature}`);
   console.log(`Tx: https://solscan.io/tx/${result.signature}`);
 } catch (error) {
-  if (error instanceof PumpPortalTradeError) {
+  if (error instanceof PumpPortalTradeFailedError) {
+    console.error(`❌ Η συναλλαγή απέτυχε ΣΤΟ CHAIN (επιβεβαιωμένο, όχι απλά αναφορά API): ${error.message}`);
+    console.error(`Tx: https://solscan.io/tx/${error.signature}`);
+  } else if (error instanceof PumpPortalTradeError) {
     console.error(`❌ Απέτυχε: HTTP ${error.status} — ${error.message}`);
     console.error('\n--- Πλήρες, ωμό output ---');
     console.error(error.body);
     console.error('--- τέλος ---');
   } else {
-    console.error(`❌ Σφάλμα: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`❌ ${error instanceof Error ? error.message : String(error)}`);
   }
   process.exit(1);
 }
