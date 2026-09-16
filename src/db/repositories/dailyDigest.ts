@@ -7,33 +7,40 @@ export interface BestWorstTrade {
   exitReason: string | null;
 }
 
+export interface ManualExitTrade {
+  id: number;
+  tokenAddress: string;
+  actualEntryAmountSol: number | null;
+}
+
+/**
+ * ΜΟΝΟ mode='live' — ρητή απόφαση χρήστη 2026-09-16: "δεν με ενδιαφέρει τι έχει γίνει
+ * στα χαρτιά ... θέλω να ξέρω ακριβώς τι έχει γίνει με τα πραγματικά χρήματα". Τα paper/
+ * log_only trades συνεχίζουν να καταγράφονται κανονικά (για δεδομένα/ανάλυση), απλά δεν
+ * εμφανίζονται πια σε αυτή τη συγκεκριμένη αναφορά.
+ */
 export interface DailyDigestData {
   openedToday: number;
   closedToday: number;
   winsToday: number;
   lossesToday: number;
+  /** Πραγματικό SOL κέρδος/ζημιά — άθροισμα του πραγματικού pnl_sol (βλ.
+   * actual_entry/exit_amount_sol, migration 0011), ΟΧΙ ποσοστιαία παραδοχή. */
   profitSolToday: number;
-  profitPctToday: number;
+  /** Πραγματικό SOL που ξοδεύτηκε σε νέες θέσεις σήμερα — actual_entry_amount_sol,
+   * ΟΧΙ το ονομαστικό, προγραμματισμένο μέγεθος (LIVE_POSITION_SIZE_SOL). */
   deployedSolToday: number;
   bestToday: BestWorstTrade | null;
   worstToday: BestWorstTrade | null;
   openAll: number;
   closedAll: number;
   profitSolAll: number;
-  profitPctAll: number;
-  walletsActive: number;
-  walletsAutoDeactivated: number;
+  /** Trades που περιμένουν χειροκίνητη προσοχή ΤΩΡΑ (needs_manual_exit=true) — ό,τι κι
+   * αν συνέβη σήμερα ή παλιότερα, πρέπει να φαίνεται πάντα σε αυτή την αναφορά μέχρι να
+   * λυθεί, ώστε να μην ξεχαστεί μια ανοιχτή, πραγματική θέση σε πρόβλημα. */
+  needsManualExit: ManualExitTrade[];
 }
 
-/**
- * `dayStart`/`dayEnd` περνάνε ΕΤΟΙΜΑ από τον caller (βλ. `startOfAthensDay` στο
- * util/athensTime.ts) — αυτό το επίπεδο δεν αποφασίζει "ποια μέρα", απλά μετράει μέσα
- * στο [dayStart, dayEnd) που του δόθηκε. Κρατάει το "ποια μέρα θεωρούμε 'σήμερα'"
- * ξεκάθαρα σε ΕΝΑ σημείο (τον caller), όχι σκόρπιο μέσα σε SQL literals.
- *
- * Πολλά απλά queries αντί για ένα γιγάντιο CTE — τρέχει μία φορά τη μέρα, η απλότητα και
- * η ευκολία επαλήθευσης αξίζουν παραπάνω από την απόδοση εδώ.
- */
 export async function getDailyDigestData(
   dayStart: Date,
   dayEnd: Date,
@@ -47,63 +54,47 @@ export async function getDailyDigestData(
     wins_today: string;
     losses_today: string;
     profit_sol_today: string;
-    profit_pct_today: string;
+    deployed_sol_today: string;
   }>(
     `SELECT
        COUNT(*) FILTER (WHERE entry_at >= $1 AND entry_at < $2) AS opened_today,
        COUNT(*) FILTER (WHERE exit_at >= $1 AND exit_at < $2) AS closed_today,
-       COUNT(*) FILTER (WHERE exit_at >= $1 AND exit_at < $2 AND pnl_pct > 0) AS wins_today,
-       COUNT(*) FILTER (WHERE exit_at >= $1 AND exit_at < $2 AND pnl_pct <= 0) AS losses_today,
+       COUNT(*) FILTER (WHERE exit_at >= $1 AND exit_at < $2 AND pnl_sol > 0) AS wins_today,
+       COUNT(*) FILTER (WHERE exit_at >= $1 AND exit_at < $2 AND pnl_sol <= 0) AS losses_today,
        COALESCE(SUM(pnl_sol) FILTER (WHERE exit_at >= $1 AND exit_at < $2), 0) AS profit_sol_today,
-       COALESCE(SUM(pnl_pct) FILTER (WHERE exit_at >= $1 AND exit_at < $2), 0) AS profit_pct_today
-     FROM paper_trades`,
-    [dayStart, dayEnd],
-  );
-
-  const deployed = await c.query<{ deployed_sol_today: string }>(
-    `SELECT COALESCE(SUM(simulated_entry_amount_sol) FILTER (WHERE entry_at >= $1 AND entry_at < $2), 0) AS deployed_sol_today
-       FROM paper_trades`,
+       COALESCE(SUM(actual_entry_amount_sol) FILTER (WHERE entry_at >= $1 AND entry_at < $2), 0) AS deployed_sol_today
+     FROM paper_trades
+     WHERE mode = 'live'`,
     [dayStart, dayEnd],
   );
 
   const best = await c.query<{ token_address: string; pnl_pct: string; exit_reason: string | null }>(
     `SELECT token_address, pnl_pct, exit_reason FROM paper_trades
-      WHERE exit_at >= $1 AND exit_at < $2 AND pnl_pct IS NOT NULL
+      WHERE mode = 'live' AND exit_at >= $1 AND exit_at < $2 AND pnl_pct IS NOT NULL
       ORDER BY pnl_pct DESC LIMIT 1`,
     [dayStart, dayEnd],
   );
   const worst = await c.query<{ token_address: string; pnl_pct: string; exit_reason: string | null }>(
     `SELECT token_address, pnl_pct, exit_reason FROM paper_trades
-      WHERE exit_at >= $1 AND exit_at < $2 AND pnl_pct IS NOT NULL
+      WHERE mode = 'live' AND exit_at >= $1 AND exit_at < $2 AND pnl_pct IS NOT NULL
       ORDER BY pnl_pct ASC LIMIT 1`,
     [dayStart, dayEnd],
   );
 
-  const allTime = await c.query<{
-    open_all: string;
-    closed_all: string;
-    profit_sol_all: string;
-    profit_pct_all: string;
-  }>(
+  const allTime = await c.query<{ open_all: string; closed_all: string; profit_sol_all: string }>(
     `SELECT
        COUNT(*) FILTER (WHERE status = 'open') AS open_all,
        COUNT(*) FILTER (WHERE status = 'closed') AS closed_all,
-       COALESCE(SUM(pnl_sol) FILTER (WHERE status = 'closed'), 0) AS profit_sol_all,
-       COALESCE(SUM(pnl_pct) FILTER (WHERE status = 'closed'), 0) AS profit_pct_all
-     FROM paper_trades`,
+       COALESCE(SUM(pnl_sol) FILTER (WHERE status = 'closed'), 0) AS profit_sol_all
+     FROM paper_trades
+     WHERE mode = 'live'`,
   );
 
-  const wallets = await c.query<{ active: boolean; deactivated_reason: string | null; count: string }>(
-    `SELECT active, deactivated_reason, COUNT(*) as count
-       FROM watchlist_wallets
-      GROUP BY active, deactivated_reason`,
+  const manualExit = await c.query<{ id: string; token_address: string; actual_entry_amount_sol: string | null }>(
+    `SELECT id, token_address, actual_entry_amount_sol FROM paper_trades
+      WHERE mode = 'live' AND needs_manual_exit = true
+      ORDER BY entry_at ASC`,
   );
-  const walletsActive = wallets.rows
-    .filter((r) => r.active)
-    .reduce((sum, r) => sum + toNum(r.count), 0);
-  const walletsAutoDeactivated = wallets.rows
-    .filter((r) => !r.active && r.deactivated_reason === 'below_threshold')
-    .reduce((sum, r) => sum + toNum(r.count), 0);
 
   const tc = todayCounts.rows[0];
   const at = allTime.rows[0];
@@ -117,8 +108,7 @@ export async function getDailyDigestData(
     winsToday: toNum(tc.wins_today),
     lossesToday: toNum(tc.losses_today),
     profitSolToday: toNum(tc.profit_sol_today),
-    profitPctToday: toNum(tc.profit_pct_today),
-    deployedSolToday: toNum(deployed.rows[0]?.deployed_sol_today ?? '0'),
+    deployedSolToday: toNum(tc.deployed_sol_today),
     bestToday: best.rows[0]
       ? {
           tokenAddress: best.rows[0].token_address,
@@ -136,8 +126,10 @@ export async function getDailyDigestData(
     openAll: toNum(at.open_all),
     closedAll: toNum(at.closed_all),
     profitSolAll: toNum(at.profit_sol_all),
-    profitPctAll: toNum(at.profit_pct_all),
-    walletsActive,
-    walletsAutoDeactivated,
+    needsManualExit: manualExit.rows.map((r) => ({
+      id: toNum(r.id),
+      tokenAddress: r.token_address,
+      actualEntryAmountSol: r.actual_entry_amount_sol === null ? null : toNum(r.actual_entry_amount_sol),
+    })),
   };
 }
