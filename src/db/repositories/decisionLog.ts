@@ -138,6 +138,12 @@ export interface UpsertedDecision {
  *    που έχει ήδη πραγματικό trade πάνω του, ασχέτως decision value — μια φορά
  *    συνδεδεμένο, το row είναι πλέον ιστορικό αρχείο, όχι κάτι που το discovery πρέπει
  *    να ξαναγράφει.
+ *
+ * Σημείωση 2026-09-15: το ξεχωριστό ζήτημα «δύο σήματα, δύο ξεχωριστά trades στο ίδιο
+ * token» (μέσω διαφορετικών candidate_source rows) ΔΕΝ διορθώνεται εδώ — διορθώνεται στο
+ * recordTrigger (βλ. εκεί), που είναι το σημείο όπου ένα σήμα πραγματικά «κλειδώνει» ένα
+ * row. Το conflict target εδώ (candidate_source μέσα στο κλειδί) παραμένει σκόπιμα ως
+ * έχει — κάθε πηγή παρατήρησης κρατάει το δικό της, ανεξάρτητο ιστορικό αξιολόγησης.
  */
 export async function upsertDecisions(
   inputs: readonly NewDecisionLog[],
@@ -254,34 +260,72 @@ export interface TriggerRecord {
  * Επιστρέφει το `id` (όχι μόνο rowCount) ώστε ο caller να μπορεί να συνδέσει ατομικά ένα
  * paper_trades row — βλ. `recordSignal` στο entries.ts. `null` όταν δεν ταίριαξε τίποτα
  * (π.χ. το row συνδέθηκε ήδη με trade στο μεσοδιάστημα).
+ *
+ * ΔΙΟΡΘΩΣΗ 2026-09-15, πραγματικό incident: το `UPDATE ... WHERE <συνθήκες>` παλιότερα
+ * ΔΕΝ περιόριζε πόσα rows ταιριάζουν — αν το ΙΔΙΟ token είχε ΔΥΟ ξεχωριστά, ακόμα-
+ * διαθέσιμα decision_log rows (ένα ανά candidate_source, βλ. upsertDecisions), το ΕΝΑ
+ * UPDATE statement τα ενημέρωνε ΚΑΙ ΤΑ ΔΥΟ ταυτόχρονα με το ΙΔΙΟ trigger info — αλλά ο
+ * caller παίρνει μόνο `rows[0]?.id` και συνδέει `linked_trade_id` ΜΟΝΟ σε αυτό. Το άλλο
+ * row έμενε με trigger info γραμμένο πάνω του αλλά `linked_trade_id` ΑΚΟΜΑ NULL — άρα
+ * παρέμενε πλήρως διαθέσιμο για ένα ΔΕΥΤΕΡΟ, ανεξάρτητο σήμα να το «κλειδώσει» λίγο
+ * αργότερα, ανοίγοντας ΔΕΥΤΕΡΟ πραγματικό trade στο ΙΔΙΟ ακριβώς token. Επιβεβαιωμένο σε
+ * πραγματικά δεδομένα δύο φορές (3VGm...pump, 6H7pHwPBd...pump).
+ *
+ * Τώρα: (1) `LIMIT 1 FOR UPDATE` claim ΑΚΡΙΒΩΣ ενός row (deterministic, με σωστό row
+ * lock — αποκλείει race μεταξύ ταυτόχρονων recordTrigger κλήσεων), μετά (2) DELETE κάθε
+ * ΑΛΛΟ ακόμα-διαθέσιμο «αδερφό» row για το ΙΔΙΟ (token, logic_version) — ανεξάρτητα από
+ * candidate_source. Ασφαλές να διαγραφεί: αφού είναι ακόμα unclaimed (linked_trade_id
+ * IS NULL), τίποτα δεν το αναφέρει ποτέ μέσω foreign key. Σε single-source σενάρια (καμία
+ * αδερφή γραμμή) το delete βήμα είναι απλά no-op — μηδενική επίδραση στα ήδη υπάρχοντα
+ * tests.
  */
 export async function recordTrigger(
   input: TriggerRecord,
   conn?: Queryable,
 ): Promise<number | null> {
   const { rows } = await db(conn).query<{ id: string }>(
-    `UPDATE decision_log d
-        SET trigger_type = $3,
-            trigger_wallet_address = $4,
-            trigger_wallet_snapshot_json = $5,
-            decision = $6,
-            decision_reason_text = $7,
-            last_evaluated_at = now()
-      WHERE d.token_address = $1
-        AND d.logic_version = $2
-        AND d.gate_passed
-        AND d.decision <> 'entered'
-        AND d.linked_trade_id IS NULL
-        AND NOT EXISTS (
-          SELECT 1
-          FROM paper_trades pt
-          JOIN decision_log existing_d ON existing_d.id = pt.decision_log_id
-          WHERE existing_d.token_address = d.token_address
-            AND existing_d.logic_version = d.logic_version
-            AND existing_d.trigger_wallet_address = $4
-            AND pt.status = 'open'
-        )
-      RETURNING d.id`,
+    `WITH candidate AS (
+       SELECT id
+         FROM decision_log
+        WHERE token_address = $1
+          AND logic_version = $2
+          AND gate_passed
+          AND decision <> 'entered'
+          AND linked_trade_id IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM paper_trades pt
+            JOIN decision_log existing_d ON existing_d.id = pt.decision_log_id
+            WHERE existing_d.token_address = $1
+              AND existing_d.logic_version = $2
+              AND existing_d.trigger_wallet_address = $4
+              AND pt.status = 'open'
+          )
+        ORDER BY last_evaluated_at DESC
+        LIMIT 1
+        FOR UPDATE
+     ),
+     claimed AS (
+       UPDATE decision_log d
+          SET trigger_type = $3,
+              trigger_wallet_address = $4,
+              trigger_wallet_snapshot_json = $5,
+              decision = $6,
+              decision_reason_text = $7,
+              last_evaluated_at = now()
+        WHERE d.id = (SELECT id FROM candidate)
+        RETURNING d.id
+     ),
+     deleted_siblings AS (
+       DELETE FROM decision_log d2
+        WHERE d2.token_address = $1
+          AND d2.logic_version = $2
+          AND d2.id <> (SELECT id FROM claimed)
+          AND d2.linked_trade_id IS NULL
+          AND d2.decision <> 'entered'
+          AND EXISTS (SELECT 1 FROM claimed)
+     )
+     SELECT id FROM claimed`,
     [
       input.tokenAddress,
       input.logicVersion,

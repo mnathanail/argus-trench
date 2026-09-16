@@ -225,7 +225,82 @@ test('upsertDecisions never clobbers a row that already has a linked trade — e
     assert.equal(rows[0]?.decision, 'signal_logged');
     assert.equal(rows[0]?.trigger_type, 'smart_money_buy');
     assert.equal(rows[0]?.trigger_wallet_address, 'WalletTrigger2222222222222222222222222222');
-    assert.equal(rows[0]?.linked_trade_id, recorded?.tradeId);
+    // linked_trade_id είναι BIGINT — το ωμό tx.query() το γυρνάει πάντα ως string, ενώ το
+    // recorded?.tradeId περνάει από το κανονικό, ήδη-parsed application path. Number()
+    // εδώ, όχι επειδή άλλαξε κάτι στη λογική — προϋπάρχον, αδρανές type mismatch που
+    // ποτέ δεν είχε τρέξει σε πραγματική Postgres σε αυτό το sandbox μέχρι τώρα.
+    assert.equal(Number(rows[0]?.linked_trade_id), recorded?.tradeId);
+  });
+});
+
+test('recordTrigger claims only ONE row when the same token has two unclaimed decision_log rows from different candidate_source — the real 2026-09-15 incident', async () => {
+  // Πραγματικό production incident: το discovery δημιουργεί ξεχωριστό decision_log row
+  // ανά candidate_source ('sample_window' vs 'gated_pool') — δύο ανεξάρτητες «θέσεις
+  // παρκαρίσματος» για το ΙΔΙΟ token επέτρεπαν σε δύο ξεχωριστά σήματα (ή και το ίδιο
+  // σήμα, μέσω race) να ανοίξουν ΔΥΟ ξεχωριστά trades στο ΙΔΙΟ token. Επιβεβαιωμένο σε
+  // πραγματικά δεδομένα δύο φορές (3VGm...pump, 6H7pHwPBd...pump).
+  await inRollback(async (tx) => {
+    await upsertWallet({ address: 'WalletFirstSignal1111111111111111111111111', source: 'manual', active: true }, tx);
+    await upsertWallet({ address: 'WalletSecondSignal222222222222222222222222', source: 'manual', active: true }, tx);
+
+    // Το discovery δημιουργεί ΔΥΟ ξεχωριστά rows για το ΙΔΙΟ token — ίδιο σενάριο με το
+    // πραγματικό production incident.
+    await upsertDecisions(
+      [
+        { ...baseDecision, tokenAddress: 'TokenDoubleParked', candidateSource: 'sample_window', gatePassed: true, decision: 'skipped_no_trigger' },
+        { ...baseDecision, tokenAddress: 'TokenDoubleParked', candidateSource: 'gated_pool', gatePassed: true, decision: 'skipped_no_trigger' },
+      ],
+      tx,
+    );
+
+    // Σήμα #1 — πρώτο wallet «κλειδώνει» ΕΝΑ από τα δύο rows. Χρήση recordSignal (όχι
+    // μόνο recordTrigger) — η πραγματική ροή παραγωγής: claim ΚΑΙ άνοιγμα trade ΚΑΙ
+    // σύνδεση linked_trade_id, ατομικά. Μόνο το recordTrigger μόνο του ΔΕΝ συνδέει ποτέ
+    // linked_trade_id — χωρίς αυτό το βήμα, το ίδιο row θα παρέμενε «ακόμα διαθέσιμο».
+    const firstSignal = await recordSignal(
+      {
+        tokenAddress: 'TokenDoubleParked',
+        logicVersion: baseDecision.logicVersion,
+        triggerType: 'smart_money_buy',
+        triggerWalletAddress: 'WalletFirstSignal1111111111111111111111111',
+        triggerWalletSnapshot: { win_rate: 0.6 },
+        decision: 'signal_logged',
+        decisionReasonText: 'πρώτο σήμα',
+      },
+      {
+        tokenAddress: 'TokenDoubleParked',
+        intendedSizePct: 0.01,
+        bankrollAtEntry: 10,
+        simulatedEntryPrice: 0.000123,
+        simulatedEntryAmountSol: 0.1,
+        assumedSlippagePct: 0.5,
+        assumedLatencyMs: 200,
+      },
+      tx,
+    );
+    assert.ok(firstSignal !== null);
+
+    // Σήμα #2 — δεύτερο, ανεξάρτητο wallet, λίγο αργότερα, ΙΔΙΟ token. Πριν το fix, αυτό
+    // έβρισκε το ΔΕΥΤΕΡΟ, ακόμα-άθικτο row και άνοιγε ένα ΔΕΥΤΕΡΟ πραγματικό trade.
+    const secondClaim = await recordTrigger(
+      {
+        tokenAddress: 'TokenDoubleParked',
+        logicVersion: baseDecision.logicVersion,
+        triggerType: 'smart_money_buy',
+        triggerWalletAddress: 'WalletSecondSignal222222222222222222222222',
+        triggerWalletSnapshot: { win_rate: 0.7 },
+        decision: 'signal_logged',
+        decisionReasonText: 'δεύτερο, ανεξάρτητο σήμα — ΔΕΝ πρέπει να βρει τίποτα',
+      },
+      tx,
+    );
+    assert.equal(secondClaim, null);
+
+    // Και το «αδερφό» row πρέπει να έχει διαγραφεί, όχι απλά να παραμένει ξεχασμένο.
+    const { rows } = await tx.query(
+      `SELECT count(*) as n FROM decision_log WHERE token_address = 'TokenDoubleParked'`,
+    );
+    assert.equal(Number(rows[0]?.n), 1);
   });
 });
 
