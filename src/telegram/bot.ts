@@ -3,6 +3,7 @@ import { fetchWalletStats } from '../gmgn/walletStats.js';
 import { insertScore, recentScores } from '../db/repositories/walletScoreHistory.js';
 import { getWalletLeaderboard, listRecentTrades } from '../db/repositories/paperTrades.js';
 import { getLiveHaltState, clearLiveHalt } from '../db/repositories/liveTradingState.js';
+import { runDailyDigestCycle } from '../collectors/dailyDigest.js';
 import {
   getWallet,
   listActiveWallets,
@@ -27,6 +28,7 @@ export function createCommandDeps(): CommandDeps {
     getWalletLeaderboard: (limit) => getWalletLeaderboard(limit),
     getLiveHaltState: () => getLiveHaltState(),
     clearLiveHalt: () => clearLiveHalt(),
+    runDigest: () => runDailyDigestCycle(),
   };
 }
 

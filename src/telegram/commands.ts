@@ -48,6 +48,9 @@ export interface CommandDeps {
   getWalletLeaderboard(limit: number): Promise<WalletLeaderboardEntry[]>;
   getLiveHaltState(): Promise<{ haltedAt: Date | null; haltedReason: string | null }>;
   clearLiveHalt(): Promise<void>;
+  /** Ίδιο μήνυμα με τη βραδινή αναφορά (00:05 Αθήνας) — χειροκίνητο trigger, ώστε να
+   * μη χρειάζεται να περιμένεις την προγραμματισμένη ώρα για να το ξαναδείς. */
+  runDigest(): Promise<string>;
 }
 
 const HELP = [
@@ -62,6 +65,7 @@ const HELP = [
   '/leaderboard [N]      ΔΙΚΟ ΜΑΣ αποτέλεσμα ανά wallet, ταξινομημένο (default 10)',
   '/live_status          kill-switch state για live trading',
   '/resume_live          χειροκίνητο reset του kill-switch (μόνο αφού το ελέγξεις)',
+  '/digest               ξαναστείλε τη live βραδινή αναφορά τώρα, εκτός προγράμματος',
   '/help                αυτό το μήνυμα',
 ].join('\n');
 
@@ -102,6 +106,8 @@ export async function handleCommand(text: string, deps: CommandDeps): Promise<st
       return liveStatus(deps);
     case '/resume_live':
       return resumeLive(deps);
+    case '/digest':
+      return deps.runDigest();
     default:
       return `Άγνωστη εντολή: ${command || '(κενό)'}\n\n${HELP}`;
   }

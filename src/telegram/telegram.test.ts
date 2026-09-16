@@ -461,6 +461,13 @@ test('/live_status: shows the halt reason when the kill-switch is active', async
   assert.match(reply, /3 συνεχόμενες ζημιές/);
 });
 
+test('/digest: returns exactly whatever the injected digest function produces — manual trigger, same message as the scheduled one', async () => {
+  const deps = stubDeps();
+  deps.runDigest = () => Promise.resolve('📊 Live αναφορά — δοκιμαστικό περιεχόμενο');
+  const reply = await handleCommand('/digest', deps);
+  assert.equal(reply, '📊 Live αναφορά — δοκιμαστικό περιεχόμενο');
+});
+
 test('/resume_live: says there is nothing to clear when not halted', async () => {
   const deps = stubDeps();
   deps.getLiveHaltState = () => Promise.resolve({ haltedAt: null, haltedReason: null });
@@ -508,5 +515,6 @@ function stubDeps(statsOverride: Partial<WalletStats> = {}): CommandDeps {
     getWalletLeaderboard: () => Promise.resolve([]),
     getLiveHaltState: () => Promise.resolve({ haltedAt: null, haltedReason: null }),
     clearLiveHalt: () => Promise.resolve(),
+    runDigest: () => Promise.resolve('digest placeholder'),
   };
 }
