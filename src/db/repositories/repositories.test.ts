@@ -22,6 +22,7 @@ import {
   openTrade,
 } from './paperTrades.js';
 import { recordExecutionError } from './tradeExecutionErrors.js';
+import { reserveLiveCapital, releaseLiveCapital } from './liveTradingState.js';
 import { insertScores, recentScores } from './walletScoreHistory.js';
 import {
   getWallet,
@@ -746,5 +747,61 @@ test('recordExecutionError writes a full, queryable record — timestamp, messag
     assert.equal(rows[0]?.error_message, 'swap status=failed');
     assert.deepEqual(rows[0]?.error_detail_json, { status: 'failed', signature: 'abc123' });
     assert.ok(rows[0]?.attempted_at instanceof Date);
+  });
+});
+
+// reserveLiveCapital/releaseLiveCapital — πραγματικό ρίσκο εντοπίστηκε 2026-09-15, πριν
+// προλάβει να συμβεί στην πράξη: δύο σχεδόν-ταυτόχρονα σήματα σε ΔΙΑΦΟΡΕΤΙΚΑ tokens θα
+// μπορούσαν να δουν το ΙΔΙΟ, ακόμα-αναλλοίωτο on-chain balance και να δεσμεύσουν μαζί
+// παραπάνω κεφάλαιο απ' όσο πραγματικά υπάρχει.
+
+async function resetReservedSol(tx: pg.PoolClient): Promise<void> {
+  await tx.query(`UPDATE live_trading_state SET reserved_sol = 0 WHERE id = 1`);
+}
+
+test('reserveLiveCapital succeeds when enough real balance remains after existing reservations', async () => {
+  await inRollback(async (tx) => {
+    await resetReservedSol(tx);
+    assert.equal(await reserveLiveCapital(1.0, 0.05, tx), true);
+    const { rows } = await tx.query(`SELECT reserved_sol FROM live_trading_state WHERE id = 1`);
+    assert.equal(Number(rows[0]?.reserved_sol), 0.05);
+  });
+});
+
+test('reserveLiveCapital fails (no reservation made) when a prior reservation already used up the real balance — the actual race condition scenario', async () => {
+  await inRollback(async (tx) => {
+    await resetReservedSol(tx);
+    // Σήμα #1 σε token A — δεσμεύει το μεγαλύτερο μέρος του διαθέσιμου κεφαλαίου, μόνο
+    // 0.02 SOL μένει (0.36 - 0.34).
+    assert.equal(await reserveLiveCapital(0.36, 0.34, tx), true);
+    // Σήμα #2 σε token B, μέσα σε δευτερόλεπτα — βλέπει το ΙΔΙΟ, μπαγιάτικο 0.36 balance
+    // (το πρώτο swap δεν έχει προλάβει να settle ακόμα on-chain), αλλά η κράτηση
+    // αρνείται σωστά αφού μόνο 0.02 πραγματικά περισσεύει, όχι τα 0.05 που ζητάει.
+    assert.equal(await reserveLiveCapital(0.36, 0.05, tx), false);
+    const { rows } = await tx.query(`SELECT reserved_sol FROM live_trading_state WHERE id = 1`);
+    assert.equal(Number(rows[0]?.reserved_sol), 0.34); // αμετάβλητο — η αποτυχημένη κράτηση δεν έγραψε τίποτα
+  });
+});
+
+test('releaseLiveCapital frees up capital for a subsequent reservation — the normal buy-then-release cycle', async () => {
+  await inRollback(async (tx) => {
+    await resetReservedSol(tx);
+    assert.equal(await reserveLiveCapital(0.36, 0.34, tx), true);
+    assert.equal(await reserveLiveCapital(0.36, 0.05, tx), false); // δεν περισσεύει ακόμα (μόνο 0.02)
+
+    await releaseLiveCapital(0.34, tx); // το πρώτο swap ολοκληρώθηκε (πέτυχε ή απέτυχε — δεν έχει σημασία εδώ)
+
+    assert.equal(await reserveLiveCapital(0.36, 0.05, tx), true); // τώρα περισσεύει ολόκληρο το 0.36
+  });
+});
+
+test('releaseLiveCapital never goes negative, even on a mismatched/duplicate release', async () => {
+  await inRollback(async (tx) => {
+    await resetReservedSol(tx);
+    await reserveLiveCapital(1.0, 0.05, tx);
+    await releaseLiveCapital(0.05, tx);
+    await releaseLiveCapital(0.05, tx); // δεύτερο, «περιττό» release — δεν πρέπει να πάει αρνητικό
+    const { rows } = await tx.query(`SELECT reserved_sol FROM live_trading_state WHERE id = 1`);
+    assert.equal(Number(rows[0]?.reserved_sol), 0);
   });
 });
