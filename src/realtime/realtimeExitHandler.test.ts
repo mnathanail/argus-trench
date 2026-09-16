@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { decideForTick, type TickDecisionInput } from './realtimeExitHandler.js';
+import { decideForTick, shouldSkipLiveExitCheck, type TickDecisionInput } from './realtimeExitHandler.js';
 import type { PumpPortalTradeEvent } from './pumpportalEvents.js';
 
 const ENTRY_AT = new Date('2026-09-09T00:00:00Z');
@@ -111,4 +111,43 @@ test('trailing_stop fires correctly through the full decision path (activation o
   );
   assert.equal(afterDrop.type, 'close');
   if (afterDrop.type === 'close') assert.equal(afterDrop.exitReason, 'trailing_stop');
+});
+
+// shouldSkipLiveExitCheck — πραγματικό incident 2026-09-15: μια αποτυχημένη πραγματική
+// πώληση (needs_manual_exit) ή μια ήδη-σε-εξέλιξη απόπειρα (exit_attempt_started_at
+// πρόσφατο) ΔΕΝ πρέπει ποτέ να ξαναδοκιμαστεί αυτόματα.
+
+function liveTrade(overrides: Partial<Parameters<typeof shouldSkipLiveExitCheck>[0]> = {}) {
+  return {
+    needsManualExit: false,
+    mode: 'live' as const,
+    exitAttemptStartedAt: null,
+    ...overrides,
+  };
+}
+
+test('shouldSkipLiveExitCheck: needsManualExit=true πάντα αγνοείται, ασχέτως mode/χρόνου', () => {
+  assert.equal(shouldSkipLiveExitCheck(liveTrade({ needsManualExit: true }), ENTRY_AT), true);
+  assert.equal(shouldSkipLiveExitCheck(liveTrade({ needsManualExit: true, mode: 'log_only' }), ENTRY_AT), true);
+});
+
+test('shouldSkipLiveExitCheck: paper/log_only trade ΠΟΤΕ δεν αγνοείται λόγω exit_attempt_started_at (δεν εφαρμόζεται εκεί)', () => {
+  const staleButPaper = liveTrade({ mode: 'log_only', exitAttemptStartedAt: ENTRY_AT });
+  assert.equal(shouldSkipLiveExitCheck(staleButPaper, new Date(ENTRY_AT.getTime() + 1_000)), false);
+});
+
+test('shouldSkipLiveExitCheck: live trade με ΠΡΟΣΦΑΤΗ exit_attempt_started_at αγνοείται — άλλη απόπειρα ήδη σε εξέλιξη', () => {
+  const attemptStarted = ENTRY_AT;
+  const now = new Date(ENTRY_AT.getTime() + 10_000); // 10s μετά — ακόμα «φρέσκο»
+  assert.equal(shouldSkipLiveExitCheck(liveTrade({ exitAttemptStartedAt: attemptStarted }), now), true);
+});
+
+test('shouldSkipLiveExitCheck: live trade με ΠΑΛΙΑ exit_attempt_started_at ΔΕΝ αγνοείται — πιθανή κολλημένη προσπάθεια, επιτρέπεται νέα', () => {
+  const attemptStarted = ENTRY_AT;
+  const now = new Date(ENTRY_AT.getTime() + 61_000); // 61s μετά — πλέον «μπαγιάτικο»
+  assert.equal(shouldSkipLiveExitCheck(liveTrade({ exitAttemptStartedAt: attemptStarted }), now), false);
+});
+
+test('shouldSkipLiveExitCheck: live trade χωρίς καμία προηγούμενη απόπειρα δεν αγνοείται', () => {
+  assert.equal(shouldSkipLiveExitCheck(liveTrade(), ENTRY_AT), false);
 });

@@ -20,6 +20,11 @@ export interface NewPaperTrade {
   /** Το exit plan όπως μπήκε ΤΗ ΣΤΙΓΜΗ του entry, όχι όπως το θυμόμαστε μετά. Πάντα array
    * από order objects (π.χ. [{order_type:'profit_stop',...}, {...}]), ποτέ bare object. */
   conditionOrders?: readonly Record<string, unknown>[] | null;
+  /** Πραγματικό SOL που πραγματικά ξοδεύτηκε (balance-diff, όχι υπόθεση) — ΜΟΝΟ για
+   * mode='live'. undefined/NULL για paper/log_only, όπου δεν υπάρχει καμία πραγματική
+   * συναλλαγή να μετρηθεί. Αντικαθιστά την ανάγκη για assumed_fees_pct σε live trades —
+   * το πραγματικό pnl_sol υπολογίζεται απευθείας από αυτό, βλ. realtimeExitHandler.ts. */
+  actualEntryAmountSol?: number;
   /** Η ΠΡΑΓΜΑΤΙΚΗ στιγμή της on-chain αγοράς (π.χ. buy.timestamp), ΟΧΙ πότε το
    * επεξεργαστήκαμε — undefined πέφτει σε now() (προεπιλογή, π.χ. αν δεν υπάρχει
    * διαθέσιμο ιστορικό timestamp). Κρίσιμο για catch-up batches: ένα wallet-activity
@@ -51,6 +56,10 @@ export interface PaperTrade {
   /** Πότε το exit-resolver το εξέτασε τελευταία φορά — οδηγεί το rotation, βλ.
    * `selectOpenTradesForCheck`. ΔΙΑΦΟΡΕΤΙΚΟ από `entryAt` (πότε ανοίχτηκε). */
   lastCheckedAt: Date | null;
+  actualEntryAmountSol: number | null;
+  actualExitAmountSol: number | null;
+  needsManualExit: boolean;
+  exitAttemptStartedAt: Date | null;
 }
 
 interface TradeRow {
@@ -71,12 +80,17 @@ interface TradeRow {
   pnl_pct: string | null;
   pnl_net_pct: string | null;
   last_checked_at: Date | null;
+  actual_entry_amount_sol: string | null;
+  actual_exit_amount_sol: string | null;
+  needs_manual_exit: boolean;
+  exit_attempt_started_at: Date | null;
 }
 
 const COLUMNS = `id, decision_log_id, token_address, chain, mode, intended_size_pct,
                  bankroll_at_entry, simulated_entry_price, entry_at, status, exit_reason,
                  simulated_exit_price, exit_at, pnl_sol, pnl_pct, pnl_net_pct,
-                 last_checked_at`;
+                 last_checked_at, actual_entry_amount_sol, actual_exit_amount_sol,
+                 needs_manual_exit, exit_attempt_started_at`;
 
 function toJsonParam(value: unknown): string | null {
   return value === null || value === undefined ? null : JSON.stringify(value);
@@ -101,6 +115,10 @@ function mapTrade(row: TradeRow): PaperTrade {
     pnlPct: toNumOrNull(row.pnl_pct),
     pnlNetPct: toNumOrNull(row.pnl_net_pct),
     lastCheckedAt: row.last_checked_at,
+    actualEntryAmountSol: toNumOrNull(row.actual_entry_amount_sol),
+    actualExitAmountSol: toNumOrNull(row.actual_exit_amount_sol),
+    needsManualExit: row.needs_manual_exit,
+    exitAttemptStartedAt: row.exit_attempt_started_at,
   };
 }
 
@@ -109,8 +127,8 @@ export async function openTrade(input: NewPaperTrade, conn?: Queryable): Promise
     `INSERT INTO paper_trades (
        decision_log_id, token_address, chain, mode, intended_size_pct, bankroll_at_entry,
        simulated_entry_price, simulated_entry_amount_sol, assumed_slippage_pct,
-       assumed_latency_ms, condition_orders_json, entry_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       assumed_latency_ms, condition_orders_json, entry_at, actual_entry_amount_sol
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
      RETURNING id`,
     [
       input.decisionLogId,
@@ -125,6 +143,7 @@ export async function openTrade(input: NewPaperTrade, conn?: Queryable): Promise
       input.assumedLatencyMs,
       toJsonParam(input.conditionOrders),
       input.entryAt ?? new Date(),
+      input.actualEntryAmountSol ?? null,
     ],
   );
   return toNum(requireRow(rows, 'openTrade').id);
@@ -140,6 +159,8 @@ export interface CloseTradeInput {
   pnlPct: number | null;
   assumedFeesPct: number;
   pnlNetPct: number | null;
+  /** Πραγματικό SOL που πραγματικά εισπράχθηκε (balance-diff) — ΜΟΝΟ για mode='live'. */
+  actualExitAmountSol?: number;
 }
 
 /**
@@ -155,7 +176,9 @@ export async function closeTrade(
     `UPDATE paper_trades
         SET status = 'closed', exit_at = now(), exit_reason = $2,
             exit_trigger_detail_json = $3, simulated_exit_price = $4,
-            pnl_sol = $5, pnl_pct = $6, assumed_fees_pct = $7, pnl_net_pct = $8
+            pnl_sol = $5, pnl_pct = $6, assumed_fees_pct = $7, pnl_net_pct = $8,
+            actual_exit_amount_sol = $9, needs_manual_exit = false,
+            exit_attempt_started_at = NULL
       WHERE id = $1 AND status = 'open'`,
     [
       id,
@@ -166,6 +189,7 @@ export async function closeTrade(
       input.pnlPct,
       input.assumedFeesPct,
       input.pnlNetPct,
+      input.actualExitAmountSol ?? null,
     ],
   );
   return (result.rowCount ?? 0) > 0;
@@ -424,6 +448,10 @@ export interface OpenTradeForTick {
   peakPriceSinceEntry: number | null;
   trailingActive: boolean;
   triggerWalletAddress: string | null;
+  mode: TradeMode;
+  actualEntryAmountSol: number | null;
+  needsManualExit: boolean;
+  exitAttemptStartedAt: Date | null;
 }
 
 /**
@@ -467,10 +495,15 @@ export async function getOpenTradeForTickLocked(
     peak_price_since_entry: string | null;
     trailing_active: boolean;
     trigger_wallet_address: string | null;
+    mode: TradeMode;
+    actual_entry_amount_sol: string | null;
+    needs_manual_exit: boolean;
+    exit_attempt_started_at: Date | null;
   }>(
     `SELECT pt.id, pt.simulated_entry_price, pt.entry_at, pt.bankroll_at_entry,
             pt.intended_size_pct, pt.peak_price_since_entry, pt.trailing_active,
-            dl.trigger_wallet_address
+            dl.trigger_wallet_address, pt.mode, pt.actual_entry_amount_sol,
+            pt.needs_manual_exit, pt.exit_attempt_started_at
        FROM paper_trades pt
        JOIN decision_log dl ON dl.id = pt.decision_log_id
       WHERE pt.id = $1 AND pt.status = 'open'
@@ -489,6 +522,10 @@ export async function getOpenTradeForTickLocked(
     peakPriceSinceEntry: toNumOrNull(row.peak_price_since_entry),
     trailingActive: row.trailing_active,
     triggerWalletAddress: row.trigger_wallet_address,
+    mode: row.mode,
+    actualEntryAmountSol: toNumOrNull(row.actual_entry_amount_sol),
+    needsManualExit: row.needs_manual_exit,
+    exitAttemptStartedAt: row.exit_attempt_started_at,
   };
 }
 
@@ -503,6 +540,22 @@ export async function updateTickState(
   await db(conn).query(
     `UPDATE paper_trades SET peak_price_since_entry = $2, trailing_active = $3 WHERE id = $1`,
     [id, peakPriceSinceEntry, trailingActive],
+  );
+}
+
+/** Σημαδεύει ότι μια πραγματική απόπειρα πώλησης μόλις ξεκίνησε — πριν αφήσουμε το lock
+ * (βλ. σχόλιο στο migration 0011). Ένα δεύτερο, ταυτόχρονο tick στο ίδιο ενεργό token
+ * το βλέπει αυτό και ΔΕΝ προσπαθεί δική του πώληση, όσο είναι ακόμα πρόσφατο. */
+export async function markExitAttemptStarted(id: number, conn?: Queryable): Promise<void> {
+  await db(conn).query(`UPDATE paper_trades SET exit_attempt_started_at = now() WHERE id = $1`, [id]);
+}
+
+/** Μια πραγματική πώληση απέτυχε — η θέση παραμένει ανοιχτή, χρειάζεται χειροκίνητη
+ * προσοχή. Το αυτόματο exit-checking παραλείπει κάθε trade με αυτό ενεργό. */
+export async function markNeedsManualExit(id: number, conn?: Queryable): Promise<void> {
+  await db(conn).query(
+    `UPDATE paper_trades SET needs_manual_exit = true, exit_attempt_started_at = NULL WHERE id = $1`,
+    [id],
   );
 }
 

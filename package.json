@@ -23,6 +23,7 @@
     "verify-live-balance": "tsx scripts/verify-live-balance.ts",
     "test-live-buy": "tsx scripts/test-live-buy.ts",
     "test-live-sell": "tsx scripts/test-live-sell.ts",
+    "close-manual-exit": "tsx scripts/close-manual-exit.ts",
     "create-pumpportal-wallet": "tsx scripts/create-pumpportal-wallet.ts",
     "test-pumpportal-buy": "tsx scripts/test-pumpportal-buy.ts",
     "test-pumpportal-sell": "tsx scripts/test-pumpportal-sell.ts",

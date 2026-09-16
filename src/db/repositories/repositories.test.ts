@@ -17,8 +17,11 @@ import {
   countOpenTrades,
   getTrade,
   listOpenTrades,
+  markExitAttemptStarted,
+  markNeedsManualExit,
   openTrade,
 } from './paperTrades.js';
+import { recordExecutionError } from './tradeExecutionErrors.js';
 import { insertScores, recentScores } from './walletScoreHistory.js';
 import {
   getWallet,
@@ -196,6 +199,7 @@ test('upsertDecisions never clobbers a row that already has a linked trade — e
       },
       {
         tokenAddress: baseDecision.tokenAddress,
+        mode: 'log_only',
         intendedSizePct: 0.01,
         bankrollAtEntry: 10,
         simulatedEntryPrice: 0.000123,
@@ -269,6 +273,7 @@ test('recordTrigger claims only ONE row when the same token has two unclaimed de
       },
       {
         tokenAddress: 'TokenDoubleParked',
+        mode: 'log_only',
         intendedSizePct: 0.01,
         bankrollAtEntry: 10,
         simulatedEntryPrice: 0.000123,
@@ -620,5 +625,126 @@ test('closeTrade is idempotent — a duplicate exit signal does not rewrite P&L'
     assert.equal(trade?.simulatedExitPrice, 2);
     assert.equal(trade?.pnlNetPct, 99);
     assert.equal(await countOpenTrades(tx), openBefore);
+  });
+});
+
+// Πραγματική σύνδεση live trading 2026-09-15 — πραγματικά ποσά SOL, όχι υποθετικά.
+
+test('openTrade + closeTrade persist real actual_entry/exit_amount_sol for live trades — no assumed fees needed', async () => {
+  await inRollback(async (tx) => {
+    const decisionLogId = await insertDecision({ ...baseDecision, decision: 'entered' }, tx);
+    const tradeId = await openTrade(
+      {
+        decisionLogId,
+        tokenAddress: baseDecision.tokenAddress,
+        mode: 'live',
+        intendedSizePct: 0.05,
+        bankrollAtEntry: 1,
+        simulatedEntryPrice: 0.000123,
+        simulatedEntryAmountSol: 0.05,
+        actualEntryAmountSol: 0.052341, // πραγματικό, λίγο πάνω από το ονομαστικό (fees/slippage)
+        assumedSlippagePct: 0.5,
+        assumedLatencyMs: 200,
+      },
+      tx,
+    );
+
+    const opened = await getTrade(tradeId, tx);
+    assert.equal(opened?.mode, 'live');
+    assert.equal(opened?.actualEntryAmountSol, 0.052341);
+    assert.equal(opened?.actualExitAmountSol, null); // ακόμα ανοιχτό
+
+    await closeTrade(
+      tradeId,
+      {
+        exitReason: 'exit_signal',
+        simulatedExitPrice: 0.000456,
+        pnlSol: 0.010204, // πραγματική διαφορά balance, όχι ποσοστιαίος υπολογισμός
+        pnlPct: 0.195,
+        assumedFeesPct: 0, // ήδη πραγματικά ποσά — καμία παραδοχή
+        pnlNetPct: 0.195,
+        actualExitAmountSol: 0.062545,
+      },
+      tx,
+    );
+
+    const closed = await getTrade(tradeId, tx);
+    assert.equal(closed?.actualExitAmountSol, 0.062545);
+  });
+});
+
+test('closeTrade resets needsManualExit and exitAttemptStartedAt on a successful close — a manual retry fully clears the flag', async () => {
+  await inRollback(async (tx) => {
+    const decisionLogId = await insertDecision({ ...baseDecision, decision: 'entered' }, tx);
+    const tradeId = await openTrade(
+      {
+        decisionLogId,
+        tokenAddress: baseDecision.tokenAddress,
+        mode: 'live',
+        intendedSizePct: 0.05,
+        bankrollAtEntry: 1,
+        simulatedEntryPrice: 0.000123,
+        simulatedEntryAmountSol: 0.05,
+        actualEntryAmountSol: 0.05,
+        assumedSlippagePct: 0.5,
+        assumedLatencyMs: 200,
+      },
+      tx,
+    );
+
+    await markExitAttemptStarted(tradeId, tx);
+    await markNeedsManualExit(tradeId, tx);
+    const failed = await getTrade(tradeId, tx);
+    assert.equal(failed?.needsManualExit, true);
+    assert.equal(failed?.exitAttemptStartedAt, null); // markNeedsManualExit το καθαρίζει ήδη
+
+    // Χειροκίνητη προσπάθεια πετυχαίνει αργότερα — το κανονικό closeTrade πρέπει να
+    // καθαρίσει πλήρως το needs_manual_exit, όχι μόνο να κλείσει το trade.
+    await closeTrade(
+      tradeId,
+      {
+        exitReason: 'exit_signal',
+        simulatedExitPrice: 0.000456,
+        pnlSol: 0.01,
+        pnlPct: 0.2,
+        assumedFeesPct: 0,
+        pnlNetPct: 0.2,
+        actualExitAmountSol: 0.06,
+      },
+      tx,
+    );
+
+    const closed = await getTrade(tradeId, tx);
+    assert.equal(closed?.needsManualExit, false);
+    assert.equal(closed?.exitAttemptStartedAt, null);
+    assert.equal(closed?.status, 'closed');
+  });
+});
+
+test('recordExecutionError writes a full, queryable record — timestamp, message, amount, everything (explicit user request)', async () => {
+  await inRollback(async (tx) => {
+    await recordExecutionError(
+      {
+        paperTradeId: null, // αποτυχία στο entry, πριν καν υπάρξει trade row
+        tokenAddress: baseDecision.tokenAddress,
+        action: 'buy',
+        amountSol: 0.05,
+        errorMessage: 'swap status=failed',
+        errorDetail: { status: 'failed', signature: 'abc123' },
+      },
+      tx,
+    );
+
+    const { rows } = await tx.query(
+      `SELECT token_address, action, amount_sol, error_message, error_detail_json, attempted_at
+         FROM trade_execution_errors WHERE token_address = $1`,
+      [baseDecision.tokenAddress],
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.action, 'buy');
+    assert.equal(Number(rows[0]?.amount_sol), 0.05);
+    assert.equal(rows[0]?.error_message, 'swap status=failed');
+    assert.deepEqual(rows[0]?.error_detail_json, { status: 'failed', signature: 'abc123' });
+    assert.ok(rows[0]?.attempted_at instanceof Date);
   });
 });

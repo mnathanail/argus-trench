@@ -122,6 +122,11 @@ export async function runWalletActivityCycle(
         },
         {
           tokenAddress: buy.tokenAddress,
+          // Το αργό, periodic (GMGN-based) μονοπάτι — ΠΟΤΕ live, μόνο catch-up/backfill
+          // καταγραφή. Ρητό εδώ τώρα που το mode δεν είναι πια κλειδωμένο στο
+          // recordSignal (βλ. entries.ts) — το realtime μονοπάτι είναι το μόνο που
+          // μπορεί ποτέ να ανοίξει mode='live' trade.
+          mode: 'log_only',
           intendedSizePct: PAPER_POSITION_SIZE_PCT,
           bankrollAtEntry: PAPER_BANKROLL_SOL,
           // entryPrice==null σε ελάχιστα, ασυνήθιστα gate_snapshots χωρίς 'price' — 0 αντί

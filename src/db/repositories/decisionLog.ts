@@ -389,3 +389,16 @@ export async function getDecisionById(id: number, conn?: Queryable): Promise<Dec
     triggerWalletAddress: row.trigger_wallet_address,
   };
 }
+
+/**
+ * Ανεξάρτητο βήμα σύνδεσης decision→trade — ίδιο ό,τι κάνουν το recordEntry/recordSignal
+ * ήδη εσωτερικά, αλλά εδώ σαν ξεχωριστή, καλέσιμη function. Χρειάζεται όταν ένα αργό,
+ * εξωτερικό βήμα (πραγματικό swap) πρέπει να τρέξει ΑΝΑΜΕΣΑ στο claim του decision_log
+ * row και στο άνοιγμα του trade — βλ. realtime/liveEntryExecution.ts +
+ * handleRealtimeEntryEvent. Κρατάμε αυτά τα δύο βήματα ΕΚΤΟΣ μίας κοινής transaction
+ * ρητά, ώστε το swap (έως ~30s, βλ. gmgn/swap.ts confirmation polling) να μην κρατάει
+ * ανοιχτό connection/lock για όλη του τη διάρκεια.
+ */
+export async function linkTrade(decisionLogId: number, tradeId: number, conn?: Queryable): Promise<void> {
+  await db(conn).query('UPDATE decision_log SET linked_trade_id = $2 WHERE id = $1', [decisionLogId, tradeId]);
+}

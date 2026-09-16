@@ -103,13 +103,27 @@ realtimeConnection = pumpportalApiKey
         // μόλις άνοιξε στο ΙΔΙΟ token με ένα trade που κλείνει, και τα δύο πρέπει να
         // προχωρήσουν ανεξάρτητα).
         handleRealtimeTradeEvent(event, realtimeConnection)
-          .then(async (closedResults) => {
-            for (const r of closedResults) {
-              const outcome = r.pnlPct > 0 ? '🟢' : '🔴';
-              await notify(
-                `⚡ ${outcome} ${r.exitReason} μέσω realtime — ${short(r.tokenAddress)} ` +
-                  `pnl ${formatPercent(r.pnlPct, true)} — δες /trades`,
-              );
+          .then(async (outcomes) => {
+            for (const o of outcomes) {
+              if (o.type === 'closed') {
+                const outcomeEmoji = o.pnlPct > 0 ? '🟢' : '🔴';
+                await notify(
+                  `⚡ ${outcomeEmoji} ${o.exitReason} μέσω realtime — ${short(o.tokenAddress)} ` +
+                    `pnl ${formatPercent(o.pnlPct, true)} — δες /trades`,
+                );
+              } else {
+                // Πραγματική πώληση απέτυχε — η θέση παραμένει ανοιχτή, πραγματικό
+                // κεφάλαιο ακόμα εκτεθειμένο. Ρητό αίτημα χρήστη 2026-09-15: ξεκάθαρο
+                // μήνυμα (πλήρες token address, όχι μόνο short — χρειάζεται για
+                // χειροκίνητη προσπάθεια), καμία αυτόματη επανάληψη.
+                await notify(
+                  `🚨 ΠΡΑΓΜΑΤΙΚΗ πώληση ΑΠΕΤΥΧΕ — χρειάζεται χειροκίνητη προσοχή\n` +
+                    `Token: ${o.tokenAddress}\n` +
+                    `Trade ID: ${o.tradeId}\n` +
+                    `Σφάλμα: ${o.errorMessage}\n` +
+                    `Χειροκίνητη προσπάθεια: railway run npm run close-manual-exit -- ${o.tradeId}`,
+                );
+              }
             }
           })
           .catch((error) => {

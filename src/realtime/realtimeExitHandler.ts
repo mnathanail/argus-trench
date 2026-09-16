@@ -2,23 +2,33 @@ import {
   closeTrade,
   getOpenTradeForTickLocked,
   listOpenTradeIdsForToken,
+  markExitAttemptStarted,
+  markNeedsManualExit,
   updateTickState,
   type OpenTradeForTick,
 } from '../db/repositories/paperTrades.js';
+import { recordExecutionError } from '../db/repositories/tradeExecutionErrors.js';
 import { withTransaction } from '../db/tx.js';
 import type { Queryable } from '../db/tx.js';
+import type { ExitReason } from '../db/types.js';
 import { computePnl } from '../decision/pnl.js';
 import { EXIT_TIMEOUT_MS, PAPER_ASSUMED_FEES_PCT } from '../decision/paperTradingConfig.js';
+import { fetchLiveSolWallet, getLiveSolBalance } from '../gmgn/portfolio.js';
+import { executeLiveSell } from '../gmgn/swap.js';
 import { checkTick } from './tickExit.js';
 import { priceFromTradeEvent, type PumpPortalTradeEvent } from './pumpportalEvents.js';
 import { unsubscribeIfNoLongerNeeded } from './subscriptionManager.js';
 import type { PumpPortalConnection } from './pumpportalConnection.js';
 
-export interface RealtimeCloseResult {
-  tokenAddress: string;
-  exitReason: 'tp_tier_1' | 'trailing_stop' | 'stop_loss' | 'exit_signal';
-  pnlPct: number;
-}
+/**
+ * Ένα «κανονικό» κλείσιμο (paper ΚΑΙ live) ή μια πραγματική πώληση που ΑΠΕΤΥΧΕ και
+ * χρειάζεται χειροκίνητη προσοχή (ρητή απόφαση χρήστη 2026-09-15: "θα γίνεται
+ * χειροκίνητη προσπάθεια"). Ο caller (main.ts) στέλνει διαφορετικό μήνυμα Telegram
+ * ανάλογα με το `type` — ίδιο μοτίβο με πριν, όλη η μορφοποίηση μηνυμάτων μένει εκεί.
+ */
+export type RealtimeTradeOutcome =
+  | { type: 'closed'; tokenAddress: string; exitReason: ExitReason; pnlPct: number }
+  | { type: 'manual_exit_needed'; tokenAddress: string; tradeId: number; errorMessage: string };
 
 export type TickDecision =
   | {
@@ -34,6 +44,32 @@ export type TickDecisionInput = Pick<
   OpenTradeForTick,
   'simulatedEntryPrice' | 'entryAt' | 'peakPriceSinceEntry' | 'trailingActive' | 'triggerWalletAddress'
 >;
+
+/** Πόσο πρόσφατο πρέπει να είναι ένα `exit_attempt_started_at` για να θεωρηθεί «ακόμα σε
+ * εξέλιξη» — βλ. migration 0011. Αρκετά μεγάλο για το πλήρες confirmation polling του
+ * GMGN swap (έως ~30s), με άνεση· πιο παλιό από αυτό σημαίνει πιθανό κολλημένη/κρασαρισμένη
+ * προηγούμενη προσπάθεια, όχι ενεργή — επιτρέπουμε νέα. */
+export const LIVE_EXIT_ATTEMPT_STALE_MS = 60_000;
+
+/**
+ * Καθαρή, τεσταρίσιμη απόφαση — «πρέπει αυτό το trade να αγνοηθεί εντελώς σε αυτό το
+ * tick, πριν καν φτάσουμε στο decideForTick;». Δύο ξεχωριστοί λόγοι:
+ *   1. `needsManualExit` — προηγούμενη πραγματική πώληση ήδη απέτυχε, περιμένει
+ *      χειροκίνητη προσοχή. ΠΟΤΕ αυτόματο ξαναπροσπάθημα (ρητή απόφαση χρήστη).
+ *   2. Άλλη απόπειρα live close ήδη σε εξέλιξη (πρόσφατο exit_attempt_started_at) —
+ *      μην ξεκινήσεις δεύτερη, ταυτόχρονη πώληση στην ΙΔΙΑ θέση.
+ */
+export function shouldSkipLiveExitCheck(
+  trade: Pick<OpenTradeForTick, 'needsManualExit' | 'mode' | 'exitAttemptStartedAt'>,
+  now: Date,
+): boolean {
+  if (trade.needsManualExit) return true;
+  if (trade.mode === 'live' && trade.exitAttemptStartedAt !== null) {
+    const elapsedMs = now.getTime() - trade.exitAttemptStartedAt.getTime();
+    if (elapsedMs < LIVE_EXIT_ATTEMPT_STALE_MS) return true;
+  }
+  return false;
+}
 
 /**
  * Καθαρή απόφαση — τι πρέπει να συμβεί για ΕΝΑ trade δεδομένου ΕΝΟΣ event, χωρίς καμία
@@ -94,32 +130,62 @@ export function decideForTick(trade: TickDecisionInput, event: PumpPortalTradeEv
   return { type: 'ignore' };
 }
 
+interface PendingLiveClose {
+  tradeId: number;
+  exitReason: 'tp_tier_1' | 'trailing_stop' | 'stop_loss' | 'exit_signal';
+  exitPrice: number;
+  exitTriggerDetail: Record<string, unknown> | null;
+  actualEntryAmountSol: number | null;
+}
+
+type TradeHandlingResult =
+  | { kind: 'none' }
+  | { kind: 'closed'; outcome: RealtimeTradeOutcome }
+  | { kind: 'pending_live_close'; pending: PendingLiveClose };
+
 /**
  * Καλείται σε ΚΑΘΕ εισερχόμενο trade event. ΚΛΕΙΔΩΜΕΝΗ ανάγνωση ανά trade (transaction +
  * `FOR UPDATE`) — ένα δραστήριο token μπορεί να δώσει πολλά ticks μέσα σε δευτερόλεπτα·
  * χωρίς lock, δύο ταυτόχρονα ticks θα διάβαζαν το ίδιο μπαγιάτικο peak/trailing state,
  * και το δεύτερο write θα "έσβηνε" σιωπηλά το πρώτο (lost update). Πραγματικό εύρημα
  * πλήρους ελέγχου 2026-09-09.
+ *
+ * ΔΥΟ ΦΑΣΕΙΣ από 2026-09-15 (πρώτη πραγματική σύνδεση live trading): ένα live close ΔΕΝ
+ * εκτελεί το πραγματικό swap μέσα στο lock/transaction — θα κρατούσε ανοιχτό ένα DB
+ * connection + row lock για όλη τη διάρκεια του swap (έως ~30s, confirmation polling
+ * στο gmgn/swap.ts), μπλοκάροντας ένα δεύτερο, γρήγορο tick στο ίδιο ενεργό token.
+ * Αντ' αυτού: Φάση 1 (μέσα στο lock) αποφασίζει ΚΑΙ σημαδεύει (`markExitAttemptStarted`),
+ * commit, lock ελεύθερο· Φάση 2 (ΕΚΤΟΣ lock) εκτελεί το πραγματικό swap και μετά
+ * κλείνει/σημαδεύει σε ΝΕΟ, σύντομο statement.
  */
 export async function handleRealtimeTradeEvent(
   event: PumpPortalTradeEvent,
   connection: PumpPortalConnection,
-): Promise<RealtimeCloseResult[]> {
+): Promise<RealtimeTradeOutcome[]> {
   const candidateIds = await listOpenTradeIdsForToken(event.mint);
   if (candidateIds.length === 0) return [];
 
-  const closed: RealtimeCloseResult[] = [];
+  const outcomes: RealtimeTradeOutcome[] = [];
+  const pendingLiveCloses: PendingLiveClose[] = [];
+
   for (const id of candidateIds) {
     const result = await withTransaction(async (client) => {
       const trade = await getOpenTradeForTickLocked(id, client);
       // null: έκλεισε ήδη (periodic exit-resolver, ή προηγούμενο tick στο ίδιο batch)
       // ανάμεσα στο listOpenTradeIdsForToken() και εδώ — εντάξει, τίποτα να κάνουμε.
-      if (trade === null) return null;
+      if (trade === null) return { kind: 'none' } as const;
       return handleOneTrade(trade, event, connection, client);
     });
-    if (result !== null) closed.push(result);
+    if (result.kind === 'closed') outcomes.push(result.outcome);
+    else if (result.kind === 'pending_live_close') pendingLiveCloses.push(result.pending);
   }
-  return closed;
+
+  // Φάση 2 — ΕΚΤΟΣ οποιουδήποτε lock, μία-μία (σπάνιο να έχει πάνω από μία ταυτόχρονα).
+  for (const pending of pendingLiveCloses) {
+    outcomes.push(await executeLiveCloseAndFinalize(pending, event.mint, connection));
+  }
+
+  return outcomes;
 }
 
 async function handleOneTrade(
@@ -127,16 +193,34 @@ async function handleOneTrade(
   event: PumpPortalTradeEvent,
   connection: PumpPortalConnection,
   conn: Queryable,
-): Promise<RealtimeCloseResult | null> {
+): Promise<TradeHandlingResult> {
+  // Ήδη αποτυχημένη πραγματική πώληση (needs_manual_exit), ή άλλη απόπειρα live close
+  // ήδη σε εξέλιξη — βλ. shouldSkipLiveExitCheck.
+  if (shouldSkipLiveExitCheck(trade, new Date())) return { kind: 'none' };
+
   const decision = decideForTick(trade, event, new Date());
 
   switch (decision.type) {
     case 'ignore':
-      return null;
+      return { kind: 'none' };
     case 'update':
       await updateTickState(trade.id, decision.newPeakPriceSinceEntry, decision.newTrailingActive, conn);
-      return null;
+      return { kind: 'none' };
     case 'close': {
+      if (trade.mode === 'live') {
+        await markExitAttemptStarted(trade.id, conn);
+        return {
+          kind: 'pending_live_close',
+          pending: {
+            tradeId: trade.id,
+            exitReason: decision.exitReason,
+            exitPrice: decision.exitPrice,
+            exitTriggerDetail: decision.exitTriggerDetail,
+            actualEntryAmountSol: trade.actualEntryAmountSol,
+          },
+        };
+      }
+      // paper/log_only — αμετάβλητο μονοπάτι, καμία πραγματική συναλλαγή.
       const pnl = computePnl(
         trade.simulatedEntryPrice,
         decision.exitPrice,
@@ -156,9 +240,75 @@ async function handleOneTrade(
         },
         conn,
       );
-      if (!closed) return null;
+      if (!closed) return { kind: 'none' };
       await unsubscribeIfNoLongerNeeded(connection, event.mint, conn);
-      return { tokenAddress: event.mint, exitReason: decision.exitReason, pnlPct: pnl.pnlPct };
+      return {
+        kind: 'closed',
+        outcome: { type: 'closed', tokenAddress: event.mint, exitReason: decision.exitReason, pnlPct: pnl.pnlPct },
+      };
     }
   }
+}
+
+/**
+ * Η ΠΡΑΓΜΑΤΙΚΗ πώληση — ΕΚΤΟΣ οποιουδήποτε DB lock/transaction (βλ. σχόλιο στο
+ * handleRealtimeTradeEvent). Το πραγματικό pnl υπολογίζεται απευθείας από τη διαφορά
+ * πραγματικού υπολοίπου πριν/μετά — ΚΑΜΙΑ ποσοστιαία παραδοχή (assumed_fees_pct=0 εδώ
+ * σκόπιμα, όχι λάθος): έχουμε ήδη τα πραγματικά νούμερα, δεν χρειάζεται να τα
+ * υπολογίσουμε.
+ */
+async function executeLiveCloseAndFinalize(
+  pending: PendingLiveClose,
+  tokenAddress: string,
+  connection: PumpPortalConnection,
+): Promise<RealtimeTradeOutcome> {
+  let wallet;
+  try {
+    wallet = await fetchLiveSolWallet();
+  } catch (error) {
+    return failLiveClose(pending, tokenAddress, error);
+  }
+  const balanceBefore = wallet.balances.find((b) => b.symbol === 'SOL')?.balance ?? 0;
+
+  try {
+    const result = await executeLiveSell(wallet.address, tokenAddress);
+    const balanceAfter = await getLiveSolBalance();
+    const actualExitAmountSol = balanceAfter - balanceBefore;
+    const actualEntryAmountSol = pending.actualEntryAmountSol ?? 0;
+    const pnlSol = actualExitAmountSol - actualEntryAmountSol;
+    const pnlPct = actualEntryAmountSol > 0 ? pnlSol / actualEntryAmountSol : null;
+
+    const closed = await closeTrade(pending.tradeId, {
+      exitReason: pending.exitReason,
+      exitTriggerDetail: pending.exitTriggerDetail,
+      simulatedExitPrice: result.executedPrice ?? pending.exitPrice,
+      pnlSol,
+      pnlPct,
+      assumedFeesPct: 0,
+      pnlNetPct: pnlPct,
+      actualExitAmountSol,
+    });
+    if (closed) await unsubscribeIfNoLongerNeeded(connection, tokenAddress);
+    return { type: 'closed', tokenAddress, exitReason: pending.exitReason, pnlPct: pnlPct ?? 0 };
+  } catch (error) {
+    return failLiveClose(pending, tokenAddress, error);
+  }
+}
+
+async function failLiveClose(
+  pending: PendingLiveClose,
+  tokenAddress: string,
+  error: unknown,
+): Promise<RealtimeTradeOutcome> {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  await recordExecutionError({
+    paperTradeId: pending.tradeId,
+    tokenAddress,
+    action: 'sell',
+    amountSol: pending.actualEntryAmountSol,
+    errorMessage,
+    errorDetail: error,
+  });
+  await markNeedsManualExit(pending.tradeId);
+  return { type: 'manual_exit_needed', tokenAddress, tradeId: pending.tradeId, errorMessage };
 }

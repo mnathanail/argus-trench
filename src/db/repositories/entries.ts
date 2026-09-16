@@ -57,9 +57,14 @@ export interface RecordedSignal {
 }
 
 /**
- * Σφραγίζει trigger σε υπάρχον gated row ΚΑΙ ανοίγει `mode='log_only'` trade, ατομικά —
- * το αντίστοιχο του `recordEntry` για τη Φάση 1 (CLAUDE.md: log_only ΕΙΝΑΙ ήδη μέρος της
- * Φάσης 1, όχι Φάση 3 — καταγράφουμε τι ΘΑ κάναμε).
+ * Σφραγίζει trigger σε υπάρχον gated row ΚΑΙ ανοίγει trade, ατομικά — το αντίστοιχο του
+ * `recordEntry` για τη Φάση 1 (CLAUDE.md: log_only ΕΙΝΑΙ ήδη μέρος της Φάσης 1, όχι Φάση
+ * 3 — καταγράφουμε τι ΘΑ κάναμε, ή τι ΚΑΝΑΜΕ πραγματικά όταν mode='live').
+ *
+ * Το `mode` ΔΕΝ είναι πια κλειδωμένο σε 'log_only' (αλλαγή 2026-09-15, πρώτη φορά
+ * πραγματική σύνδεση σε αυτόματο live trading) — ο caller το αποφασίζει ρητά (βλ.
+ * liveEntryExecution.ts's attemptLiveEntry), ανάλογα με το αν υπήρξε πραγματικό,
+ * επιτυχημένο swap.
  *
  * Ίδιος λόγος για transaction με το `recordEntry`: χωρίς αυτήν, μια αποτυχία μετά το
  * `recordTrigger` αφήνει `decision='signal_logged'` με `linked_trade_id = NULL` — trade
@@ -67,17 +72,19 @@ export interface RecordedSignal {
  *
  * Επιστρέφει `null` όταν το `recordTrigger` δεν ταίριαξε τίποτα (π.χ. race: το row έγινε
  * ήδη `entered` στο μεσοδιάστημα, ή έπαψε πλέον να είναι gated) — ο caller δεν πρέπει να
- * ανοίξει trade χωρίς decision_log row να δείχνει πάνω του.
+ * ανοίξει trade χωρίς decision_log row να δείχνει πάνω του. ΣΗΜΑΝΤΙΚΟ για mode='live'
+ * callers: έλεγξε αυτό ΠΡΙΝ επιχειρήσεις οποιοδήποτε πραγματικό swap — βλ.
+ * handleRealtimeEntryEvent για τη σωστή σειρά (claim πρώτα, μετά swap, όχι αντίστροφα).
  */
 export async function recordSignal(
   trigger: TriggerRecord,
-  trade: Omit<NewPaperTrade, 'decisionLogId' | 'mode'>,
+  trade: Omit<NewPaperTrade, 'decisionLogId'>,
   conn?: pg.PoolClient,
 ): Promise<RecordedSignal | null> {
   const run = async (client: pg.PoolClient): Promise<RecordedSignal | null> => {
     const decisionLogId = await recordTrigger(trigger, client);
     if (decisionLogId === null) return null;
-    const tradeId = await openTrade({ ...trade, decisionLogId, mode: 'log_only' }, client);
+    const tradeId = await openTrade({ ...trade, decisionLogId }, client);
     await client.query('UPDATE decision_log SET linked_trade_id = $2 WHERE id = $1', [
       decisionLogId,
       tradeId,
