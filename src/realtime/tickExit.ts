@@ -57,8 +57,15 @@ export function checkTick(input: TickCheckInput): TickCheckResult {
   let trailingActive = input.trailingActive;
 
   if (input.currentPrice <= stopLossPrice) {
+    // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα): πριν, καταγράφαμε ΠΑΝΤΑ το threshold
+    // (stopLossPrice), ποτέ την πραγματική τιμή του tick που το πυροδότησε. Σε ένα
+    // pump.fun token μια κατάρρευση συχνά προσπερνάει κατά πολύ το -50% μέχρι να φτάσει
+    // το επόμενο tick (π.χ. -70%) — καταγράφοντας πάντα -50% συστηματικά υποτιμούσαμε τη
+    // ζημιά κάθε stop_loss στο paper P&L. `Math.min` εδώ σημαίνει "ποτέ καλύτερα από το
+    // threshold" (ο πωλητής δεν προλαβαίνει ποτέ την ακριβή στιγμή), μόνο χειρότερα ή ίσα.
+    const exitPrice = Math.min(stopLossPrice, input.currentPrice);
     return {
-      exit: { exitReason: 'stop_loss', exitPrice: stopLossPrice },
+      exit: { exitReason: 'stop_loss', exitPrice },
       newPeakPriceSinceEntry: peak,
       newTrailingActive: trailingActive,
     };
@@ -80,8 +87,11 @@ export function checkTick(input: TickCheckInput): TickCheckResult {
   if (trailingActive) {
     const stopPrice = peak * (1 - EXIT_TIER_2_DRAWDOWN_PCT);
     if (input.currentPrice <= stopPrice) {
+      // Ίδια διόρθωση με το stop_loss πιο πάνω — ποτέ καλύτερα από το threshold, ποτέ
+      // χειρότερα από την πραγματική παρατηρημένη τιμή.
+      const exitPrice = Math.min(stopPrice, input.currentPrice);
       return {
-        exit: { exitReason: 'trailing_stop', exitPrice: stopPrice },
+        exit: { exitReason: 'trailing_stop', exitPrice },
         newPeakPriceSinceEntry: peak,
         newTrailingActive: trailingActive,
       };

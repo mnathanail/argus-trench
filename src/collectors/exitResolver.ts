@@ -11,6 +11,7 @@ import {
   EXIT_TIER_2_DRAWDOWN_PCT,
   EXIT_TIMEOUT_MS,
   PAPER_ASSUMED_FEES_PCT,
+  STOP_LOSS_PCT,
 } from '../decision/paperTradingConfig.js';
 import { EXIT_RESOLVER_LOOP_PACING_MS, EXIT_RESOLVER_TRADES_PER_CYCLE } from './intervals.js';
 import { delay } from '../util/delay.js';
@@ -152,20 +153,39 @@ export interface ExitCheckResult {
 /**
  * Καθαρή function, χωρίς δίκτυο/DB — ίδιο pattern με το `filterNewBuys` στο
  * walletActivity.ts. Διατρέχει το ιστορικό χρονολογικά και επιστρέφει ΤΟ ΠΡΩΤΟ από τα
- * τέσσερα exit conditions που πυροδοτείται:
+ * πέντε exit conditions που πυροδοτείται:
  *
  *   1. exit_signal — το trigger wallet πούλησε. Ελέγχεται ΠΡΩΤΟ μέσα σε κάθε candle,
  *      ώστε ένα ταυτόχρονο tier-hit να μην κρύψει ότι βγήκε το wallet που ακολουθούμε
  *      (CLAUDE.md: "βγαίνεις όταν βγαίνουν τα wallets που ακολουθείς, ανεξάρτητα από τιμή").
- *   2. tp_tier_1 — fixed +50%.
- *   3. trailing_stop — μετά την ενεργοποίηση στο +100%, κλείνει σε -40% από το peak.
- *   4. timeout — 24 ώρες από entry χωρίς κανένα από τα παραπάνω.
+ *   2. stop_loss — -50% από το entry (ΟΧΙ από peak). ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα):
+ *      πριν, αυτό το candle-based engine δεν είχε ΚΑΘΟΛΟΥ stop_loss — μόνο το tick-based
+ *      `checkTick` το είχε. Ένα paper trade που περνούσε μόνο από εδώ (π.χ. exit-resolver
+ *      πρόλαβε πριν το realtime tick) μπορούσε να κατρακυλήσει στο -90% και να κλείσει ως
+ *      timeout, ή να "διορθωθεί" αναδρομικά σε tp_tier_1 αν μια μεταγενέστερη candle.high
+ *      έφτανε το +50% — τα δύο engines έδιναν ασύμβατα αποτελέσματα για το ΙΔΙΟ trade.
+ *      Ελέγχεται ΠΡΙΝ από tier1/trailing, ίδια προτεραιότητα με το checkTick.
+ *   3. tp_tier_1 — fixed +50%.
+ *   4. trailing_stop — μετά την ενεργοποίηση στο +100%, κλείνει σε -40% από το peak.
+ *   5. timeout — 24 ώρες από entry χωρίς κανένα από τα παραπάνω.
  *
- * ΔΕΝ μοντελοποιεί split 50/50 θέσεις σε ξεχωριστά rows (v1, απλοποιημένο σκόπιμα).
+ * Τιμές εξόδου: το tp_tier_1 (upside) καταγράφει το threshold — μια market sell σε
+ * ανερχόμενη τιμή γεμίζει στο ή πάνω από αυτό, ρεαλιστικό. Το stop_loss/trailing_stop
+ * (downside) καταγράφουν `Math.min(threshold, observedPrice)` — ΔΙΟΡΘΩΣΗ 2026-09-17
+ * (review εύρημα): πριν καταγράφαμε ΠΑΝΤΑ το threshold, ποτέ το πραγματικό candle.low· σε
+ * ένα 1-λεπτο candle ενός pump.fun token μια κατάρρευση συχνά προσπερνάει κατά πολύ το
+ * threshold πριν προλάβει να «δει» τιμή το επόμενο σημείο δεδομένων — καταγράφοντας πάντα
+ * το threshold συστηματικά υποτιμούσαμε τη ζημιά κάθε stop.
+ *
+ * ΔΕΝ μοντελοποιεί split 50/50 θέσεις σε ξεχωριστά rows (v1, απλοποιημένο σκόπιμα). ΔΕΝ
+ * γνωρίζει την intra-candle σειρά high/low/stop_loss (η GMGN kline δεν τη δίνει) — ελέγχει
+ * πρώτα stop_loss, μετά high (tier ενεργοποίηση/tier1), μετά low (trailing/stop_loss ήδη
+ * ελεγμένο) μέσα στο ίδιο candle, ίδια σειρά προτεραιότητας με το checkTick.
  */
 export function resolveExit(input: ExitCheckInput): ExitCheckResult | null {
   const tier1Price = input.entryPrice * EXIT_TIER_1_PRICE_SCALE;
   const tier2ActivationPrice = input.entryPrice * EXIT_TIER_2_ACTIVATION_SCALE;
+  const stopLossPrice = input.entryPrice * (1 - STOP_LOSS_PCT);
   let trailingActive = false;
   let peakSinceActivation = 0;
 
@@ -191,6 +211,16 @@ export function resolveExit(input: ExitCheckInput): ExitCheckResult | null {
       return { exitReason: 'exit_signal', exitPrice: candle.close, exitAt: walletSellWithinWindow };
     }
 
+    // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #4): πριν, αυτό το candle-based engine δεν είχε
+    // ΚΑΘΟΛΟΥ stop_loss — μόνο το tick-based checkTick το είχε. Ελέγχεται εδώ, ΠΡΙΝ από
+    // tier2/tier1/trailing, ίδια προτεραιότητα με το checkTick: το -50% από entry είναι
+    // καθαρή προστασία downside, ανεξάρτητη από το αν το trailing έχει ήδη ενεργοποιηθεί.
+    if (candle.low <= stopLossPrice) {
+      // Math.min εδώ σημαίνει "ποτέ καλύτερα από το threshold" — βλ. σχόλιο στο docstring
+      // πιο πάνω. Ένα 1-λεπτο candle συχνά προσπερνάει κατά πολύ το -50%.
+      return { exitReason: 'stop_loss', exitPrice: Math.min(stopLossPrice, candle.low), exitAt: candleTime };
+    }
+
     if (!trailingActive && candle.high >= tier2ActivationPrice) {
       // Το candle δείχνει ότι η τιμή έφτασε ΚΑΙ τα δύο thresholds μέσα στο ίδιο,
       // αδρό παράθυρο — προτιμάμε "συνέχισε ανοδικά" (trailing) αντί για "σταμάτησε
@@ -207,7 +237,10 @@ export function resolveExit(input: ExitCheckInput): ExitCheckResult | null {
     if (trailingActive) {
       const stopPrice = peakSinceActivation * (1 - EXIT_TIER_2_DRAWDOWN_PCT);
       if (candle.low <= stopPrice) {
-        return { exitReason: 'trailing_stop', exitPrice: stopPrice, exitAt: candleTime };
+        // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #2, candle-based μισό): πριν καταγράφαμε
+        // πάντα το threshold (stopPrice), ποτέ το πραγματικό candle.low — ίδια διόρθωση
+        // με το stop_loss πιο πάνω και με το checkTick.
+        return { exitReason: 'trailing_stop', exitPrice: Math.min(stopPrice, candle.low), exitAt: candleTime };
       }
     }
   }

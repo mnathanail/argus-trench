@@ -2,6 +2,7 @@ import { findPassedTokens, recordTrigger, linkTrade } from '../db/repositories/d
 import { openTrade, countOpenTrades, setNativeOrderState } from '../db/repositories/paperTrades.js';
 import { getWallet, type WatchlistWallet } from '../db/repositories/watchlistWallets.js';
 import { logicVersion, PHASE1_THRESHOLDS } from '../decision/gateConfig.js';
+import { applyEntrySlippage } from '../decision/pnl.js';
 import {
   PAPER_ASSUMED_LATENCY_MS,
   PAPER_ASSUMED_SLIPPAGE_PCT,
@@ -117,7 +118,12 @@ export async function handleRealtimeEntryEvent(
   if (decisionLogId === null) return null; // π.χ. race με ήδη υπάρχον ανοιχτό trade στο ίδιο ζευγάρι
 
   const live = await attemptLiveEntry(event.mint);
-  const finalEntryPrice = live.entryPrice ?? decision.entryPrice;
+  // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #3): το live.entryPrice είναι ΗΔΗ η πραγματική,
+  // εκτελεσμένη τιμή — καμία προσομοίωση δε χρειάζεται ή πρέπει να εφαρμοστεί εκεί. Η
+  // ωμή, παρατηρημένη τιμή του σήματος (decision.entryPrice) εφαρμόζεται ΜΟΝΟ όταν η
+  // θέση είναι paper/log_only — βλ. applyEntrySlippage στο pnl.ts.
+  const finalEntryPrice =
+    live.entryPrice ?? applyEntrySlippage(decision.entryPrice, PAPER_ASSUMED_SLIPPAGE_PCT);
 
   const tradeId = await openTrade({
     decisionLogId,

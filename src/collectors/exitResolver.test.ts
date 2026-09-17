@@ -29,7 +29,7 @@ test('resolveExit: closes at tp_tier_1 when high reaches +50%, ignoring later ca
   assert.equal(result?.exitAt.getTime(), candles[1]?.timestamp ?? NaN);
 });
 
-test('resolveExit: activates trailing at +100%, then closes at -40% from the post-activation peak', () => {
+test('resolveExit: activates trailing at +100%, then closes at -40% from the post-activation peak, at the OBSERVED candle.low (not the threshold)', () => {
   const candles: Candle[] = [
     candle(60, 2.0, 1.9), // activates trailing at peak=2.0 (skips tier 1 by jumping straight to +100%)
     candle(120, 2.5, 2.4), // new peak 2.5 → stop now at 1.5
@@ -37,7 +37,66 @@ test('resolveExit: activates trailing at +100%, then closes at -40% from the pos
   ];
   const result = resolveExit({ entryPrice: ENTRY_PRICE, entryAt: ENTRY_AT, candles, walletSellAt: null, now: ENTRY_AT });
   assert.equal(result?.exitReason, 'trailing_stop');
-  assert.equal(result?.exitPrice, 1.5);
+  // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #2, candle-based μισό): πριν καταγράφαμε πάντα το
+  // threshold (1.5) — τώρα Math.min(threshold, candle.low) = min(1.5, 1.4) = 1.4, η
+  // πραγματική, χειρότερη τιμή που "είδε" το candle.
+  assert.equal(result?.exitPrice, 1.4);
+});
+
+test('resolveExit: trailing_stop records the threshold when candle.low lands exactly on it (min(threshold, observed) === threshold)', () => {
+  const candles: Candle[] = [
+    candle(60, 2.0, 1.9),
+    candle(120, 2.5, 2.4), // peak 2.5 → stop at 1.5
+    candle(180, 2.4, 1.5), // low lands exactly on the stop level
+  ];
+  const result = resolveExit({ entryPrice: ENTRY_PRICE, entryAt: ENTRY_AT, candles, walletSellAt: null, now: ENTRY_AT });
+  assert.equal(result?.exitReason, 'trailing_stop');
+  assert.ok(Math.abs((result?.exitPrice ?? 0) - 1.5) < 1e-9);
+});
+
+// --- stop_loss: νέο 2026-09-17 (review εύρημα #4) — πριν αυτό το candle-based engine
+// δεν είχε ΚΑΘΟΛΟΥ stop_loss, μόνο το tick-based checkTick το είχε -----------------------
+
+test('resolveExit: a candle.low crossing -50% from entry triggers stop_loss, at the observed low (real pump.fun crash scenario)', () => {
+  const candles: Candle[] = [
+    candle(60, 1.05, 0.95), // κοντά στο entry, καμία επίδραση
+    candle(120, 0.6, 0.28), // κατάρρευση: low 0.28 προσπερνάει κατά πολύ το -50% (0.5)
+  ];
+  const result = resolveExit({ entryPrice: ENTRY_PRICE, entryAt: ENTRY_AT, candles, walletSellAt: null, now: ENTRY_AT });
+  assert.equal(result?.exitReason, 'stop_loss');
+  assert.equal(result?.exitPrice, 0.28, 'πρέπει να καταγραφεί η πραγματική τιμή, όχι το αισιόδοξο -50%');
+  assert.equal(result?.exitAt.getTime(), candles[1]?.timestamp ?? NaN);
+});
+
+test('resolveExit: stop_loss records the threshold when candle.low lands exactly on it', () => {
+  const candles: Candle[] = [candle(60, 1.05, 0.5)];
+  const result = resolveExit({ entryPrice: ENTRY_PRICE, entryAt: ENTRY_AT, candles, walletSellAt: null, now: ENTRY_AT });
+  assert.equal(result?.exitReason, 'stop_loss');
+  assert.equal(result?.exitPrice, 0.5);
+});
+
+test('resolveExit: stop_loss takes priority over tier hits in the same candle (checked first, per priority order)', () => {
+  // Ακραίο σενάριο: το ίδιο candle έχει high που θα πυροδοτούσε tp_tier_1 ΚΑΙ low που
+  // πυροδοτεί stop_loss (μεγάλο εύρος μέσα στο ίδιο 1-λεπτο candle) — stop_loss πρέπει να
+  // κερδίσει, ίδια προτεραιότητα με το checkTick.
+  const candles: Candle[] = [candle(60, 1.6, 0.4)];
+  const result = resolveExit({ entryPrice: ENTRY_PRICE, entryAt: ENTRY_AT, candles, walletSellAt: null, now: ENTRY_AT });
+  assert.equal(result?.exitReason, 'stop_loss');
+});
+
+test('resolveExit: stop_loss is checked from ENTRY, not from peak — even after trailing has activated', () => {
+  const candles: Candle[] = [
+    candle(60, 3.0, 2.9), // ενεργοποιεί trailing, peak=3.0
+    candle(120, 2.0, 0.4), // κατάρρευση κάτω από το 0.5 του ΑΡΧΙΚΟΥ entry
+  ];
+  const result = resolveExit({ entryPrice: ENTRY_PRICE, entryAt: ENTRY_AT, candles, walletSellAt: null, now: ENTRY_AT });
+  assert.equal(result?.exitReason, 'stop_loss');
+});
+
+test('resolveExit: a candle.low that stays above the stop-loss threshold does not trigger it', () => {
+  const candles: Candle[] = [candle(60, 1.1, 0.51)]; // λίγο πάνω από το -50% όριο
+  const result = resolveExit({ entryPrice: ENTRY_PRICE, entryAt: ENTRY_AT, candles, walletSellAt: null, now: ENTRY_AT });
+  assert.notEqual(result?.exitReason, 'stop_loss');
 });
 
 test('resolveExit: wallet exit_signal takes priority over a tier hit in the same candle', () => {

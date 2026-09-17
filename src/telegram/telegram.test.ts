@@ -390,6 +390,7 @@ test('/leaderboard shows full (uncut) address, name, and our own result per wall
         address: ADDRESS,
         name: 'chriskogias',
         closedTrades: 12,
+        noMarketDataTrades: 0,
         openTrades: 2,
         wins: 9,
         totalProfitSol: 4.8235,
@@ -400,6 +401,7 @@ test('/leaderboard shows full (uncut) address, name, and our own result per wall
         address: 'BAdWalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
         name: null,
         closedTrades: 5,
+        noMarketDataTrades: 0,
         openTrades: 0,
         wins: 1,
         totalProfitSol: -0.15,
@@ -417,6 +419,28 @@ test('/leaderboard shows full (uncut) address, name, and our own result per wall
   // Δεύτερο wallet: χωρίς γνωστό όνομα — μόνο η διεύθυνση, ζημιογόνο (χωρίς + στο SOL).
   assert.match(reply, /2\. BAdWalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/);
   assert.match(reply, /Σ -0\.1500 SOL \(-15\.0%\)/);
+});
+
+test('/leaderboard: no_market_data trades are called out explicitly, not silently folded into "closed"', async () => {
+  const deps = stubDeps();
+  deps.getWalletLeaderboard = () =>
+    Promise.resolve([
+      {
+        address: ADDRESS,
+        name: null,
+        closedTrades: 10,
+        noMarketDataTrades: 4,
+        openTrades: 0,
+        wins: 3,
+        totalProfitSol: -0.2,
+        totalPnlPct: -1.5,
+        avgPnlPct: -0.15,
+      },
+    ]);
+
+  const reply = await handleCommand('/leaderboard', deps);
+  // review εύρημα #6: ζητούσε ρητό, ξεχωριστό bucket αντί για σιωπηλή εξαίρεση.
+  assert.match(reply, /4 χωρίς market data/);
 });
 
 test('/leaderboard accepts an explicit N, clamped to a sane maximum', async () => {

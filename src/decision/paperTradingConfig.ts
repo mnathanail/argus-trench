@@ -15,7 +15,18 @@ export const PAPER_POSITION_SIZE_PCT = 0.01;
 
 export const PAPER_ASSUMED_SLIPPAGE_PCT = 0.03;
 export const PAPER_ASSUMED_LATENCY_MS = 3_000;
-export const PAPER_ASSUMED_FEES_PCT = 0.01;
+
+/**
+ * ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #5): ανέβηκε από 1% σε 2%. Το 1% δεν κάλυπτε καν το
+ * pump.fun's δικό του ~1% ανά πλευρά (είσοδος+έξοδος οπότε ~2% μόνο απ' αυτό), πόσο
+ * μάλλον το GMGN routing fee, το `--auto-slippage` και τα priority/tip fees στο swap.ts.
+ * Σε μια μικρή θέση (π.χ. 0.05 SOL) τα fixed κόστη (tip/priority) είναι ένα σημαντικό
+ * ποσοστό. Το 2% παραμένει συντηρητική εκτίμηση, ΟΧΙ μετρημένο νούμερο — δεν υπάρχει
+ * ακόμα αρκετό δείγμα κλεισμένων live trades ώστε να παραχθεί αξιόπιστα ένα πραγματικό
+ * round-trip fee από `actual_entry_amount_sol` έναντι του ονομαστικού μεγέθους θέσης.
+ * Να αναθεωρηθεί όταν υπάρχουν αρκετά live δεδομένα.
+ */
+export const PAPER_ASSUMED_FEES_PCT = 0.02;
 
 /**
  * Exit plan, ίδιο με το `condition_orders_json` που αποθηκεύεται στο entry — δύο

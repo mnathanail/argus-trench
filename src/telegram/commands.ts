@@ -284,15 +284,19 @@ async function leaderboard(argument: string | undefined, deps: CommandDeps): Pro
     const totalSol = `${e.totalProfitSol >= 0 ? '+' : ''}${e.totalProfitSol.toFixed(4)} SOL`;
     const totalPct = formatPercent(e.totalPnlPct, true);
     const avgPct = e.avgPnlPct === null ? '—' : formatPercent(e.avgPnlPct, true);
+    // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #6): το no_market_data μετράει ήδη ως ζημιά
+    // στα wins/win-rate/μ.ο. πιο πάνω — εδώ απλά το κάνουμε ρητό στο μήνυμα, ώστε να
+    // μη μοιάζει ο αριθμός "closed" με καθαρά αποφασισμένα αποτελέσματα.
+    const noMarketDataSuffix = e.noMarketDataTrades > 0 ? `, ${e.noMarketDataTrades} χωρίς market data` : '';
     return (
       `${index + 1}. ${label}\n` +
-      `   ${e.closedTrades} closed (${e.wins}W/${e.closedTrades - e.wins}L, win ${winRate}) | ${e.openTrades} ανοιχτά\n` +
+      `   ${e.closedTrades} closed (${e.wins}W/${e.closedTrades - e.wins}L, win ${winRate}${noMarketDataSuffix}) | ${e.openTrades} ανοιχτά\n` +
       `   Σ ${totalSol} (${totalPct}) | μ.ο. ${avgPct}/trade`
     );
   });
 
   return [
-    `Top ${entries.length} wallets — ΔΙΚΟ ΜΑΣ αποτέλεσμα ακολουθώντας το σήμα τους (log_only, Φάση 1):`,
+    `Top ${entries.length} wallets — ΔΙΚΟ ΜΑΣ υποθετικό αποτέλεσμα ακολουθώντας το σήμα τους (paper/log_only, ΟΧΙ live):`,
     ...rows,
   ].join('\n');
 }

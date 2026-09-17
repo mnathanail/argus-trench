@@ -39,7 +39,7 @@ test('checkTick: price jumps directly to +150% in one tick — activates trailin
   assert.equal(result.newPeakPriceSinceEntry, 2.5);
 });
 
-test('checkTick: once trailing is active (persisted from a previous tick), a 40% drop from peak triggers trailing_stop', () => {
+test('checkTick: once trailing is active (persisted from a previous tick), a 40% drop from peak triggers trailing_stop at the OBSERVED price (just below the stop level), not the threshold', () => {
   const result = checkTick({
     entryPrice: ENTRY_PRICE,
     peakPriceSinceEntry: 3.0, // peak από προηγούμενα ticks
@@ -47,8 +47,35 @@ test('checkTick: once trailing is active (persisted from a previous tick), a 40%
     currentPrice: 1.79, // κάτω από 3.0*(1-0.4)=1.8
   });
   assert.equal(result.exit?.exitReason, 'trailing_stop');
-  // Ανοχή floating-point: 3.0*(1-0.4) δεν είναι ακριβώς 1.8 σε IEEE 754.
-  assert.ok(Math.abs((result.exit?.exitPrice ?? 0) - 1.8) < 1e-9);
+  assert.equal(result.exit?.exitPrice, 1.79);
+});
+
+test('checkTick: trailing_stop records the threshold when the tick lands exactly on it (min(threshold, observed) === threshold)', () => {
+  const peak = 3.0;
+  // Υπολογισμένο με ΤΗΝ ΙΔΙΑ έκφραση που χρησιμοποιεί το checkTick (peak * (1 -
+  // EXIT_TIER_2_DRAWDOWN_PCT)) — ΟΧΙ ένα ανεξάρτητο literal (π.χ. 1.8), που θα μπορούσε
+  // να διαφέρει στο τελευταίο floating-point bit (3.0*(1-0.4) === 1.7999999999999998,
+  // όχι ακριβώς 1.8) και να κάνει το "ακριβώς στο threshold" σενάριο tests-only illusion.
+  const stopPrice = peak * (1 - 0.4);
+  const result = checkTick({
+    entryPrice: ENTRY_PRICE,
+    peakPriceSinceEntry: peak,
+    trailingActive: true,
+    currentPrice: stopPrice,
+  });
+  assert.equal(result.exit?.exitReason, 'trailing_stop');
+  assert.ok(Math.abs((result.exit?.exitPrice ?? 0) - stopPrice) < 1e-9);
+});
+
+test('checkTick: trailing_stop records the worse, observed price when the drop overshoots the threshold (real pump.fun collapse scenario)', () => {
+  const result = checkTick({
+    entryPrice: ENTRY_PRICE,
+    peakPriceSinceEntry: 3.0, // stop level = 1.8
+    trailingActive: true,
+    currentPrice: 1.2, // η τιμή προσπέρασε κατά πολύ το -40% από peak μέχρι το επόμενο tick
+  });
+  assert.equal(result.exit?.exitReason, 'trailing_stop');
+  assert.equal(result.exit?.exitPrice, 1.2, 'το paper P&L πρέπει να καταγράψει την πραγματική, χειρότερη τιμή — όχι το αισιόδοξο threshold');
 });
 
 test('checkTick: trailing active, price still above the stop — stays open, peak does not decrease', () => {
@@ -105,7 +132,8 @@ test('checkTick: a sequence of ticks — activation, new peak, then a drop that 
   assert.equal(state.exit, null);
   assert.equal(state.newPeakPriceSinceEntry, 3.0);
 
-  // tick 3: πέφτει στο 1.7 — κάτω από 3.0*(1-0.4)=1.8, πρέπει να κλείσει
+  // tick 3: πέφτει στο 1.7 — κάτω από 3.0*(1-0.4)=1.8, πρέπει να κλείσει στην πραγματική,
+  // παρατηρημένη τιμή (1.7), όχι στο threshold (1.8).
   state = checkTick({
     entryPrice: ENTRY_PRICE,
     peakPriceSinceEntry: state.newPeakPriceSinceEntry,
@@ -113,12 +141,12 @@ test('checkTick: a sequence of ticks — activation, new peak, then a drop that 
     currentPrice: 1.7,
   });
   assert.equal(state.exit?.exitReason, 'trailing_stop');
-  assert.ok(Math.abs((state.exit?.exitPrice ?? 0) - 1.8) < 1e-9);
+  assert.equal(state.exit?.exitPrice, 1.7);
 });
 
 // --- stop_loss: νέο 2026-09-11, πρώτη φορά πραγματικό κεφάλαιο ---------------------
 
-test('checkTick: a 50% drop from entry triggers stop_loss', () => {
+test('checkTick: a 50% drop from entry triggers stop_loss at the threshold when the tick lands exactly on it', () => {
   const result = checkTick({
     entryPrice: ENTRY_PRICE,
     peakPriceSinceEntry: null,
@@ -127,6 +155,17 @@ test('checkTick: a 50% drop from entry triggers stop_loss', () => {
   });
   assert.equal(result.exit?.exitReason, 'stop_loss');
   assert.equal(result.exit?.exitPrice, 0.5);
+});
+
+test('checkTick: stop_loss records the worse, observed price when the crash overshoots -50% (real pump.fun scenario, review finding)', () => {
+  const result = checkTick({
+    entryPrice: ENTRY_PRICE,
+    peakPriceSinceEntry: null,
+    trailingActive: false,
+    currentPrice: 0.28, // -72%, η κατάρρευση προσπέρασε κατά πολύ το -50% threshold
+  });
+  assert.equal(result.exit?.exitReason, 'stop_loss');
+  assert.equal(result.exit?.exitPrice, 0.28, 'πρέπει να καταγραφεί η πραγματική τιμή, όχι το αισιόδοξο -50%');
 });
 
 test('checkTick: a drop that stays above the stop-loss threshold does not trigger it', () => {
@@ -160,5 +199,6 @@ test('checkTick: stop_loss takes priority even on the very first tick, before an
     currentPrice: 0.3, // βαθιά κάτω από όλα τα thresholds
   });
   assert.equal(result.exit?.exitReason, 'stop_loss');
-  assert.equal(result.exit?.exitPrice, 0.5); // πάντα στο -50% όριο, όχι στην ωμή τιμή του tick
+  // Παρατηρημένη τιμή (0.3), όχι το -50% όριο — βλ. διόρθωση 2026-09-17 πιο πάνω.
+  assert.equal(result.exit?.exitPrice, 0.3);
 });

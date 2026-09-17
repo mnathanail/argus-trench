@@ -497,16 +497,25 @@ export interface WalletLeaderboardEntry {
   address: string;
   /** Γνωστό όνομα κατόχου (migration 0008), NULL αν δεν το ξέρουμε. */
   name: string | null;
-  /** Πόσα από τα ΔΙΚΑ ΜΑΣ trades που πυροδότησε αυτό το wallet έχουν κλείσει με γνωστό
-   * αποτέλεσμα — `no_market_data` (pnl_pct=NULL) ΔΕΝ μετράει, δεν κουβαλάει πληροφορία
-   * για το αν αξίζει να το ακολουθούμε. */
+  /** ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #6): πριν, `no_market_data` (pnl_pct=NULL)
+   * εξαιρούνταν εντελώς — αλλά αυτά είναι σχεδόν σίγουρες total losses (νεκρό/χωρίς
+   * liquidity token), ΟΧΙ "δεν έχουμε ακόμα αποτέλεσμα". Εξαιρώντας τα, το win rate και
+   * το μ.ο. pnl_pct διογκώνονταν τεχνητά. Τώρα μετράνε ΚΑΙ αυτά ΚΑΙ στο closedTrades ΚΑΙ
+   * ως ζημιά στο winRate/avgPnlPct (βλ. SQL: COALESCE(pnl_pct, -1) στο AVG/SUM, ΔΕΝ
+   * μετράνε ποτέ ως win). Το `noMarketDataTrades` παραμένει ξεχωριστό, ρητό bucket —
+   * όχι κρυμμένο μέσα στο σύνολο χωρίς εξήγηση. */
   closedTrades: number;
+  /** Πόσα από τα closedTrades ήταν `no_market_data` (νεκρό token, καμία τιμή ποτέ) —
+   * υπο-σύνολο του closedTrades, ήδη μετρημένο ως ζημιά στα wins/totalPnlPct/avgPnlPct. */
+  noMarketDataTrades: number;
   /** Πόσα ακόμα περιμένουν αποτέλεσμα — context, ΔΕΝ μετράει στα παρακάτω νούμερα. */
   openTrades: number;
   wins: number;
   /** Το ΔΙΚΟ ΜΑΣ αθροιστικό αποτέλεσμα σε SOL — εξαρτάται από το τρέχον
    * PAPER_BANKROLL_SOL (ακόμα placeholder τη στιγμή που γράφτηκε αυτό), ΟΧΙ από το
-   * πραγματικό PnL του ίδιου του wallet στο GMGN. */
+   * πραγματικό PnL του ίδιου του wallet στο GMGN. ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα
+   * #6): τώρα μόνο mode IN ('paper','log_only') — πριν ανακάτευε πραγματικό live SOL με
+   * υποθετικό paper SOL πάνω σε δύο διαφορετικές βάσεις μεγέθους θέσης. */
   totalProfitSol: number;
   /** Άθροισμα των pnl_pct — η ίδια πληροφορία με το SOL παραπάνω, χωρίς την εξάρτηση
    * από το bankroll assumption. */
@@ -531,26 +540,38 @@ export async function getWalletLeaderboard(
     address: string;
     name: string | null;
     closed_trades: string;
+    no_market_data_trades: string;
     open_trades: string;
     wins: string;
     total_profit_sol: string;
     total_pnl_pct: string;
     avg_pnl_pct: string | null;
   }>(
+    // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #6):
+    //  - `mode IN ('paper','log_only')` — αυτό το leaderboard απαντάει "πόσο θα
+    //    είχαμε κερδίσει/χάσει ΕΜΕΙΣ υποθετικά ακολουθώντας το wallet" (βλ. σχόλιο
+    //    στο interface πιο πάνω) — mode='live' έχει ΔΙΚΟ ΤΟΥ πραγματικό κεφάλαιο σε
+    //    διαφορετική βάση μεγέθους θέσης, δε μπελέκει εδώ.
+    //  - COALESCE(pt.pnl_pct, -1) στο wins/SUM/AVG: ένα `no_market_data` trade δεν έχει
+    //    ΠΟΤΕ pnl_pct, αλλά είναι σχεδόν σίγουρη ολική ζημιά (νεκρό/χωρίς liquidity
+    //    token) — πριν εξαιρούνταν εντελώς, διογκώνοντας τεχνητά win rate/avg pnl.
+    //    Το -1 (=-100%) το μετράει ως πλήρη ζημιά χωρίς να χρειάζεται μαντεμένο ποσοστό.
     `SELECT dl.trigger_wallet_address AS address,
             w.name,
-            COUNT(*) FILTER (WHERE pt.status = 'closed' AND pt.pnl_pct IS NOT NULL) AS closed_trades,
+            COUNT(*) FILTER (WHERE pt.status = 'closed') AS closed_trades,
+            COUNT(*) FILTER (WHERE pt.status = 'closed' AND pt.pnl_pct IS NULL) AS no_market_data_trades,
             COUNT(*) FILTER (WHERE pt.status = 'open') AS open_trades,
             COUNT(*) FILTER (WHERE pt.status = 'closed' AND pt.pnl_pct > 0) AS wins,
             COALESCE(SUM(pt.pnl_sol) FILTER (WHERE pt.status = 'closed'), 0) AS total_profit_sol,
-            COALESCE(SUM(pt.pnl_pct) FILTER (WHERE pt.status = 'closed'), 0) AS total_pnl_pct,
-            AVG(pt.pnl_pct) FILTER (WHERE pt.status = 'closed') AS avg_pnl_pct
+            COALESCE(SUM(COALESCE(pt.pnl_pct, -1)) FILTER (WHERE pt.status = 'closed'), 0) AS total_pnl_pct,
+            AVG(COALESCE(pt.pnl_pct, -1)) FILTER (WHERE pt.status = 'closed') AS avg_pnl_pct
        FROM paper_trades pt
        JOIN decision_log dl ON dl.id = pt.decision_log_id
        LEFT JOIN watchlist_wallets w ON w.address = dl.trigger_wallet_address
       WHERE dl.trigger_wallet_address IS NOT NULL
+        AND pt.mode IN ('paper', 'log_only')
       GROUP BY dl.trigger_wallet_address, w.name
-     HAVING COUNT(*) FILTER (WHERE pt.status = 'closed' AND pt.pnl_pct IS NOT NULL) > 0
+     HAVING COUNT(*) FILTER (WHERE pt.status = 'closed') > 0
       ORDER BY total_profit_sol DESC
       LIMIT $1`,
     [limit],
@@ -559,6 +580,7 @@ export async function getWalletLeaderboard(
     address: row.address,
     name: row.name,
     closedTrades: toNum(row.closed_trades),
+    noMarketDataTrades: toNum(row.no_market_data_trades),
     openTrades: toNum(row.open_trades),
     wins: toNum(row.wins),
     totalProfitSol: toNum(row.total_profit_sol),

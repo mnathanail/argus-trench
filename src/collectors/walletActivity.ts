@@ -15,6 +15,7 @@ import {
 import { PHASE1_THRESHOLDS, logicVersion } from '../decision/gateConfig.js';
 import { subscribeForNewTrade } from '../realtime/subscriptionManager.js';
 import type { PumpPortalConnection } from '../realtime/pumpportalConnection.js';
+import { applyEntrySlippage } from '../decision/pnl.js';
 import {
   PAPER_ASSUMED_LATENCY_MS,
   PAPER_ASSUMED_SLIPPAGE_PCT,
@@ -96,7 +97,11 @@ export async function runWalletActivityCycle(
 
       // 'price' έρχεται από το ήδη-fetched gate_snapshot_json — ΟΧΙ φρέσκο call, ακριβώς
       // όπως ορίστηκε: δε ρισκάρουμε επιπλέον GMGN weight μόνο για ένα simulated entry.
-      const entryPrice = toNumberOrNull(gateSnapshot['price'], 'gate_snapshot.price');
+      const rawEntryPrice = toNumberOrNull(gateSnapshot['price'], 'gate_snapshot.price');
+      // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #3, βλ. applyEntrySlippage στο pnl.ts) — μόνο
+      // όταν υπάρχει πραγματική τιμή· 0 (κράτημα θέσης για λείπον gate_snapshot.price)
+      // παραμένει 0, δε γίνεται ψευδώς "χειρότερο".
+      const entryPrice = rawEntryPrice === null ? null : applyEntrySlippage(rawEntryPrice, PAPER_ASSUMED_SLIPPAGE_PCT);
       const simulatedEntryAmountSol = PAPER_BANKROLL_SOL * PAPER_POSITION_SIZE_PCT;
 
       const recorded = await recordSignal(
