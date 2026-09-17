@@ -223,13 +223,26 @@ export async function listOpenTrades(limit?: number, conn?: Queryable): Promise<
  * tokens κάθε φορά. Ίδιο pattern με `selectWalletsForActivityCheck` (migration 0005):
  * self-healing, καμία κατάσταση διεργασίας να χαθεί σε restart.
  */
+/**
+ * ΜΟΝΟ paper/log_only — ΠΟΤΕ mode='live' (κρίσιμη διόρθωση 2026-09-17, πραγματικό
+ * incident): αυτό το periodic, GMGN-kline-based resolver υπολογίζει pnl με καθαρή
+ * ΠΡΟΣΟΜΟΙΩΣΗ (computePnl, ποσοστιαία) — ΔΕΝ εκτελεί ποτέ πραγματικό swap. Πριν αυτή τη
+ * διόρθωση, ΔΕΝ φιλτράριζε καθόλου με βάση το mode: ένα live trade που έφτανε εδώ
+ * (π.χ. αν το realtime exit-handler δεν πρόλαβε πρώτο) κλεινόταν στη βάση μας με
+ * φανταστικό, υποθετικό κέρδος — ΧΩΡΙΣ να πουληθεί ποτέ πραγματικά το token. Η
+ * πραγματική θέση έμενε ανοιχτή on-chain, εντελώς εκτός παρακολούθησης, ενώ η βάση μας
+ * έλεγε "closed". Επιβεβαιωμένο σε πραγματικό trade (#1193): DB έδειχνε +6431% κέρδος
+ * (actual_exit_amount_sol=NULL — ποτέ δεν καταγράφηκε πραγματική πώληση), ενώ το ίδιο
+ * το GMGN έδειχνε την πραγματική θέση ακόμα ανοιχτή, σε -52.5%. Τα live trades ΠΡΕΠΕΙ
+ * να κλείνουν ΑΠΟΚΛΕΙΣΤΙΚΑ μέσω του realtimeExitHandler's πραγματικού swap path.
+ */
 export async function selectOpenTradesForCheck(
   limit: number,
   conn?: Queryable,
 ): Promise<PaperTrade[]> {
   const { rows } = await db(conn).query<TradeRow>(
     `SELECT ${COLUMNS} FROM paper_trades
-      WHERE status = 'open'
+      WHERE status = 'open' AND mode != 'live'
       ORDER BY last_checked_at ASC NULLS FIRST
       LIMIT $1`,
     [limit],

@@ -20,6 +20,7 @@ import {
   markExitAttemptStarted,
   markNeedsManualExit,
   openTrade,
+  selectOpenTradesForCheck,
 } from './paperTrades.js';
 import { recordExecutionError } from './tradeExecutionErrors.js';
 import { reserveLiveCapital, releaseLiveCapital } from './liveTradingState.js';
@@ -803,5 +804,54 @@ test('releaseLiveCapital never goes negative, even on a mismatched/duplicate rel
     await releaseLiveCapital(0.05, tx); // δεύτερο, «περιττό» release — δεν πρέπει να πάει αρνητικό
     const { rows } = await tx.query(`SELECT reserved_sol FROM live_trading_state WHERE id = 1`);
     assert.equal(Number(rows[0]?.reserved_sol), 0);
+  });
+});
+
+// selectOpenTradesForCheck — πραγματικό incident 2026-09-17: το periodic, GMGN-kline-
+// based exit-resolver δεν φιλτράριζε καθόλου με βάση το mode — ένα live trade θα
+// μπορούσε να κλειστεί με καθαρά υποθετικό pnl (computePnl), ΧΩΡΙΣ ποτέ να εκτελεστεί
+// πραγματικό swap, αφήνοντας την πραγματική θέση ανοιχτή on-chain, εντελώς εκτός
+// παρακολούθησης, ενώ η βάση μας λανθασμένα την έδειχνε "closed".
+
+test('selectOpenTradesForCheck NEVER returns a mode=live trade — only the realtime handler may close those, via a real swap', async () => {
+  await inRollback(async (tx) => {
+    const liveDecisionId = await insertDecision({ ...baseDecision, tokenAddress: 'LiveTokenAAAAAAAAAAAAAAAAAAAAAAAAAAAA1', decision: 'entered' }, tx);
+    const liveTradeId = await openTrade(
+      {
+        decisionLogId: liveDecisionId,
+        tokenAddress: 'LiveTokenAAAAAAAAAAAAAAAAAAAAAAAAAAAA1',
+        mode: 'live',
+        intendedSizePct: 0.05,
+        bankrollAtEntry: 1,
+        simulatedEntryPrice: 1,
+        simulatedEntryAmountSol: 0.05,
+        actualEntryAmountSol: 0.052,
+        assumedSlippagePct: 0.5,
+        assumedLatencyMs: 200,
+      },
+      tx,
+    );
+
+    const paperDecisionId = await insertDecision({ ...baseDecision, tokenAddress: 'PaperTokenBBBBBBBBBBBBBBBBBBBBBBBBBBB2', decision: 'entered' }, tx);
+    const paperTradeId = await openTrade(
+      {
+        decisionLogId: paperDecisionId,
+        tokenAddress: 'PaperTokenBBBBBBBBBBBBBBBBBBBBBBBBBBB2',
+        mode: 'log_only',
+        intendedSizePct: 0.01,
+        bankrollAtEntry: 10,
+        simulatedEntryPrice: 1,
+        simulatedEntryAmountSol: 0.1,
+        assumedSlippagePct: 0.02,
+        assumedLatencyMs: 400,
+      },
+      tx,
+    );
+
+    const results = await selectOpenTradesForCheck(1000, tx);
+    const ids = results.map((r) => r.id);
+
+    assert.ok(!ids.includes(liveTradeId), 'ΚΡΙΣΙΜΟ: ένα live trade δεν πρέπει ΠΟΤΕ να επιστραφεί εδώ');
+    assert.ok(ids.includes(paperTradeId), 'ένα κανονικό paper trade πρέπει να συνεχίσει να επιστρέφεται κανονικά');
   });
 });
