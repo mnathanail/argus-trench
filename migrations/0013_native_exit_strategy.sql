@@ -1,0 +1,25 @@
+-- Native GMGN condition-orders (server-side trailing-stop/stop-loss) για live trades,
+-- 2026-09-17 — απάντηση στο πραγματικό incident #1193 (βλ. σχόλια στο
+-- realtimeExitHandler.ts και paperTrades.ts's selectOpenTradesForCheck).
+--
+-- Το δικό μας websocket-based tracking (tickExit.ts) εξαρτάται εξ ολοκλήρου από το να
+-- είναι το δικό μας process ζωντανό ΚΑΙ το PumpPortal feed να καλύπτει το token —
+-- και τα δύο απέτυχαν ταυτόχρονα στο #1193. Το GMGN CLI υποστηρίζει ήδη native
+-- `profit_stop_trace`/`loss_stop` condition orders, που εκτελούνται στη ΔΙΚΗ ΤΟΥΣ
+-- υποδομή, ανεξάρτητα από το αν είμαστε online — αυτό γίνεται το πρωτεύον exit
+-- mechanism για live trades, με το δικό μας tracking ως watchdog/fallback.
+--
+-- `live_strategy_order_id`: το strategy_order_id που επέστρεψε το `swap
+-- --condition-orders` στο entry — NULL για paper/log_only, ή για live trades όπου η
+-- δημιουργία απέτυχε εντελώς (best-effort, βλ. SKILL.md).
+--
+-- `native_order_active`: true ΜΟΝΟ όταν επιβεβαιώσαμε (αμέσως μετά το entry, μέσω
+-- `order strategy list`) ότι το strategy είναι πράγματι `running` ΚΑΙ κανένα
+-- υπο-order δεν είναι `failed`. Όσο είναι true, το δικό μας realtime tracking
+-- (checkTick) ΔΕΝ αποφασίζει tier1/trailing/stop_loss για αυτό το trade — μόνο
+-- exit_signal/timeout, που το GMGN engine δεν ξέρει. Ο live strategy reconciler
+-- (νέο periodic collector) το γυρίζει σε false αν το strategy αποτύχει/σταματήσει
+-- χωρίς να κλείσει τη θέση — από εκεί και πέρα αναλαμβάνει πλήρως το δικό μας
+-- tracking, ακριβώς σαν να μην υπήρχε ποτέ native order.
+ALTER TABLE paper_trades ADD COLUMN live_strategy_order_id TEXT;
+ALTER TABLE paper_trades ADD COLUMN native_order_active BOOLEAN NOT NULL DEFAULT false;

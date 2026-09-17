@@ -174,3 +174,21 @@ export const WALLET_DISCOVERY_RETRY_BACKOFF_MS = [
  */
 export const DAILY_DIGEST_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Live strategy reconciler (2026-09-17, incident #1193 — βλ. migration 0013) — περιοδικά
+ * ελέγχει τα ελάχιστα, ήδη ανοιχτά `mode='live'` trades με ενεργό native GMGN order
+ * (`order strategy list`, weight 1/trade). Δεν χτίζει καν το candidate set από τίποτα
+ * βαρύ — μόνο τα λίγα (Φάση 4: 1-2 concurrent cap) trades που έχουν
+ * `native_order_active=true`. Αρκετά συχνό ώστε ένα πραγματικό close να ανιχνευτεί
+ * γρήγορα (επηρεάζει kill-switch/reserved-capital ελευθέρωση), αλλά ΟΧΙ tick-rate — αυτό
+ * είναι watchdog, όχι το πρωτεύον exit mechanism (αυτό το κάνει το GMGN engine, server-side).
+ */
+export const LIVE_STRATEGY_RECONCILER_INTERVAL_MS = 2 * 60 * 1000;
+export const LIVE_STRATEGY_RECONCILER_LOOP_PACING_MS = 500;
+export const LIVE_STRATEGY_RECONCILER_INITIAL_DELAY_MS = 20_000;
+export const LIVE_STRATEGY_RECONCILER_RETRY_BACKOFF_MS = [
+  60_000,
+  5 * 60_000,
+  15 * 60_000,
+] as const;
+

@@ -1,5 +1,5 @@
 import { findPassedTokens, recordTrigger, linkTrade } from '../db/repositories/decisionLog.js';
-import { openTrade, countOpenTrades } from '../db/repositories/paperTrades.js';
+import { openTrade, countOpenTrades, setNativeOrderState } from '../db/repositories/paperTrades.js';
 import { getWallet, type WatchlistWallet } from '../db/repositories/watchlistWallets.js';
 import { logicVersion, PHASE1_THRESHOLDS } from '../decision/gateConfig.js';
 import {
@@ -11,6 +11,7 @@ import {
   LIVE_POSITION_SIZE_PCT,
   LIVE_POSITION_SIZE_SOL,
   conditionOrdersJson,
+  liveExitConditionOrders,
 } from '../decision/paperTradingConfig.js';
 import { WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE } from '../collectors/intervals.js';
 import { attemptLiveEntry } from '../live/liveEntryExecution.js';
@@ -130,10 +131,20 @@ export async function handleRealtimeEntryEvent(
     actualEntryAmountSol: live.mode === 'live' ? (live.actualEntryAmountSol ?? undefined) : undefined,
     assumedSlippagePct: PAPER_ASSUMED_SLIPPAGE_PCT,
     assumedLatencyMs: PAPER_ASSUMED_LATENCY_MS,
-    conditionOrders: conditionOrdersJson(),
+    // live: ό,τι ΠΡΑΓΜΑΤΙΚΑ περάσαμε στο swap --condition-orders (βλ.
+    // liveEntryExecution.ts) — καταγραφή του τι ζητήθηκε, ΟΧΙ αν επιβεβαιώθηκε υγιές
+    // (αυτό ζει στο native_order_active). paper/log_only: το ίδιο theoretical plan όπως
+    // πριν, άσχετο με τη σημερινή αλλαγή.
+    conditionOrders: live.mode === 'live' ? liveExitConditionOrders() : conditionOrdersJson(),
     entryAt: new Date(), // πραγματικό realtime event — "τώρα" ΕΙΝΑΙ η πραγματική στιγμή
   });
   await linkTrade(decisionLogId, tradeId);
+  if (live.mode === 'live') {
+    await setNativeOrderState(tradeId, {
+      liveStrategyOrderId: live.liveStrategyOrderId,
+      nativeOrderActive: live.nativeOrderVerified,
+    });
+  }
 
   subscribeForNewTrade(connection, event.mint, wallet.address);
 

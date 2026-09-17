@@ -1,8 +1,9 @@
 import { fetchLiveSolWallet, getLiveSolBalance } from '../gmgn/portfolio.js';
 import { executeLiveBuy } from '../gmgn/swap.js';
+import { getStrategyOrder } from '../gmgn/strategyOrders.js';
 import { decideTradeMode } from '../decision/tradeMode.js';
 import { checkLiveRiskGate } from '../decision/liveRiskGate.js';
-import { LIVE_POSITION_SIZE_SOL } from '../decision/paperTradingConfig.js';
+import { LIVE_POSITION_SIZE_SOL, liveExitConditionOrders } from '../decision/paperTradingConfig.js';
 import { recordExecutionError } from '../db/repositories/tradeExecutionErrors.js';
 import { reserveLiveCapital, releaseLiveCapital } from '../db/repositories/liveTradingState.js';
 import type { TradeMode } from '../db/types.js';
@@ -14,9 +15,53 @@ export interface LiveEntryOutcome {
   /** Πραγματική εκτελεσμένη τιμή — μόνο όταν mode==='live'. Ο caller πέφτει στην
    * τιμή από το ίδιο το websocket event όταν αυτό είναι null. */
   entryPrice: number | null;
+  /** Το `strategy_order_id` του native GMGN trailing-stop/stop-loss order, ΜΟΝΟ όταν
+   * `nativeOrderVerified===true` (βλ. εκεί) — αλλιώς null, ο caller δεν το εμπιστεύεται. */
+  liveStrategyOrderId: string | null;
+  /** true ΜΟΝΟ όταν επιβεβαιώσαμε (`order strategy list`, αμέσως μετά το buy) ότι το
+   * native strategy είναι πράγματι `running` ΚΑΙ κανένα υπο-order δεν είναι `failed`.
+   * false σε ΚΑΘΕ άλλη περίπτωση (δεν ζητήθηκε, απέτυχε η δημιουργία, ή η δημιουργία
+   * "πέτυχε" αλλά η επιβεβαίωση δεν το βρήκε υγιές) — τότε το δικό μας realtime tracking
+   * (checkTick) παραμένει ο ΜΟΝΑΔΙΚΟΣ μηχανισμός προστασίας, ΑΚΡΙΒΩΣ όπως πριν. */
+  nativeOrderVerified: boolean;
 }
 
-const LOG_ONLY_OUTCOME: LiveEntryOutcome = { mode: 'log_only', actualEntryAmountSol: null, entryPrice: null };
+const LOG_ONLY_OUTCOME: LiveEntryOutcome = {
+  mode: 'log_only',
+  actualEntryAmountSol: null,
+  entryPrice: null,
+  liveStrategyOrderId: null,
+  nativeOrderVerified: false,
+};
+
+/** Πόσο περιμένουμε πριν το πρώτο verify poll — το strategy order χρειάζεται λίγο χρόνο
+ * να εμφανιστεί στο `order strategy list` μετά τη δημιουργία του (ίδιο σκεπτικό με το
+ * POLL_INTERVAL_MS του swap.ts, αλλά πιο σύντομο — ΔΕΝ μπλοκάρουμε το πλήρες entry flow
+ * για πολύ ώρα, το καλύτερο fallback (δικό μας tracking) είναι ήδη διαθέσιμο αμέσως). */
+const NATIVE_ORDER_VERIFY_DELAY_MS = 4_000;
+
+/**
+ * Αμέσως μετά από ένα επιτυχημένο buy με `--condition-orders`, επιβεβαιώνει ότι το
+ * native strategy όντως "έπιασε" — η δημιουργία του είναι best-effort (βλ. SKILL.md),
+ * άρα ΔΕΝ αρκεί να δούμε `strategy_order_id` στο swap response. Ποτέ δεν πετάει — μια
+ * αποτυχία εδώ σημαίνει απλά "δεν επιβεβαιώθηκε", ο caller πέφτει στο δικό μας tracking.
+ */
+async function verifyNativeOrder(
+  walletAddress: string,
+  tokenAddress: string,
+  strategyOrderId: string,
+): Promise<boolean> {
+  await new Promise((resolve) => setTimeout(resolve, NATIVE_ORDER_VERIFY_DELAY_MS));
+  try {
+    const strategy = await getStrategyOrder(walletAddress, tokenAddress, strategyOrderId);
+    if (strategy === null) return false;
+    if (strategy.strategyStatus !== 'running') return false;
+    if (strategy.conditionOrders.length === 0) return false;
+    return strategy.conditionOrders.every((sub) => sub.status !== 'failed');
+  } catch {
+    return false; // π.χ. rate limit — μην μπλοκάρεις το entry flow, απλά fallback
+  }
+}
 
 /**
  * Αποφασίζει live-ή-paper ΚΑΙ εκτελεί, με πλήρη πτώση σε 'log_only' σε ΚΑΘΕ αποτυχία —
@@ -59,12 +104,35 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
   if (!reserved) return LOG_ONLY_OUTCOME; // ένα σχεδόν-ταυτόχρονο σήμα μόλις δέσμευσε ό,τι έμενε
 
   try {
-    const result = await executeLiveBuy(wallet.address, tokenAddress, LIVE_POSITION_SIZE_SOL);
+    const result = await executeLiveBuy(
+      wallet.address,
+      tokenAddress,
+      LIVE_POSITION_SIZE_SOL,
+      {},
+      liveExitConditionOrders(),
+    );
     const balanceAfter = await getLiveSolBalance();
+    const nativeOrderVerified =
+      result.strategyOrderId !== null && (await verifyNativeOrder(wallet.address, tokenAddress, result.strategyOrderId));
+    if (result.strategyOrderId !== null && !nativeOrderVerified) {
+      // Η δημιουργία "πέτυχε" (είχαμε strategy_order_id) αλλά δεν επιβεβαιώθηκε υγιής —
+      // ΔΕΝ είναι σφάλμα του ίδιου του buy (η θέση ανοίχτηκε κανονικά), αλλά αξίζει
+      // καταγραφή: το δικό μας tracking είναι η μόνη προστασία εδώ, χρήσιμο να ξέρουμε
+      // ότι το native attach δεν έπιασε γι' αυτό το trade συγκεκριμένα.
+      await recordExecutionError({
+        paperTradeId: null,
+        tokenAddress,
+        action: 'buy',
+        amountSol: LIVE_POSITION_SIZE_SOL,
+        errorMessage: `native strategy order ${result.strategyOrderId} δεν επιβεβαιώθηκε υγιές μετά το entry — fallback στο δικό μας realtime tracking`,
+      });
+    }
     return {
       mode: 'live',
       actualEntryAmountSol: balance - balanceAfter,
       entryPrice: result.executedPrice,
+      liveStrategyOrderId: nativeOrderVerified ? result.strategyOrderId : null,
+      nativeOrderVerified,
     };
   } catch (error) {
     await recordExecutionError({

@@ -1,5 +1,6 @@
 import { runDiscoveryCycle } from './collectors/discovery.js';
 import { runExitResolverCycle } from './collectors/exitResolver.js';
+import { runLiveStrategyReconcilerCycle } from './collectors/liveStrategyReconciler.js';
 import { runDailyDigestCycle } from './collectors/dailyDigest.js';
 import {
   DISCOVERY_INTERVAL_MS,
@@ -15,6 +16,9 @@ import {
   WALLET_SCORING_INITIAL_DELAY_MS,
   WALLET_SCORING_RETRY_BACKOFF_MS,
   EXIT_RESOLVER_RETRY_BACKOFF_MS,
+  LIVE_STRATEGY_RECONCILER_INTERVAL_MS,
+  LIVE_STRATEGY_RECONCILER_INITIAL_DELAY_MS,
+  LIVE_STRATEGY_RECONCILER_RETRY_BACKOFF_MS,
 } from './collectors/intervals.js';
 import { runWalletScoringCycle } from './collectors/scoring.js';
 import { runWalletDiscoveryCycle } from './collectors/walletDiscovery.js';
@@ -237,6 +241,21 @@ const loops: LoopDefinition[] = [
       if (result.closed > 0) {
         await notify(`📉 ${result.closed} log_only trade(s) έκλεισαν — δες /trades για λεπτομέρειες`);
       }
+    },
+  },
+  {
+    name: 'live-strategy-reconciler',
+    intervalMs: LIVE_STRATEGY_RECONCILER_INTERVAL_MS,
+    initialDelayMs: LIVE_STRATEGY_RECONCILER_INITIAL_DELAY_MS,
+    retryBackoffMs: LIVE_STRATEGY_RECONCILER_RETRY_BACKOFF_MS,
+    run: async () => {
+      const result = await runLiveStrategyReconcilerCycle(realtimeConnection);
+      if (result.checked === 0 && result.failures === 0) return;
+      console.log(
+        `[live-strategy-reconciler] checked=${result.checked} closed=${result.closed} ` +
+          `fallback=${result.fallbackActivated} failures=${result.failures}`,
+      );
+      for (const alert of result.alerts) await notify(alert);
     },
   },
   {

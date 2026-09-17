@@ -38,6 +38,10 @@ export const ROUTE_WEIGHTS = {
   swap: 5,
   'order get': 1,
   'order quote': 2,
+  // Προστέθηκαν 2026-09-17 για το native condition-orders exit mechanism (live trades) —
+  // ίδια πηγή, ίδιος πίνακας βαρών.
+  'order strategy list': 1,
+  'order strategy cancel': 2,
 } as const;
 
 export type RouteKey = keyof typeof ROUTE_WEIGHTS;

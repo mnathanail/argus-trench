@@ -49,3 +49,21 @@ test('parseSwapResponse: a response with no fields at all defaults to pending, n
   assert.equal(result.filled, false);
   assert.equal(result.orderId, null);
 });
+
+// strategy_order_id — 2026-09-17, native condition-orders (incident #1193). Best-effort
+// creation: μπορεί να λείπει ακόμα κι όταν το ίδιο το swap πέτυχε πλήρως.
+
+test('parseSwapResponse: strategy_order_id extracted when present (condition-orders attach succeeded)', () => {
+  const result = parseSwapResponse({ order_id: 'ord-4', status: 'confirmed', strategy_order_id: 'strat-1' });
+  assert.equal(result.strategyOrderId, 'strat-1');
+});
+
+test('parseSwapResponse: strategyOrderId is null when the field is absent (no condition-orders requested)', () => {
+  const result = parseSwapResponse({ order_id: 'ord-5', status: 'confirmed' });
+  assert.equal(result.strategyOrderId, null);
+});
+
+test('parseSwapResponse: strategyOrderId is null when the field is an empty string (best-effort creation failed)', () => {
+  const result = parseSwapResponse({ order_id: 'ord-6', status: 'confirmed', strategy_order_id: '' });
+  assert.equal(result.strategyOrderId, null);
+});

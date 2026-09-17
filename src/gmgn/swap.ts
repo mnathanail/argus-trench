@@ -40,7 +40,18 @@ export interface SwapExecutionResult {
   txHash: string | null;
   /** report.price — πραγματική εκτελεσμένη τιμή, ΜΟΝΟ όταν filled. null αλλιώς. */
   executedPrice: number | null;
+  /** `strategy_order_id` — μόνο όταν περάσαμε `--condition-orders` ΚΑΙ η δημιουργία του
+   * strategy πέτυχε (best-effort, βλ. SKILL.md: "if the swap succeeds but strategy
+   * creation fails, the swap result is still returned"). null σε κάθε άλλη περίπτωση —
+   * ο caller ΠΡΕΠΕΙ να το αντιμετωπίσει σαν "χωρίς προστασία", ΟΧΙ σαν σφάλμα. */
+  strategyOrderId: string | null;
 }
+
+/** Ένα condition sub-order για `--condition-orders` (βλ. gmgn-swap SKILL.md). Δεν
+ * τυποποιούμε πλήρες το σχήμα εδώ (πολλά προαιρετικά fields ανά order_type) — απλά
+ * περνάμε ό,τι μας δώσει ο caller (βλ. `liveExitConditionOrders()` στο
+ * paperTradingConfig.ts) ως-έχει στο CLI. */
+export type ConditionOrder = Record<string, unknown>;
 
 /** Πετάει όταν το swap ρητά ΑΠΕΤΥΧΕ (error_code/status='failed'/'expired') — ο caller
  * ΔΕΝ πρέπει να καταγράψει θέση σε αυτή την περίπτωση. Ξεχωριστό από ένα ασαφές
@@ -81,7 +92,10 @@ export function parseSwapResponse(raw: unknown): SwapExecutionResult {
   const txHash = typeof obj['hash'] === 'string' ? obj['hash'] : null;
   const report = typeof obj['report'] === 'object' && obj['report'] !== null ? (obj['report'] as Record<string, unknown>) : null;
   const executedPrice = report !== null && typeof report['price'] === 'string' ? Number(report['price']) : null;
-  return { filled: FILLED_STATUSES.has(status), status, orderId, txHash, executedPrice };
+  const strategyOrderId = typeof obj['strategy_order_id'] === 'string' && obj['strategy_order_id'] !== ''
+    ? obj['strategy_order_id']
+    : null;
+  return { filled: FILLED_STATUSES.has(status), status, orderId, txHash, executedPrice, strategyOrderId };
 }
 
 /** Poll `order get` μέχρι τελικό status ή εξάντληση προσπαθειών — ΠΟΤΕ δεν αναφέρει
@@ -89,12 +103,15 @@ export function parseSwapResponse(raw: unknown): SwapExecutionResult {
  * δύο ρητά προειδοποιούν ακριβώς για αυτό). */
 async function pollUntilTerminal(orderId: string, initial: SwapExecutionResult, options: RunOptions): Promise<SwapExecutionResult> {
   let current = initial;
+  // `order get` δεν επιστρέφει ξανά `strategy_order_id` (μόνο το αρχικό `swap` response
+  // το έχει) — κρατάμε το αρχικό ρητά, αλλιώς θα χανόταν σιωπηλά στο πρώτο poll.
+  const strategyOrderId = initial.strategyOrderId;
   for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt++) {
     if (FILLED_STATUSES.has(current.status) || FAILED_STATUSES.has(current.status)) break;
     await delay(POLL_INTERVAL_MS);
     try {
       const raw = await runCli('order get', ['order', 'get', '--chain', 'sol', '--order-id', orderId], options);
-      current = parseSwapResponse(raw);
+      current = { ...parseSwapResponse(raw), strategyOrderId };
     } catch (error) {
       if (error instanceof SwapFailedError) throw error;
       break; // δικτυακό/παροδικό σφάλμα στο ίδιο το poll — σταμάτα, ανέφερε ό,τι ξέραμε
@@ -106,20 +123,44 @@ async function pollUntilTerminal(orderId: string, initial: SwapExecutionResult, 
   return current;
 }
 
+/** Ελάχιστα, ασφαλή defaults — το SKILL.md απαιτεί και τα δύο flags όποτε περνάμε
+ * `--condition-orders` σε sol. Τιμές πολύ πάνω από τα ρητά ελάχιστα (0.00001) του
+ * SKILL.md, ώστε να μην κολλήσει η strategy creation σε peak congestion. */
+const CONDITION_ORDER_PRIORITY_FEE_SOL = '0.00002';
+const CONDITION_ORDER_TIP_FEE_SOL = '0.00002';
+
 /**
  * Αγορά — input=SOL (currency, άρα ΠΑΝΤΑ --amount, ΠΟΤΕ --percent, βλ. SKILL.md).
  * Πετάει `AutomatedTradesDisabledError` αν λείπει το flag, `SwapFailedError` αν το ίδιο
  * το swap απέτυχε ρητά — ο caller ΔΕΝ πρέπει να καταγράψει θέση σε καμία από τις δύο.
  * Δεν καταγράφει τίποτα σε βάση — αυτό είναι δουλειά του caller.
+ *
+ * `conditionOrders`, αν δοθεί, περνάει `--condition-orders` (μαζί με τα υποχρεωτικά
+ * `--priority-fee`/`--tip-fee` σε sol) — δημιουργεί ΤΗΝ ΙΔΙΑ ΣΤΙΓΜΗ ένα native, server-side
+ * GMGN strategy order (trailing-stop/stop-loss) πάνω στη θέση, ανεξάρτητο από το αν το
+ * δικό μας process/websocket είναι ζωντανό αργότερα (βλ. migration 0013). Η δημιουργία
+ * είναι best-effort — το `result.strategyOrderId` μπορεί να είναι null ακόμα κι όταν το
+ * ίδιο το swap πέτυχε πλήρως· ο caller ΠΡΕΠΕΙ να το επιβεβαιώσει ξεχωριστά (βλ.
+ * `getLiveExitStrategy` στο strategyOrders.ts) πριν το εμπιστευτεί.
  */
 export async function executeLiveBuy(
   walletAddress: string,
   outputToken: string,
   amountSol: number,
   options: RunOptions = {},
+  conditionOrders?: readonly ConditionOrder[],
 ): Promise<SwapExecutionResult> {
   if (!config.automatedTradesAllowed()) throw new AutomatedTradesDisabledError();
   const tradeOptions: RunOptions = { priority: TRADE_PRIORITY, ...options };
+
+  const conditionOrderArgs =
+    conditionOrders !== undefined && conditionOrders.length > 0
+      ? [
+          '--condition-orders', JSON.stringify(conditionOrders),
+          '--priority-fee', CONDITION_ORDER_PRIORITY_FEE_SOL,
+          '--tip-fee', CONDITION_ORDER_TIP_FEE_SOL,
+        ]
+      : [];
 
   const raw = await runCli(
     'swap',
@@ -132,6 +173,7 @@ export async function executeLiveBuy(
       '--amount', solToLamports(amountSol),
       '--auto-slippage', // συνιστάται ρητά για ασταθή tokens (memecoins) στο SKILL.md
       '--anti-mev',
+      ...conditionOrderArgs,
       '--yes',
     ],
     tradeOptions,

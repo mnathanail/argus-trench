@@ -81,3 +81,36 @@ export function conditionOrdersJson(): Record<string, unknown>[] {
     },
   ];
 }
+
+/**
+ * Το ΠΡΑΓΜΑΤΙΚΟ exit plan που περνάει στο `swap --condition-orders` για `mode='live'`
+ * trades (2026-09-17, incident #1193 — βλ. migration 0013). ΣΚΟΠΙΜΑ ΔΙΑΦΟΡΕΤΙΚΟ από το
+ * `conditionOrdersJson()` πιο πάνω: εκείνο περιγράφει ένα scale-out (50% στο tier1 +
+ * trailing στο υπόλοιπο) — καλή στρατηγική αφ' εαυτής, αλλά ΔΕΝ ταιριάζει με το πώς
+ * μοντελοποιούμε μια θέση αλλού (ΕΝΑ paper_trades row, ΕΝΑ pnl_sol/pnl_pct, κλείνει
+ * ΜΙΑ φορά — βλ. checkTick/resolveExit's ρητή σύμβαση "tier2 πάντα υπερισχύει, ποτέ
+ * partial fill"). Ένα partial tier1-sell θα άφηνε τη θέση "μισοκλειστή" με τρόπο που το
+ * σημερινό schema δεν αναπαριστά καθόλου.
+ *
+ * Αντ' αυτού: ΜΟΝΟ trailing (ενεργοποίηση +100%, 40% drawdown από peak, ΟΛΟΚΛΗΡΗ η θέση)
+ * + stop_loss (-50% από entry, ΟΛΟΚΛΗΡΗ η θέση) — ακριβώς οι ίδιες τιμές/σημασιολογία με
+ * το δικό μας checkTick, ώστε το native order και το δικό μας watchdog να συμφωνούν
+ * πάντα για το ΠΟΤΕ θα έκλεινε η θέση, ακόμα κι όταν αναλαμβάνει το ένα από τα δύο.
+ */
+export function liveExitConditionOrders(): Record<string, unknown>[] {
+  return [
+    {
+      order_type: 'profit_stop_trace',
+      side: 'sell',
+      price_scale: String(Math.round((EXIT_TIER_2_ACTIVATION_SCALE - 1) * 100)), // '100' = +100%
+      drawdown_rate: String(Math.round(EXIT_TIER_2_DRAWDOWN_PCT * 100)), // '40' = -40% από peak
+      sell_ratio: '100',
+    },
+    {
+      order_type: 'loss_stop',
+      side: 'sell',
+      price_scale: String(Math.round(STOP_LOSS_PCT * 100)), // '50' = -50% από entry
+      sell_ratio: '100',
+    },
+  ];
+}

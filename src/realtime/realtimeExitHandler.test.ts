@@ -21,6 +21,7 @@ function trade(overrides: Partial<TickDecisionInput> = {}): TickDecisionInput {
     peakPriceSinceEntry: null,
     trailingActive: false,
     triggerWalletAddress: WALLET,
+    nativeOrderActive: false,
     ...overrides,
   };
 }
@@ -117,6 +118,39 @@ test('trailing_stop fires correctly through the full decision path (activation o
   );
   assert.equal(afterDrop.type, 'close');
   if (afterDrop.type === 'close') assert.equal(afterDrop.exitReason, 'trailing_stop');
+});
+
+// nativeOrderActive gating — 2026-09-17, incident #1193: όταν ένα native GMGN
+// condition-order είναι ο ενεργός, πρωτεύων exit mechanism γι' αυτό το trade, το
+// decideForTick ΔΕΝ πρέπει να αποφασίσει tier1/trailing/stop_loss (θα παλέψει με το
+// native order πάνω στην ίδια θέση) — μόνο exit_signal, που το GMGN engine δεν ξέρει.
+
+test('nativeOrderActive=true: a price tick that would normally trigger tp_tier_1 is ignored — the native order owns that decision', () => {
+  const decision = decideForTick(trade({ nativeOrderActive: true }), eventAtPrice(1.6), ENTRY_AT); // +60%
+  assert.deepEqual(decision, { type: 'ignore' });
+});
+
+test('nativeOrderActive=true: a price tick that would normally trigger stop_loss is ignored too', () => {
+  const decision = decideForTick(trade({ nativeOrderActive: true }), eventAtPrice(0.3), ENTRY_AT); // -70%
+  assert.deepEqual(decision, { type: 'ignore' });
+});
+
+test('nativeOrderActive=true: a price tick that would only update the peak is also ignored — no tracking needed while native owns the decision', () => {
+  const decision = decideForTick(trade({ nativeOrderActive: true, peakPriceSinceEntry: 1.1 }), eventAtPrice(1.3), ENTRY_AT);
+  assert.deepEqual(decision, { type: 'ignore' });
+});
+
+test('nativeOrderActive=true: exit_signal STILL fires normally — the native order does not know about trigger wallets', () => {
+  const sellEvent = eventAtPrice(0.5, { txType: 'sell', traderPublicKey: WALLET });
+  const decision = decideForTick(trade({ nativeOrderActive: true }), sellEvent, ENTRY_AT);
+  assert.equal(decision.type, 'close');
+  if (decision.type === 'close') assert.equal(decision.exitReason, 'exit_signal');
+});
+
+test('nativeOrderActive=false (default): tier/trailing/stop_loss logic runs exactly as before', () => {
+  const decision = decideForTick(trade({ nativeOrderActive: false }), eventAtPrice(1.6), ENTRY_AT);
+  assert.equal(decision.type, 'close');
+  if (decision.type === 'close') assert.equal(decision.exitReason, 'tp_tier_1');
 });
 
 // shouldSkipLiveExitCheck — πραγματικό incident 2026-09-15: μια αποτυχημένη πραγματική

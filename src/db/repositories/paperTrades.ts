@@ -36,6 +36,13 @@ export interface NewPaperTrade {
   entryAt?: Date;
 }
 
+/** Native GMGN strategy order id + health, γραμμένο ΜΕΤΑ το openTrade (χρειάζεται το
+ * trade id να υπάρχει πρώτα) — βλ. `attachLiveNativeOrder` στο liveEntryExecution.ts. */
+export interface NativeOrderState {
+  liveStrategyOrderId: string | null;
+  nativeOrderActive: boolean;
+}
+
 export interface PaperTrade {
   id: number;
   decisionLogId: number;
@@ -60,6 +67,8 @@ export interface PaperTrade {
   actualExitAmountSol: number | null;
   needsManualExit: boolean;
   exitAttemptStartedAt: Date | null;
+  liveStrategyOrderId: string | null;
+  nativeOrderActive: boolean;
 }
 
 interface TradeRow {
@@ -84,13 +93,16 @@ interface TradeRow {
   actual_exit_amount_sol: string | null;
   needs_manual_exit: boolean;
   exit_attempt_started_at: Date | null;
+  live_strategy_order_id: string | null;
+  native_order_active: boolean;
 }
 
 const COLUMNS = `id, decision_log_id, token_address, chain, mode, intended_size_pct,
                  bankroll_at_entry, simulated_entry_price, entry_at, status, exit_reason,
                  simulated_exit_price, exit_at, pnl_sol, pnl_pct, pnl_net_pct,
                  last_checked_at, actual_entry_amount_sol, actual_exit_amount_sol,
-                 needs_manual_exit, exit_attempt_started_at`;
+                 needs_manual_exit, exit_attempt_started_at, live_strategy_order_id,
+                 native_order_active`;
 
 function toJsonParam(value: unknown): string | null {
   return value === null || value === undefined ? null : JSON.stringify(value);
@@ -119,6 +131,8 @@ function mapTrade(row: TradeRow): PaperTrade {
     actualExitAmountSol: toNumOrNull(row.actual_exit_amount_sol),
     needsManualExit: row.needs_manual_exit,
     exitAttemptStartedAt: row.exit_attempt_started_at,
+    liveStrategyOrderId: row.live_strategy_order_id,
+    nativeOrderActive: row.native_order_active,
   };
 }
 
@@ -147,6 +161,64 @@ export async function openTrade(input: NewPaperTrade, conn?: Queryable): Promise
     ],
   );
   return toNum(requireRow(rows, 'openTrade').id);
+}
+
+/** Γράφει το αποτέλεσμα της απόπειρας attach+verify ενός native GMGN strategy order —
+ * καλείται μία φορά, αμέσως μετά το openTrade (βλ. liveEntryExecution.ts). */
+export async function setNativeOrderState(id: number, state: NativeOrderState, conn?: Queryable): Promise<void> {
+  await db(conn).query(
+    `UPDATE paper_trades SET live_strategy_order_id = $2, native_order_active = $3 WHERE id = $1`,
+    [id, state.liveStrategyOrderId, state.nativeOrderActive],
+  );
+}
+
+/** Το reconciler γυρίζει native_order_active σε false όταν το strategy απέτυχε/σταμάτησε
+ * χωρίς να κλείσει τη θέση — από εκεί και πέρα αναλαμβάνει πλήρως το δικό μας tracking
+ * (decideForTick παύει να το αγνοεί). Ο ίδιος ο `live_strategy_order_id` ΜΕΝΕΙ (ιστορικό,
+ * χρήσιμο για debugging) — μόνο το "ενεργό" flag αλλάζει. */
+export async function deactivateNativeOrder(id: number, conn?: Queryable): Promise<void> {
+  await db(conn).query(`UPDATE paper_trades SET native_order_active = false WHERE id = $1`, [id]);
+}
+
+export interface LiveTradeWithNativeOrder {
+  id: number;
+  tokenAddress: string;
+  liveStrategyOrderId: string;
+  entryAt: Date;
+  bankrollAtEntry: number | null;
+  intendedSizePct: number | null;
+  actualEntryAmountSol: number | null;
+}
+
+/** Ανοιχτά `mode='live'` trades που έχουν ενεργό native order — τα μόνα που ο live
+ * strategy reconciler χρειάζεται να ελέγξει (βλ. collectors/liveStrategyReconciler.ts).
+ * Καθαρό DB read — το reconciler φέρνει το trading wallet address μία φορά για όλο το
+ * batch (gmgn/portfolio.ts), όχι δουλειά του repository layer. */
+export async function listOpenLiveTradesWithNativeOrder(conn?: Queryable): Promise<LiveTradeWithNativeOrder[]> {
+  const { rows } = await db(conn).query<{
+    id: string;
+    token_address: string;
+    live_strategy_order_id: string;
+    entry_at: Date;
+    bankroll_at_entry: string | null;
+    intended_size_pct: string | null;
+    actual_entry_amount_sol: string | null;
+  }>(
+    `SELECT id, token_address, live_strategy_order_id, entry_at, bankroll_at_entry, intended_size_pct,
+            actual_entry_amount_sol
+       FROM paper_trades
+      WHERE status = 'open' AND mode = 'live' AND native_order_active = true
+        AND live_strategy_order_id IS NOT NULL`,
+  );
+  return rows.map((row) => ({
+    id: toNum(row.id),
+    tokenAddress: row.token_address,
+    liveStrategyOrderId: row.live_strategy_order_id,
+    entryAt: row.entry_at,
+    bankrollAtEntry: toNumOrNull(row.bankroll_at_entry),
+    intendedSizePct: toNumOrNull(row.intended_size_pct),
+    actualEntryAmountSol: toNumOrNull(row.actual_entry_amount_sol),
+  }));
 }
 
 export interface CloseTradeInput {
@@ -465,6 +537,12 @@ export interface OpenTradeForTick {
   actualEntryAmountSol: number | null;
   needsManualExit: boolean;
   exitAttemptStartedAt: Date | null;
+  /** true όταν ένα native GMGN strategy order είναι ο ενεργός, πρωτεύων exit mechanism
+   * γι' αυτό το trade — βλ. migration 0013. Όσο είναι true, το `decideForTick` ΔΕΝ
+   * αποφασίζει tier1/trailing/stop_loss (θα ερχόταν σε σύγκρουση με το native order),
+   * μόνο exit_signal/timeout — αυτά που το GMGN engine δεν ξέρει. */
+  nativeOrderActive: boolean;
+  liveStrategyOrderId: string | null;
 }
 
 /**
@@ -512,11 +590,14 @@ export async function getOpenTradeForTickLocked(
     actual_entry_amount_sol: string | null;
     needs_manual_exit: boolean;
     exit_attempt_started_at: Date | null;
+    native_order_active: boolean;
+    live_strategy_order_id: string | null;
   }>(
     `SELECT pt.id, pt.simulated_entry_price, pt.entry_at, pt.bankroll_at_entry,
             pt.intended_size_pct, pt.peak_price_since_entry, pt.trailing_active,
             dl.trigger_wallet_address, pt.mode, pt.actual_entry_amount_sol,
-            pt.needs_manual_exit, pt.exit_attempt_started_at
+            pt.needs_manual_exit, pt.exit_attempt_started_at, pt.native_order_active,
+            pt.live_strategy_order_id
        FROM paper_trades pt
        JOIN decision_log dl ON dl.id = pt.decision_log_id
       WHERE pt.id = $1 AND pt.status = 'open'
@@ -539,6 +620,8 @@ export async function getOpenTradeForTickLocked(
     actualEntryAmountSol: toNumOrNull(row.actual_entry_amount_sol),
     needsManualExit: row.needs_manual_exit,
     exitAttemptStartedAt: row.exit_attempt_started_at,
+    nativeOrderActive: row.native_order_active,
+    liveStrategyOrderId: row.live_strategy_order_id,
   };
 }
 
