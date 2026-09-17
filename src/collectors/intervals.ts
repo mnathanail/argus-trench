@@ -181,7 +181,10 @@ export const DAILY_DIGEST_INTERVAL_MS = 24 * 60 * 60 * 1000;
  * βαρύ — μόνο τα λίγα (Φάση 4: 1-2 concurrent cap) trades που έχουν
  * `native_order_active=true`. Αρκετά συχνό ώστε ένα πραγματικό close να ανιχνευτεί
  * γρήγορα (επηρεάζει kill-switch/reserved-capital ελευθέρωση), αλλά ΟΧΙ tick-rate — αυτό
- * είναι watchdog, όχι το πρωτεύον exit mechanism (αυτό το κάνει το GMGN engine, server-side).
+ * είναι watchdog πάνω σε ΑΣΦΑΛΕΙΑ, όχι στο πρωτεύον exit mechanism: ο δικός μας tracker
+ * (realtimeExitHandler.ts) παραμένει ο πρωτεύων decision engine ακόμα κι όσο ένα native
+ * order είναι συνδεδεμένο (ρητή απόφαση χρήστη 2026-09-17, ίδια μέρα, βλ. σχόλιο εκεί) —
+ * το native order υπάρχει μόνο για την περίπτωση που το δικό μας process/feed πέσει.
  */
 export const LIVE_STRATEGY_RECONCILER_INTERVAL_MS = 2 * 60 * 1000;
 export const LIVE_STRATEGY_RECONCILER_LOOP_PACING_MS = 500;

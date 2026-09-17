@@ -4,7 +4,7 @@ import {
   listOpenLiveTradesWithNativeOrder,
   type LiveTradeWithNativeOrder,
 } from '../db/repositories/paperTrades.js';
-import { getStrategyOrder } from '../gmgn/strategyOrders.js';
+import { estimateExitAmountSol, getStrategyOrder, inferExitReason } from '../gmgn/strategyOrders.js';
 import { fetchLiveSolWallet } from '../gmgn/portfolio.js';
 import { rethrowIfRateLimited } from '../gmgn/errors.js';
 import { LIVE_STRATEGY_RECONCILER_LOOP_PACING_MS } from './intervals.js';
@@ -36,31 +36,9 @@ export interface LiveStrategyReconcilerResult {
   alerts: string[];
 }
 
-/** Τιμή price-ratio από το ίδιο το GMGN strategy record (open_price/close_price —
- * πραγματικές on-chain εκτελεσμένες τιμές, ΟΧΙ kline/simulation) εφαρμοσμένη πάνω στο
- * ήδη γνωστό, πραγματικό `actualEntryAmountSol` — προσέγγιση του πραγματικού SOL που
- * εισπράχθηκε (το condition-order response δίνει token price/decimals, όχι απευθείας
- * SOL settlement amount, και με πολλαπλά ταυτόχρονα ανοιχτά live trades ένα απλό
- * wallet-balance-diff δε θα μπορούσε να απομονώσει ΠΟΙΟ trade έκλεισε). Ακριβέστερο από
- * καμία εναλλακτική διαθέσιμη εδώ, και ΠΑΝΤΑ βασισμένο σε πραγματικές εκτελεσμένες
- * τιμές — ποτέ σε υποθετικό kline candle.
- */
-function estimateExitAmountSol(
-  actualEntryAmountSol: number | null,
-  openPrice: number | null,
-  closePrice: number | null,
-): number | null {
-  if (actualEntryAmountSol === null || openPrice === null || openPrice <= 0 || closePrice === null) return null;
-  return actualEntryAmountSol * (closePrice / openPrice);
-}
-
-/** Το GMGN `reason_code`/`order_type` του πυροδοτημένου sub-order δε χαρτογραφείται 1:1
- * στο δικό μας ExitReason enum — δεν έχουμε ρητή τεκμηρίωση του πλήρους συνόλου τιμών.
- * `trailing_stop` είναι η σωστή προεπιλογή: αυτό είναι το ΜΟΝΟ sub-order type που βάζουμε
- * πλέον σε live trades (`liveExitConditionOrders()`) εκτός από `loss_stop`. */
-function inferExitReason(strategyReasonCode: string): 'trailing_stop' | 'stop_loss' {
-  return /loss/i.test(strategyReasonCode) ? 'stop_loss' : 'trailing_stop';
-}
+// estimateExitAmountSol / inferExitReason: μετακομίσαν στο gmgn/strategyOrders.ts
+// 2026-09-17, ώστε να τα μοιράζεται και το idempotent-guard του exit handler
+// (realtimeExitHandler.ts's executeLiveCloseAndFinalize) — ίδιο σκεπτικό, δύο αφορμές.
 
 async function reconcileOneTrade(
   trade: LiveTradeWithNativeOrder,

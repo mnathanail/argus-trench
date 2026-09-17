@@ -120,34 +120,42 @@ test('trailing_stop fires correctly through the full decision path (activation o
   if (afterDrop.type === 'close') assert.equal(afterDrop.exitReason, 'trailing_stop');
 });
 
-// nativeOrderActive gating — 2026-09-17, incident #1193: όταν ένα native GMGN
-// condition-order είναι ο ενεργός, πρωτεύων exit mechanism γι' αυτό το trade, το
-// decideForTick ΔΕΝ πρέπει να αποφασίσει tier1/trailing/stop_loss (θα παλέψει με το
-// native order πάνω στην ίδια θέση) — μόνο exit_signal, που το GMGN engine δεν ξέρει.
+// nativeOrderActive — REVISED 2026-09-17 (ίδια μέρα με incident #1193, μετά από ρητή
+// απόφαση χρήστη): ο δικός μας tracker (decideForTick) είναι το ΠΡΩΤΕΥΟΝ exit decision
+// engine για live trades — ΑΚΡΙΒΩΣ ίδια λογική με το paper trading, χωρίς καμία
+// εξαίρεση όταν nativeOrderActive===true. Ο λόγος: το paper trading δοκιμάζει ΑΥΤΟΝ
+// τον μηχανισμό· αν το live έτρεχε διαφορετική λογική, η δοκιμή στο paper δε θα
+// αντιστοιχούσε σε ό,τι τελικά αποφασίζει με πραγματικά λεφτά. Το native GMGN order
+// παραμένει συνδεδεμένο ως ασφάλεια/dead-man's-switch (βλ. executeLiveCloseAndFinalize
+// για το πώς ακυρώνεται πριν από κάθε δική μας πώληση, και το idempotent-guard για το
+// σπάνιο race όπου προλαβαίνει αυτό).
 
-test('nativeOrderActive=true: a price tick that would normally trigger tp_tier_1 is ignored — the native order owns that decision', () => {
+test('nativeOrderActive=true: a price tick that would trigger tp_tier_1 still closes — the tracker is primary regardless', () => {
   const decision = decideForTick(trade({ nativeOrderActive: true }), eventAtPrice(1.6), ENTRY_AT); // +60%
-  assert.deepEqual(decision, { type: 'ignore' });
+  assert.equal(decision.type, 'close');
+  if (decision.type === 'close') assert.equal(decision.exitReason, 'tp_tier_1');
 });
 
-test('nativeOrderActive=true: a price tick that would normally trigger stop_loss is ignored too', () => {
+test('nativeOrderActive=true: a price tick that would trigger stop_loss still closes', () => {
   const decision = decideForTick(trade({ nativeOrderActive: true }), eventAtPrice(0.3), ENTRY_AT); // -70%
-  assert.deepEqual(decision, { type: 'ignore' });
+  assert.equal(decision.type, 'close');
+  if (decision.type === 'close') assert.equal(decision.exitReason, 'stop_loss');
 });
 
-test('nativeOrderActive=true: a price tick that would only update the peak is also ignored — no tracking needed while native owns the decision', () => {
+test('nativeOrderActive=true: a price tick that would only update the peak still updates — tracking never stops just because native is attached', () => {
   const decision = decideForTick(trade({ nativeOrderActive: true, peakPriceSinceEntry: 1.1 }), eventAtPrice(1.3), ENTRY_AT);
-  assert.deepEqual(decision, { type: 'ignore' });
+  assert.equal(decision.type, 'update');
+  if (decision.type === 'update') assert.equal(decision.newPeakPriceSinceEntry, 1.3);
 });
 
-test('nativeOrderActive=true: exit_signal STILL fires normally — the native order does not know about trigger wallets', () => {
+test('nativeOrderActive=true: exit_signal still fires normally — the native order never knew about trigger wallets anyway', () => {
   const sellEvent = eventAtPrice(0.5, { txType: 'sell', traderPublicKey: WALLET });
   const decision = decideForTick(trade({ nativeOrderActive: true }), sellEvent, ENTRY_AT);
   assert.equal(decision.type, 'close');
   if (decision.type === 'close') assert.equal(decision.exitReason, 'exit_signal');
 });
 
-test('nativeOrderActive=false (default): tier/trailing/stop_loss logic runs exactly as before', () => {
+test('nativeOrderActive=false: identical tier/trailing/stop_loss behavior — the flag makes no difference to the decision', () => {
   const decision = decideForTick(trade({ nativeOrderActive: false }), eventAtPrice(1.6), ENTRY_AT);
   assert.equal(decision.type, 'close');
   if (decision.type === 'close') assert.equal(decision.exitReason, 'tp_tier_1');

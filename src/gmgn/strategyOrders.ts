@@ -3,10 +3,11 @@ import { runCli, type RunOptions } from './exec.js';
 /**
  * Client για `order strategy list` / `order strategy cancel` — το native, server-side
  * condition-order mechanism (profit_stop/loss_stop/profit_stop_trace/loss_stop_trace) που
- * το GMGN εκτελεί στη ΔΙΚΗ ΤΟΥ υποδομή. Εισήχθη 2026-09-17 ως πρωτεύον exit mechanism για
- * live trades — βλ. migration 0013 και comment στο src/live/liveEntryExecution.ts για το
- * γιατί (incident #1193: το δικό μας websocket-based tracking εξαρτάται εξ ολοκλήρου από
- * το δικό μας process/feed, που απέτυχαν ταυτόχρονα).
+ * το GMGN εκτελεί στη ΔΙΚΗ ΤΟΥ υποδομή. Εισήχθη 2026-09-17 (incident #1193 — βλ. migration
+ * 0013) ως ΑΣΦΑΛΕΙΑ/dead-man's-switch πάνω σε live trades: ο δικός μας websocket-based
+ * tracker (realtimeExitHandler.ts) παραμένει ο ΠΡΩΤΕΥΩΝ exit decision engine (ρητή
+ * απόφαση χρήστη, ίδια μέρα — βλ. σχόλιο στο decideForTick εκεί), αλλά αν το δικό μας
+ * process/feed πέσει, αυτό εδώ συνεχίζει να τρέχει server-side, ανεξάρτητα.
  */
 
 export type StrategyOrderStatus = 'open' | 'closed';
@@ -124,6 +125,32 @@ async function findInStrategyList(
     if (parsed !== null && parsed.orderId === orderId) return parsed;
   }
   return null;
+}
+
+/** Τιμή price-ratio από το ίδιο το GMGN strategy record (open_price/close_price —
+ * πραγματικές on-chain εκτελεσμένες τιμές, ΟΧΙ kline/simulation) εφαρμοσμένη πάνω στο
+ * ήδη γνωστό, πραγματικό `actualEntryAmountSol` — προσέγγιση του πραγματικού SOL που
+ * εισπράχθηκε (το condition-order response δίνει token price/decimals, όχι απευθείας
+ * SOL settlement amount, και με πολλαπλά ταυτόχρονα ανοιχτά live trades ένα απλό
+ * wallet-balance-diff δε θα μπορούσε να απομονώσει ΠΟΙΟ trade έκλεισε). Κοινό μεταξύ
+ * του reconciler (collectors/liveStrategyReconciler.ts) ΚΑΙ του exit handler's
+ * idempotent-guard (realtimeExitHandler.ts) — και τα δύο μονοπάτια μαθαίνουν για ένα
+ * ήδη-κλεισμένο native order, μόνο από διαφορετική αφορμή. */
+export function estimateExitAmountSol(
+  actualEntryAmountSol: number | null,
+  openPrice: number | null,
+  closePrice: number | null,
+): number | null {
+  if (actualEntryAmountSol === null || openPrice === null || openPrice <= 0 || closePrice === null) return null;
+  return actualEntryAmountSol * (closePrice / openPrice);
+}
+
+/** Το GMGN `reason_code`/`order_type` του πυροδοτημένου sub-order δε χαρτογραφείται 1:1
+ * στο δικό μας ExitReason enum — δεν έχουμε ρητή τεκμηρίωση του πλήρους συνόλου τιμών.
+ * `trailing_stop` είναι η σωστή προεπιλογή: αυτό είναι το ΜΟΝΟ sub-order type που βάζουμε
+ * πλέον σε live trades (`liveExitConditionOrders()`) εκτός από `loss_stop`. */
+export function inferExitReason(strategyReasonCode: string): 'trailing_stop' | 'stop_loss' {
+  return /loss/i.test(strategyReasonCode) ? 'stop_loss' : 'trailing_stop';
 }
 
 /** Ακυρώνει ένα ενεργό strategy order — καλείται πριν από κάθε δική μας πώληση σε trade

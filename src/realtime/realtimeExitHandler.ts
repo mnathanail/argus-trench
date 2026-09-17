@@ -14,8 +14,8 @@ import type { ExitReason } from '../db/types.js';
 import { computePnl } from '../decision/pnl.js';
 import { EXIT_TIMEOUT_MS, PAPER_ASSUMED_FEES_PCT } from '../decision/paperTradingConfig.js';
 import { fetchLiveSolWallet, getLiveSolBalance } from '../gmgn/portfolio.js';
-import { executeLiveSell } from '../gmgn/swap.js';
-import { cancelStrategyOrderBestEffort } from '../gmgn/strategyOrders.js';
+import { executeLiveSell, INSUFFICIENT_TOKEN_BALANCE_ERROR_CODE, SwapFailedError } from '../gmgn/swap.js';
+import { cancelStrategyOrderBestEffort, estimateExitAmountSol, getStrategyOrder, inferExitReason } from '../gmgn/strategyOrders.js';
 import { checkTick } from './tickExit.js';
 import { priceFromTradeEvent, type PumpPortalTradeEvent } from './pumpportalEvents.js';
 import { unsubscribeIfNoLongerNeeded } from './subscriptionManager.js';
@@ -90,17 +90,25 @@ export function shouldSkipLiveExitCheck(
  *    σκεπτικό με το resolveExit's "wallet exit_signal takes priority over a tier hit
  *    in the same candle".
  *
- * 2026-09-17, μετά το incident #1193: όταν `trade.nativeOrderActive===true`, ένα native
- * GMGN strategy order (profit_stop_trace + loss_stop, βλ. migration 0013) είναι ήδη ο
- * πρωτεύων exit mechanism γι' αυτό το trade, εκτελείται στη GMGN's δική τους υποδομή.
- * Το `checkTick` (tier1/trailing/stop_loss) ΔΕΝ πρέπει να τρέξει σε αυτή την περίπτωση —
- * θα κατέληγε είτε σε διπλή, ανταγωνιστική πώληση πάνω στην ίδια θέση, είτε σε μια
- * δεύτερη "κλείσε" απόφαση για θέση που το GMGN μπορεί ήδη να έχει κλείσει (το
- * reconciler, όχι αυτό εδώ, μαθαίνει για τέτοια closes — βλ.
- * collectors/liveStrategyReconciler.ts). Το `exit_signal` ΠΑΡΑΜΕΝΕΙ ενεργό ΠΑΝΤΑ — το
- * GMGN order δεν ξέρει τίποτα για τα trigger wallets μας, αυτό είναι ΜΟΝΟ δική μας
- * ευθύνη. Ο caller (handleOneTrade) κάνει cancel το native order ΠΡΙΝ εκτελέσει τη δική
- * του πώληση σε αυτή την περίπτωση.
+ * 2026-09-17, μετά το incident #1193, ΚΑΙ αναθεωρημένο ΤΗΝ ΙΔΙΑ μέρα κατόπιν ρητής
+ * απόφασης του χρήστη: ο δικός μας tracker (αυτό εδώ, `checkTick`) παραμένει το
+ * ΠΡΩΤΕΥΟΝ exit decision engine για live trades — ΑΚΡΙΒΩΣ η ίδια λογική/thresholds με
+ * το paper trading, χωρίς καμία εξαίρεση όταν `nativeOrderActive===true`. Ο λόγος:
+ * το paper trading υπάρχει για να δοκιμάσει ΑΥΤΟΝ τον μηχανισμό — αν το live έτρεχε
+ * διαφορετική λογική (native GMGN order ως πρωτεύον), η δοκιμή στο paper θα μετρούσε
+ * ένα σύστημα που δεν είναι αυτό που τελικά παίρνει αποφάσεις με πραγματικά λεφτά.
+ *
+ * Το native GMGN strategy order (profit_stop_trace + loss_stop, βλ. migration 0013)
+ * ΠΑΡΑΜΕΝΕΙ συνδεδεμένο σε κάθε live buy, αλλά ΜΟΝΟ ως ασφάλεια/dead-man's-switch: αν
+ * το δικό μας process πέσει ή χάσει το PumpPortal feed, το GMGN order συνεχίζει να
+ * τρέχει server-side, ανεξάρτητα. Όσο είμαστε online, ΔΕΝ αναμένουμε ποτέ το native
+ * order να προλάβει — αλλά ΜΠΟΡΕΙ να συμβεί (π.χ. μια στιγμιαία καθυστέρηση στο δικό
+ * μας tick). Αυτό το πιθανό race χειρίζεται το `executeLiveCloseAndFinalize` παρακάτω
+ * με idempotent-guard: αν η δική μας πώληση αποτύχει με "insufficient token balance"
+ * (η θέση έφυγε ήδη), διαβάζουμε το ΠΡΑΓΜΑΤΙΚΟ αποτέλεσμα από το ίδιο το GMGN strategy
+ * order — ποτέ simulation. Ο live strategy reconciler (collectors/
+ * liveStrategyReconciler.ts) παραμένει το watchdog που ενεργοποιεί πλήρες fallback
+ * (`native_order_active=false`) αν το native order αποτύχει/σταματήσει.
  */
 export function decideForTick(trade: TickDecisionInput, event: PumpPortalTradeEvent, now: Date): TickDecision {
   if (now.getTime() - trade.entryAt.getTime() >= EXIT_TIMEOUT_MS) return { type: 'ignore' };
@@ -114,8 +122,6 @@ export function decideForTick(trade: TickDecisionInput, event: PumpPortalTradeEv
       exitTriggerDetail: { wallet: trade.triggerWalletAddress },
     };
   }
-
-  if (trade.nativeOrderActive) return { type: 'ignore' }; // το native GMGN order αποφασίζει tier1/trailing/stop_loss
 
   const price = priceFromTradeEvent(event);
   if (price === null) return { type: 'ignore' }; // π.χ. το token μετακόμισε εκτός bonding curve
@@ -318,9 +324,11 @@ async function handleOneTrade(
             exitPrice: decision.exitPrice,
             exitTriggerDetail: decision.exitTriggerDetail,
             actualEntryAmountSol: trade.actualEntryAmountSol,
-            // Μόνο το exit_signal φτάνει εδώ με nativeOrderActive===true (το
-            // decideForTick αγνοεί tier1/trailing/stop_loss σε αυτή την περίπτωση,
-            // βλ. εκεί) — cancel-first στο Phase 2, ίδιο σκεπτικό με το timeout path.
+            // Ο δικός μας tracker είναι πρωτεύων — ΟΠΟΙΟΣΔΗΠΟΤΕ exitReason μπορεί να
+            // φτάσει εδώ ακόμα και με nativeOrderActive===true (tp_tier_1/trailing_stop/
+            // stop_loss/exit_signal). Cancel-first στο Phase 2, ίδιο σκεπτικό με το
+            // timeout path — αποτρέπει το native order να πυροδοτήσει ταυτόχρονα πάνω
+            // στην ίδια θέση όσο η δική μας πώληση εκτελείται.
             liveStrategyOrderId: trade.nativeOrderActive ? trade.liveStrategyOrderId : null,
           },
         };
@@ -404,8 +412,71 @@ async function executeLiveCloseAndFinalize(
     if (closed) await unsubscribeIfNoLongerNeeded(connection, tokenAddress);
     return { type: 'closed', tokenAddress, exitReason: pending.exitReason, pnlPct: pnlPct ?? 0 };
   } catch (error) {
+    const reconciled = await tryReconcileAlreadyClosedByNativeOrder(pending, tokenAddress, wallet.address, connection, error);
+    if (reconciled !== null) return reconciled;
     return failLiveClose(pending, tokenAddress, error);
   }
+}
+
+/**
+ * Idempotent-guard για το race που παραμένει δυνατό στο σχέδιο «tracker primary, native
+ * order μόνο ασφάλεια» (ρητή απόφαση χρήστη 2026-09-17): ο δικός μας tracker τρέχει
+ * ΠΑΝΤΑ πλήρη tier1/trailing/stop_loss λογική, ακόμα κι όσο ένα native GMGN order είναι
+ * ακόμα συνδεδεμένο — το cancel λίγο πιο πάνω είναι best-effort, άρα ΠΑΡΑΜΕΝΕΙ ένα
+ * (σπάνιο, π.χ. μια στιγμιαία καθυστέρηση στο δικό μας tick) παράθυρο όπου το native
+ * order προλαβαίνει να εκτελέσει ΔΙΚΗ ΤΟΥ πώληση λίγο πριν από τη δική μας. Σε αυτή την
+ * περίπτωση η δική μας `executeLiveSell` αποτυγχάνει με GMGN
+ * `error_code=40003701` ("insufficient token balance") — δεν έχει μείνει τίποτα να
+ * πουλήσουμε.
+ *
+ * ΔΕΝ το αντιμετωπίζουμε σαν πραγματική αποτυχία (needs_manual_exit): διαβάζουμε το
+ * ΠΡΑΓΜΑΤΙΚΟ αποτέλεσμα απευθείας από το GMGN strategy order (`getStrategyOrder`) —
+ * ίδια πηγή/λογική με τον live strategy reconciler
+ * (collectors/liveStrategyReconciler.ts) — και κλείνουμε το trade με αυτά τα ΠΡΑΓΜΑΤΙΚΑ
+ * νούμερα, ποτέ simulation/kline. Αν το strategy order δεν επιβεβαιώνει close (ακόμα
+ * open/running, δε βρέθηκε, ή το lookup απέτυχε), δεν ξέρουμε τι πραγματικά συνέβη —
+ * επιστρέφουμε null και ο caller πέφτει στο κανονικό needs_manual_exit fallback.
+ */
+async function tryReconcileAlreadyClosedByNativeOrder(
+  pending: PendingLiveClose,
+  tokenAddress: string,
+  walletAddress: string,
+  connection: PumpPortalConnection,
+  error: unknown,
+): Promise<RealtimeTradeOutcome | null> {
+  if (pending.liveStrategyOrderId === null) return null;
+  const isInsufficientBalance =
+    error instanceof SwapFailedError && error.errorCode === INSUFFICIENT_TOKEN_BALANCE_ERROR_CODE;
+  if (!isInsufficientBalance) return null;
+
+  let strategy;
+  try {
+    strategy = await getStrategyOrder(walletAddress, tokenAddress, pending.liveStrategyOrderId);
+  } catch {
+    return null; // δεν μπορούμε να επιβεβαιώσουμε τίποτα εδώ — fallback σε needs_manual_exit
+  }
+  if (strategy === null || strategy.status !== 'closed') return null;
+
+  const actualEntryAmountSol = pending.actualEntryAmountSol;
+  const actualExitAmountSol = estimateExitAmountSol(actualEntryAmountSol, strategy.openPrice, strategy.closePrice);
+  const pnlSol =
+    actualExitAmountSol !== null && actualEntryAmountSol !== null ? actualExitAmountSol - actualEntryAmountSol : null;
+  const pnlPct =
+    pnlSol !== null && actualEntryAmountSol !== null && actualEntryAmountSol > 0 ? pnlSol / actualEntryAmountSol : null;
+  const exitReason = inferExitReason(strategy.reasonCode);
+
+  const closed = await closeTrade(pending.tradeId, {
+    exitReason,
+    exitTriggerDetail: pending.exitTriggerDetail,
+    simulatedExitPrice: strategy.closePrice ?? strategy.openPrice ?? pending.exitPrice,
+    pnlSol,
+    pnlPct,
+    assumedFeesPct: 0, // πραγματική εκτελεσμένη τιμή GMGN, όχι παραδοχή
+    pnlNetPct: pnlPct,
+    actualExitAmountSol: actualExitAmountSol ?? undefined,
+  });
+  if (closed) await unsubscribeIfNoLongerNeeded(connection, tokenAddress);
+  return { type: 'closed', tokenAddress, exitReason, pnlPct: pnlPct ?? 0 };
 }
 
 async function failLiveClose(

@@ -55,16 +55,29 @@ export type ConditionOrder = Record<string, unknown>;
 
 /** Πετάει όταν το swap ρητά ΑΠΕΤΥΧΕ (error_code/status='failed'/'expired') — ο caller
  * ΔΕΝ πρέπει να καταγράψει θέση σε αυτή την περίπτωση. Ξεχωριστό από ένα ασαφές
- * "ακόμα σε εξέλιξη" (filled:false, ΧΩΡΙΣ exception) μετά το τέλος του polling. */
+ * "ακόμα σε εξέλιξη" (filled:false, ΧΩΡΙΣ exception) μετά το τέλος του polling.
+ *
+ * `errorCode` — το ρητό GMGN `error_code`, null όταν το failure ήταν status-based
+ * (`failed`/`expired`, χωρίς δομημένο error_code). Προστέθηκε 2026-09-17 ώστε ο caller
+ * να μπορεί να αναγνωρίσει συγκεκριμένα business errors (π.χ. `40003701` = "insufficient
+ * token balance", βλ. gmgn-swap SKILL.md) χωρίς να κάνει regex πάνω στο μήνυμα. */
 export class SwapFailedError extends Error {
   constructor(
     message: string,
     readonly status: string,
+    readonly errorCode: string | null = null,
   ) {
     super(message);
     this.name = 'SwapFailedError';
   }
 }
+
+/** `40003701` — τεκμηριωμένο GMGN business error code, "insufficient token balance"
+ * (βλ. gmgn-swap SKILL.md, γραμμή για το error-count limiter). Χρησιμοποιείται ως
+ * σήμα ότι μια θέση πιθανόν έχει ήδη κλείσει αλλού (π.χ. native GMGN condition-order,
+ * βλ. migration 0013) ΠΡΙΝ προλάβει η δική μας πώληση — βλ.
+ * realtimeExitHandler.ts's executeLiveCloseAndFinalize. */
+export const INSUFFICIENT_TOKEN_BALANCE_ERROR_CODE = '40003701';
 
 /** Πετάει αν κληθεί χωρίς GMGN_ALLOW_AUTOMATED_TRADES=1 — δεν προσπαθεί καν να καλέσει
  * το CLI (που ούτως ή άλλως θα κρεμούσε περιμένοντας interactive επιβεβαίωση από
@@ -85,7 +98,7 @@ export function parseSwapResponse(raw: unknown): SwapExecutionResult {
   const errorCode = obj['error_code'];
   const errorStatus = obj['error_status'];
   if (typeof errorCode === 'string' && errorCode !== '') {
-    throw new SwapFailedError(`swap error_code=${errorCode} ${String(errorStatus ?? '')}`.trim(), 'error');
+    throw new SwapFailedError(`swap error_code=${errorCode} ${String(errorStatus ?? '')}`.trim(), 'error', errorCode);
   }
   const status = typeof obj['status'] === 'string' ? obj['status'] : 'pending';
   const orderId = typeof obj['order_id'] === 'string' ? obj['order_id'] : null;

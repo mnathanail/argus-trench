@@ -537,10 +537,13 @@ export interface OpenTradeForTick {
   actualEntryAmountSol: number | null;
   needsManualExit: boolean;
   exitAttemptStartedAt: Date | null;
-  /** true όταν ένα native GMGN strategy order είναι ο ενεργός, πρωτεύων exit mechanism
-   * γι' αυτό το trade — βλ. migration 0013. Όσο είναι true, το `decideForTick` ΔΕΝ
-   * αποφασίζει tier1/trailing/stop_loss (θα ερχόταν σε σύγκρουση με το native order),
-   * μόνο exit_signal/timeout — αυτά που το GMGN engine δεν ξέρει. */
+  /** true όταν ένα native GMGN strategy order είναι ακόμα συνδεδεμένο σε αυτό το trade
+   * — βλ. migration 0013. ΔΕΝ αλλάζει τη λογική του `decideForTick` (ρητή απόφαση
+   * χρήστη 2026-09-17, ίδια μέρα με το incident: ο δικός μας tracker παραμένει
+   * πρωτεύων, ίδια λογική με το paper trading, ΧΩΡΙΣ εξαίρεση εδώ) — μόνο σηματοδοτεί
+   * ότι υπάρχει ακόμα ένα ασφαλιστικό native order να ακυρωθεί πριν από τη δική μας
+   * πώληση (executeLiveCloseAndFinalize), και ότι ο live strategy reconciler
+   * (collectors/liveStrategyReconciler.ts) πρέπει να το παρακολουθεί. */
   nativeOrderActive: boolean;
   liveStrategyOrderId: string | null;
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { parseSwapResponse, SwapFailedError, WSOL_MINT } from './swap.js';
+import { INSUFFICIENT_TOKEN_BALANCE_ERROR_CODE, parseSwapResponse, SwapFailedError, WSOL_MINT } from './swap.js';
 
 test('WSOL_MINT is the correct, real mint address (ends in ...112, not ...111)', () => {
   assert.equal(WSOL_MINT, 'So11111111111111111111111111111111111111112');
@@ -41,6 +41,20 @@ test('parseSwapResponse: an inline error_code throws SwapFailedError, does not s
     () => parseSwapResponse({ error_code: '40003701', error_status: 'insufficient token balance' }),
     SwapFailedError,
   );
+});
+
+// errorCode on SwapFailedError — 2026-09-17: exposed as a structured field (not just
+// baked into the message string) so callers can match specific GMGN business errors,
+// e.g. the exit handler's idempotent-guard for a native-order-already-closed race.
+
+test('parseSwapResponse: SwapFailedError carries the real GMGN error_code as a structured field', () => {
+  try {
+    parseSwapResponse({ error_code: INSUFFICIENT_TOKEN_BALANCE_ERROR_CODE, error_status: 'insufficient token balance' });
+    assert.fail('expected SwapFailedError to be thrown');
+  } catch (error) {
+    assert.ok(error instanceof SwapFailedError);
+    assert.equal(error.errorCode, INSUFFICIENT_TOKEN_BALANCE_ERROR_CODE);
+  }
 });
 
 test('parseSwapResponse: a response with no fields at all defaults to pending, not a crash', () => {
