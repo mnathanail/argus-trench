@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { decideForTick, shouldSkipLiveExitCheck, type TickDecisionInput } from './realtimeExitHandler.js';
+import {
+  decideForTick,
+  shouldSkipLiveExitCheck,
+  isPastLiveTimeout,
+  isUnpriceableNonSellEvent,
+  type TickDecisionInput,
+} from './realtimeExitHandler.js';
 import type { PumpPortalTradeEvent } from './pumpportalEvents.js';
 
 const ENTRY_AT = new Date('2026-09-09T00:00:00Z');
@@ -150,4 +156,33 @@ test('shouldSkipLiveExitCheck: live trade με ΠΑΛΙΑ exit_attempt_started_a
 
 test('shouldSkipLiveExitCheck: live trade χωρίς καμία προηγούμενη απόπειρα δεν αγνοείται', () => {
   assert.equal(shouldSkipLiveExitCheck(liveTrade(), ENTRY_AT), false);
+});
+
+// isPastLiveTimeout / isUnpriceableNonSellEvent — πραγματικό incident 2026-09-17
+// (#1193): μετά το fix που απέκλεισε τα live trades από το periodic resolver, ΚΑΝΕΝΑΣ
+// μηχανισμός δεν κλείνει πια ένα live trade λόγω timeout ή όταν το token «αποφοιτήσει»
+// από το bonding curve — αυτές οι δύο functions είναι το «κάτι» που το καλύπτει.
+
+test('isPastLiveTimeout: false πριν το πραγματικό 24ωρο όριο', () => {
+  const justBefore = new Date(ENTRY_AT.getTime() + 23 * 60 * 60 * 1000);
+  assert.equal(isPastLiveTimeout(ENTRY_AT, justBefore), false);
+});
+
+test('isPastLiveTimeout: true ακριβώς στο και μετά το 24ωρο όριο', () => {
+  const justAfter = new Date(ENTRY_AT.getTime() + 25 * 60 * 60 * 1000);
+  assert.equal(isPastLiveTimeout(ENTRY_AT, justAfter), true);
+});
+
+test('isUnpriceableNonSellEvent: true όταν το token έχει «αποφοιτήσει» (pool !== "pump")', () => {
+  const migrated = eventAtPrice(1.5, { pool: 'pump-amm' });
+  assert.equal(isUnpriceableNonSellEvent(migrated), true);
+});
+
+test('isUnpriceableNonSellEvent: false για κανονικό, ακόμα-στο-bonding-curve event', () => {
+  assert.equal(isUnpriceableNonSellEvent(eventAtPrice(1.5)), false);
+});
+
+test('isUnpriceableNonSellEvent: false για exit_signal (wallet sell) ΑΚΟΜΑ ΚΙ ΑΝ το token έχει ήδη αποφοιτήσει — δεν χρειάζεται τιμή, ελέγχεται πρώτο στο decideForTick', () => {
+  const migratedSell = eventAtPrice(1.5, { pool: 'pump-amm', txType: 'sell', traderPublicKey: WALLET });
+  assert.equal(isUnpriceableNonSellEvent(migratedSell), false);
 });

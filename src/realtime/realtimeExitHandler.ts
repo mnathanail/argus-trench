@@ -132,7 +132,7 @@ export function decideForTick(trade: TickDecisionInput, event: PumpPortalTradeEv
 
 interface PendingLiveClose {
   tradeId: number;
-  exitReason: 'tp_tier_1' | 'trailing_stop' | 'stop_loss' | 'exit_signal';
+  exitReason: 'tp_tier_1' | 'trailing_stop' | 'stop_loss' | 'exit_signal' | 'timeout';
   exitPrice: number;
   exitTriggerDetail: Record<string, unknown> | null;
   actualEntryAmountSol: number | null;
@@ -188,6 +188,22 @@ export async function handleRealtimeTradeEvent(
   return outcomes;
 }
 
+/** Το `decideForTick` σκόπιμα αγνοεί trades πέρα από το EXIT_TIMEOUT_MS — ΠΑΝΤΑ
+ * βασιζόταν στο periodic resolver γι' αυτό. Μετά το σημερινό fix (selectOpenTradesForCheck
+ * πλέον αγνοεί mode='live'), κάτι ΠΡΕΠΕΙ να κλείνει τα live trades λόγω timeout — αυτό
+ * είναι το «κάτι». */
+export function isPastLiveTimeout(entryAt: Date, now: Date): boolean {
+  return now.getTime() - entryAt.getTime() >= EXIT_TIMEOUT_MS;
+}
+
+/** Το token «αποφοίτησε» από το pump.fun bonding curve (priceFromTradeEvent()===null,
+ * βλ. εκεί) — δεν έχουμε πια φόρμουλα να υπολογίσουμε τιμή από αυτό το feed. Ένα
+ * exit_signal (wallet sell) δεν χρειάζεται τιμή για να αναγνωριστεί — ελέγχεται ΗΔΗ
+ * πρώτο μέσα στο decideForTick, άρα ΔΕΝ το θεωρούμε «migration» εδώ. */
+export function isUnpriceableNonSellEvent(event: PumpPortalTradeEvent): boolean {
+  return event.txType !== 'sell' && priceFromTradeEvent(event) === null;
+}
+
 async function handleOneTrade(
   trade: OpenTradeForTick,
   event: PumpPortalTradeEvent,
@@ -198,7 +214,59 @@ async function handleOneTrade(
   // ήδη σε εξέλιξη — βλ. shouldSkipLiveExitCheck.
   if (shouldSkipLiveExitCheck(trade, new Date())) return { kind: 'none' };
 
-  const decision = decideForTick(trade, event, new Date());
+  const now = new Date();
+
+  if (trade.mode === 'live') {
+    // ΔΙΟΡΘΩΣΗ 2026-09-17, πραγματικό incident (#1193): το `decideForTick` σκόπιμα
+    // αγνοεί trades πέρα από το 24ωρο timeout — βασιζόταν ΠΑΝΤΑ στο periodic resolver
+    // για να τα κλείσει. Το periodic resolver πλέον ΔΕΝ αγγίζει καθόλου live trades
+    // (σημερινό, ξεχωριστό fix — βλ. selectOpenTradesForCheck). Χωρίς αυτόν εδώ τον
+    // ρητό έλεγχο, ένα live trade που ποτέ δεν πυροδοτεί tier/trailing/stop_loss θα
+    // έμενε ανοιχτό ΓΙΑ ΠΑΝΤΑ, χωρίς κανέναν μηχανισμό να το κλείσει ποτέ.
+    if (isPastLiveTimeout(trade.entryAt, now)) {
+      await markExitAttemptStarted(trade.id, conn);
+      return {
+        kind: 'pending_live_close',
+        pending: {
+          tradeId: trade.id,
+          exitReason: 'timeout',
+          exitPrice: priceFromTradeEvent(event) ?? trade.simulatedEntryPrice,
+          exitTriggerDetail: null,
+          actualEntryAmountSol: trade.actualEntryAmountSol,
+        },
+      };
+    }
+
+    // ΔΙΟΡΘΩΣΗ 2026-09-17, η ίδια πραγματική αιτία του incident #1193: το
+    // priceFromTradeEvent επιστρέφει null όταν το token «αποφοίτησε» από το pump.fun
+    // bonding curve (pool !== 'pump') — το real-time μας σύστημα δεν έχει φόρμουλα να
+    // υπολογίσει τιμή σε πραγματικό DEX/AMM. Πριν αυτή τη διόρθωση, ένα τέτοιο tick
+    // απλά αγνοούνταν σιωπηλά — παγώνοντας το peak/trailing state ΓΙΑ ΠΑΝΤΑ, χωρίς
+    // stop-loss, χωρίς trailing, χωρίς καμία ειδοποίηση. Ένα exit_signal (wallet sell)
+    // δεν χρειάζεται τιμή για να αναγνωριστεί — ελέγχεται ήδη ΠΡΩΤΟ μέσα στο
+    // decideForTick, άρα δεν το αγγίζουμε εδώ.
+    if (isUnpriceableNonSellEvent(event) && !trade.needsManualExit) {
+      await markNeedsManualExit(trade.id, conn);
+      await recordExecutionError({
+        paperTradeId: trade.id,
+        tokenAddress: event.mint,
+        action: 'sell',
+        amountSol: trade.actualEntryAmountSol,
+        errorMessage: `Το token φαίνεται να «αποφοίτησε» από το pump.fun bonding curve (pool=${event.pool}) — το realtime σύστημα δεν μπορεί πλέον να υπολογίσει τιμή αυτόματα, καμία αυτόματη προστασία (stop-loss/trailing) δεν ισχύει πλέον.`,
+      });
+      return {
+        kind: 'closed',
+        outcome: {
+          type: 'manual_exit_needed',
+          tokenAddress: event.mint,
+          tradeId: trade.id,
+          errorMessage: `Το token «αποφοίτησε» (pool=${event.pool}) — χρειάζεται χειροκίνητος έλεγχος, καμία αυτόματη προστασία δεν ισχύει πλέον.`,
+        },
+      };
+    }
+  }
+
+  const decision = decideForTick(trade, event, now);
 
   switch (decision.type) {
     case 'ignore':
