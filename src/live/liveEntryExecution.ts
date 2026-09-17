@@ -9,7 +9,16 @@ import { reserveLiveCapital, releaseLiveCapital } from '../db/repositories/liveT
 import type { TradeMode } from '../db/types.js';
 
 export interface LiveEntryOutcome {
-  mode: TradeMode; // 'live' μόνο σε πραγματική, επιβεβαιωμένη επιτυχία — αλλιώς 'log_only'
+  /**
+   * 'live' ΜΟΝΟ σε πραγματική, επιβεβαιωμένη επιτυχία. 'paper' ΜΟΝΟ όταν δεν επαρκούσε
+   * το διαθέσιμο live κεφάλαιο (decideTradeMode) — ποτέ δεν προσπαθήσαμε καν risk
+   * gate/reservation/swap. 'log_only' για ΚΑΘΕ άλλη αποτυχία (kill-switch/daily cap,
+   * χαμένη κράτηση κεφαλαίου σε race, ή το ίδιο το swap απέτυχε) — εκεί το κεφάλαιο
+   * υπήρχε, κάτι λειτουργικό εμπόδισε το live trade. Διόρθωση 2026-09-17: πριν αυτή τη
+   * διόρθωση ΚΑΘΕ μη-live περίπτωση κατέληγε 'log_only', και το 'paper' δεν
+   * χρησιμοποιούνταν ΠΟΤΕ στην πράξη — βλ. σχόλιο στο PAPER_OUTCOME παρακάτω.
+   */
+  mode: TradeMode;
   /** Πραγματικό SOL που ξοδεύτηκε (balance-diff) — μόνο όταν mode==='live'. */
   actualEntryAmountSol: number | null;
   /** Πραγματική εκτελεσμένη τιμή — μόνο όταν mode==='live'. Ο caller πέφτει στην
@@ -33,6 +42,45 @@ const LOG_ONLY_OUTCOME: LiveEntryOutcome = {
   liveStrategyOrderId: null,
   nativeOrderVerified: false,
 };
+
+/**
+ * ΔΙΟΡΘΩΣΗ 2026-09-17 (πραγματικό εύρημα, μετά το incident #1193's watchdog work):
+ * μέχρι σήμερα, η `decideTradeMode()` υπολόγιζε σωστά `'paper'` όταν δεν επαρκούσε το
+ * διαθέσιμο live κεφάλαιο (βλ. tradeMode.ts — ρητή, ήδη τεκμηριωμένη πρόθεση: "συνεχίζουμε
+ * να μαζεύουμε δεδομένα ακόμα κι όταν το πραγματικό κεφάλαιο έχει εξαντληθεί"), αλλά ο
+ * caller εδώ πέταγε ΕΝΤΕΛΩΣ αυτή την τιμή — ο μόνος έλεγχος ήταν `!== 'live'`, και ΚΑΘΕ
+ * τέτοια περίπτωση επέστρεφε το ίδιο, hardcoded `LOG_ONLY_OUTCOME`. Αποτέλεσμα: ΚΑΝΕΝΑ
+ * trade δεν έπαιρνε ποτέ `mode='paper'` στην πράξη — όλα τα trades που δεν έγιναν live
+ * καταλήγανε `'log_only'`, ασχέτως αν ο λόγος ήταν "ανεπαρκές κεφάλαιο" (που έπρεπε να
+ * είναι paper) ή κάτι άλλο.
+ *
+ * Ξεχωριστό outcome ΜΟΝΟ για αυτή τη συγκεκριμένη περίπτωση — ανεπαρκές κεφάλαιο,
+ * ελεγμένο ΠΡΙΝ καν προσπαθήσουμε risk gate/reservation/swap. Οι υπόλοιπες αποτυχίες
+ * (kill-switch/daily cap, χαμένη κράτηση σε race, ή το ίδιο το swap να αποτύχει) ΠΑΡΑΜΕΝΟΥΝ
+ * `'log_only'` — εκεί το κεφάλαιο υπήρχε, απλά κάτι λειτουργικό εμπόδισε το live trade,
+ * ενώ το `'paper'` ΕΙΔΙΚΑ σημαίνει "ποτέ δεν είχαμε καν αρκετό κεφάλαιο να προσπαθήσουμε".
+ */
+const PAPER_OUTCOME: LiveEntryOutcome = {
+  mode: 'paper',
+  actualEntryAmountSol: null,
+  entryPrice: null,
+  liveStrategyOrderId: null,
+  nativeOrderVerified: false,
+};
+
+/**
+ * Καθαρή, τεσταρίσιμη επιλογή του fallback outcome όταν δεν προσπαθούμε (ή δεν
+ * καταφέρνουμε) live entry — εξαγόμενη ξεχωριστά από το `attemptLiveEntry` ΑΚΡΙΒΩΣ για
+ * να μπορεί να τεσταριστεί χωρίς πραγματικό DB/CLI, μετά το πραγματικό εύρημα 2026-09-17
+ * (βλ. σχόλιο στο PAPER_OUTCOME): πριν, αυτή η επιλογή ζούσε ανώνυμα μέσα σε
+ * `if (...) return LOG_ONLY_OUTCOME`, χωρίς κανένα test να την κλειδώνει, και το bug
+ * ήταν αόρατο μέχρι να το δει ο χρήστης στην παραγωγή.
+ */
+export function fallbackOutcomeFor(
+  reason: 'insufficient_capital' | 'risk_gate_blocked' | 'reservation_lost' | 'swap_failed',
+): LiveEntryOutcome {
+  return reason === 'insufficient_capital' ? PAPER_OUTCOME : LOG_ONLY_OUTCOME;
+}
 
 /** Πόσο περιμένουμε πριν το πρώτο verify poll — το strategy order χρειάζεται λίγο χρόνο
  * να εμφανιστεί στο `order strategy list` μετά τη δημιουργία του (ίδιο σκεπτικό με το
@@ -95,13 +143,16 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
   }
 
   const balance = wallet.balances.find((b) => b.symbol === 'SOL')?.balance ?? 0;
-  if (decideTradeMode(balance, LIVE_POSITION_SIZE_SOL) !== 'live') return LOG_ONLY_OUTCOME;
+  if (decideTradeMode(balance, LIVE_POSITION_SIZE_SOL) !== 'live') {
+    return fallbackOutcomeFor('insufficient_capital');
+  }
 
   const risk = await checkLiveRiskGate();
-  if (!risk.allowed) return LOG_ONLY_OUTCOME;
+  if (!risk.allowed) return fallbackOutcomeFor('risk_gate_blocked');
 
   const reserved = await reserveLiveCapital(balance, LIVE_POSITION_SIZE_SOL);
-  if (!reserved) return LOG_ONLY_OUTCOME; // ένα σχεδόν-ταυτόχρονο σήμα μόλις δέσμευσε ό,τι έμενε
+  // ένα σχεδόν-ταυτόχρονο σήμα μόλις δέσμευσε ό,τι έμενε
+  if (!reserved) return fallbackOutcomeFor('reservation_lost');
 
   try {
     const result = await executeLiveBuy(
@@ -143,7 +194,7 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
       errorMessage: error instanceof Error ? error.message : String(error),
       errorDetail: error,
     });
-    return LOG_ONLY_OUTCOME;
+    return fallbackOutcomeFor('swap_failed');
   } finally {
     // ΠΑΝΤΑ απελευθέρωσε την κράτηση, ό,τι κι αν συνέβη στο swap — αλλιώς το reserved_sol
     // θα «κολλούσε» ψηλά για πάντα, μπλοκάροντας μελλοντικά, εντελώς άσχετα σήματα.
