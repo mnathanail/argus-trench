@@ -221,6 +221,49 @@ export async function listOpenLiveTradesWithNativeOrder(conn?: Queryable): Promi
   }));
 }
 
+export interface OpenLiveTrade {
+  id: number;
+  tokenAddress: string;
+  entryAt: Date;
+  actualEntryAmountSol: number | null;
+  needsManualExit: boolean;
+  nativeOrderActive: boolean;
+}
+
+/**
+ * ΟΛΑ τα ανοιχτά `mode='live'` trades, ΑΝΕΞΑΡΤΗΤΑ από `native_order_active` — σε αντίθεση
+ * με `listOpenLiveTradesWithNativeOrder` πιο πάνω. Χρειάζεται για το γενικό on-chain
+ * watchdog (`collectors/liveTradeWatchdog.ts`, 2026-09-17, incident #1193): μετά το
+ * σημερινό fix του `selectOpenTradesForCheck` (πλέον αγνοεί mode='live' εντελώς), ΚΑΝΕΝΑ
+ * περιοδικό δίχτυ ασφαλείας δεν κάλυπτε live trades ΧΩΡΙΣ ενεργό native order — μόνο το
+ * realtime websocket path (χωρίς heartbeat/staleness ανίχνευση ακόμα) και ο
+ * liveStrategyReconciler (μόνο native_order_active=true). Αυτό το query είναι το σύνολο
+ * πάνω στο οποίο τρέχει το νέο, γενικό watchdog — δεν αγγίζει καθόλου `mode='paper'`/
+ * `'log_only'` trades (αυτά συνεχίζουν κανονικά μέσω selectOpenTradesForCheck).
+ */
+export async function listAllOpenLiveTrades(conn?: Queryable): Promise<OpenLiveTrade[]> {
+  const { rows } = await db(conn).query<{
+    id: string;
+    token_address: string;
+    entry_at: Date;
+    actual_entry_amount_sol: string | null;
+    needs_manual_exit: boolean;
+    native_order_active: boolean;
+  }>(
+    `SELECT id, token_address, entry_at, actual_entry_amount_sol, needs_manual_exit, native_order_active
+       FROM paper_trades
+      WHERE status = 'open' AND mode = 'live'`,
+  );
+  return rows.map((row) => ({
+    id: toNum(row.id),
+    tokenAddress: row.token_address,
+    entryAt: row.entry_at,
+    actualEntryAmountSol: toNumOrNull(row.actual_entry_amount_sol),
+    needsManualExit: row.needs_manual_exit,
+    nativeOrderActive: row.native_order_active,
+  }));
+}
+
 export interface CloseTradeInput {
   exitReason: ExitReason;
   /** π.χ. ποιο wallet παρήγαγε το exit_signal. */

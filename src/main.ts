@@ -1,6 +1,7 @@
 import { runDiscoveryCycle } from './collectors/discovery.js';
 import { runExitResolverCycle } from './collectors/exitResolver.js';
 import { runLiveStrategyReconcilerCycle } from './collectors/liveStrategyReconciler.js';
+import { runLiveTradeWatchdogCycle } from './collectors/liveTradeWatchdog.js';
 import { runDailyDigestCycle } from './collectors/dailyDigest.js';
 import {
   DISCOVERY_INTERVAL_MS,
@@ -19,6 +20,9 @@ import {
   LIVE_STRATEGY_RECONCILER_INTERVAL_MS,
   LIVE_STRATEGY_RECONCILER_INITIAL_DELAY_MS,
   LIVE_STRATEGY_RECONCILER_RETRY_BACKOFF_MS,
+  LIVE_TRADE_WATCHDOG_INTERVAL_MS,
+  LIVE_TRADE_WATCHDOG_INITIAL_DELAY_MS,
+  LIVE_TRADE_WATCHDOG_RETRY_BACKOFF_MS,
 } from './collectors/intervals.js';
 import { runWalletScoringCycle } from './collectors/scoring.js';
 import { runWalletDiscoveryCycle } from './collectors/walletDiscovery.js';
@@ -254,6 +258,21 @@ const loops: LoopDefinition[] = [
       console.log(
         `[live-strategy-reconciler] checked=${result.checked} closed=${result.closed} ` +
           `fallback=${result.fallbackActivated} failures=${result.failures}`,
+      );
+      for (const alert of result.alerts) await notify(alert);
+    },
+  },
+  {
+    name: 'live-trade-watchdog',
+    intervalMs: LIVE_TRADE_WATCHDOG_INTERVAL_MS,
+    initialDelayMs: LIVE_TRADE_WATCHDOG_INITIAL_DELAY_MS,
+    retryBackoffMs: LIVE_TRADE_WATCHDOG_RETRY_BACKOFF_MS,
+    run: async () => {
+      const result = await runLiveTradeWatchdogCycle();
+      if (result.checked === 0 && result.failures === 0) return;
+      console.log(
+        `[live-trade-watchdog] checked=${result.checked} flagged=${result.flaggedForManualExit} ` +
+          `failures=${result.failures}`,
       );
       for (const alert of result.alerts) await notify(alert);
     },

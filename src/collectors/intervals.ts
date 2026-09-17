@@ -195,3 +195,35 @@ export const LIVE_STRATEGY_RECONCILER_RETRY_BACKOFF_MS = [
   15 * 60_000,
 ] as const;
 
+/**
+ * Live trade watchdog (2026-09-17, incident #1193 — δεύτερο, ανεξάρτητο fix της ίδιας
+ * μέρας). Ο `liveStrategyReconciler` πιο πάνω καλύπτει ΜΟΝΟ trades με ενεργό native GMGN
+ * order· ένα live trade ΧΩΡΙΣ ενεργό native order (π.χ. αν το `attachLiveNativeOrder`
+ * απέτυχε στο entry, ή αν το reconciler το απενεργοποίησε ήδη ως fallback) δεν είχε
+ * ΚΑΝΕΝΑ περιοδικό safety net — μόνο το realtime websocket path, που δεν έχει ακόμα
+ * heartbeat/staleness ανίχνευση (pumpportalConnection.ts). Αν το feed «παγώσει» σιωπηλά
+ * (χωρίς formal 'close' event), μια πραγματική θέση θα έμενε ανοιχτή on-chain, εντελώς
+ * εκτός παρακολούθησης, επ' αόριστον.
+ *
+ * Αυτό το collector διαβάζει το ΠΡΑΓΜΑΤΙΚΟ on-chain token balance (`portfolio
+ * token-balance`, weight 1/trade — το φθηνότερο διαθέσιμο route) για ΚΑΘΕ ανοιχτό
+ * `mode='live'` trade, ΑΝΕΞΑΡΤΗΤΑ από native_order_active. ΠΟΤΕ δεν υπολογίζει/γράφει
+ * simulated pnl (αυτό ήταν ακριβώς το bug του #1193) — μόνο σημαδεύει
+ * `needs_manual_exit` όταν βρει balance=0 χωρίς ποτέ να έχει καταγραφεί πραγματική
+ * πώληση, ώστε άνθρωπος να το κλείσει χειροκίνητα με τα πραγματικά νούμερα.
+ *
+ * Interval πιο αραιό από τον reconciler (5 λεπτά αντί 2) — αυτό είναι τρίτο, εφεδρικό
+ * δίχτυ ασφαλείας (websocket πρωτεύον, native order δεύτερο, αυτό τρίτο), όχι κύριο
+ * exit mechanism, και το `portfolio token-balance` κόστος μεγαλώνει γραμμικά με τον
+ * αριθμό ανοιχτών live trades — δεν έχει νόημα να «τρέχει» πιο συχνά από όσο μπορεί να
+ * ανιχνεύσει ένα πραγματικό stuck-feed πρόβλημα.
+ */
+export const LIVE_TRADE_WATCHDOG_INTERVAL_MS = 5 * 60 * 1000;
+export const LIVE_TRADE_WATCHDOG_LOOP_PACING_MS = 500;
+export const LIVE_TRADE_WATCHDOG_INITIAL_DELAY_MS = 30_000;
+export const LIVE_TRADE_WATCHDOG_RETRY_BACKOFF_MS = [
+  60_000,
+  5 * 60_000,
+  15 * 60_000,
+] as const;
+

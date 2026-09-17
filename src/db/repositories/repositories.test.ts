@@ -16,6 +16,7 @@ import {
   closeTrade,
   countOpenTrades,
   getTrade,
+  listAllOpenLiveTrades,
   listOpenTrades,
   markExitAttemptStarted,
   markNeedsManualExit,
@@ -853,5 +854,125 @@ test('selectOpenTradesForCheck NEVER returns a mode=live trade — only the real
 
     assert.ok(!ids.includes(liveTradeId), 'ΚΡΙΣΙΜΟ: ένα live trade δεν πρέπει ΠΟΤΕ να επιστραφεί εδώ');
     assert.ok(ids.includes(paperTradeId), 'ένα κανονικό paper trade πρέπει να συνεχίσει να επιστρέφεται κανονικά');
+  });
+});
+
+// listAllOpenLiveTrades — το νέο, γενικό live-trade watchdog (2026-09-17, incident
+// #1193, τρίτο ανεξάρτητο δίχτυ ασφαλείας): σε αντίθεση με
+// listOpenLiveTradesWithNativeOrder, ΠΡΕΠΕΙ να επιστρέφει ΚΑΘΕ ανοιχτό mode='live' trade,
+// ασχέτως native_order_active — και ΠΟΤΕ να αγγίξει paper/log_only trades.
+
+test('listAllOpenLiveTrades returns every open mode=live trade regardless of native_order_active, and NEVER paper/log_only', async () => {
+  await inRollback(async (tx) => {
+    const liveWithNativeId = await insertDecision(
+      { ...baseDecision, tokenAddress: 'WatchdogLiveNativeAAAAAAAAAAAAAAAAAAAA1', decision: 'entered' },
+      tx,
+    );
+    const liveWithNativeTradeId = await openTrade(
+      {
+        decisionLogId: liveWithNativeId,
+        tokenAddress: 'WatchdogLiveNativeAAAAAAAAAAAAAAAAAAAA1',
+        mode: 'live',
+        intendedSizePct: 0.05,
+        bankrollAtEntry: 1,
+        simulatedEntryPrice: 1,
+        simulatedEntryAmountSol: 0.05,
+        actualEntryAmountSol: 0.052,
+        assumedSlippagePct: 0.5,
+        assumedLatencyMs: 200,
+      },
+      tx,
+    );
+
+    const liveNoNativeId = await insertDecision(
+      { ...baseDecision, tokenAddress: 'WatchdogLiveNoNativeBBBBBBBBBBBBBBBBBB2', decision: 'entered' },
+      tx,
+    );
+    const liveNoNativeTradeId = await openTrade(
+      {
+        decisionLogId: liveNoNativeId,
+        tokenAddress: 'WatchdogLiveNoNativeBBBBBBBBBBBBBBBBBB2',
+        mode: 'live',
+        intendedSizePct: 0.05,
+        bankrollAtEntry: 1,
+        simulatedEntryPrice: 1,
+        simulatedEntryAmountSol: 0.05,
+        actualEntryAmountSol: 0.05,
+        assumedSlippagePct: 0.5,
+        assumedLatencyMs: 200,
+      },
+      tx,
+    );
+    // ΠΟΤΕ native order attach-άρεται — αυτό ΕΙΝΑΙ το σενάριο που ο reconciler δεν καλύπτει.
+
+    const paperDecisionId = await insertDecision(
+      { ...baseDecision, tokenAddress: 'WatchdogPaperCCCCCCCCCCCCCCCCCCCCCCCC3', decision: 'entered' },
+      tx,
+    );
+    const paperTradeId = await openTrade(
+      {
+        decisionLogId: paperDecisionId,
+        tokenAddress: 'WatchdogPaperCCCCCCCCCCCCCCCCCCCCCCCC3',
+        mode: 'paper',
+        intendedSizePct: 0.01,
+        bankrollAtEntry: 10,
+        simulatedEntryPrice: 1,
+        simulatedEntryAmountSol: 0.1,
+        assumedSlippagePct: 0.02,
+        assumedLatencyMs: 400,
+      },
+      tx,
+    );
+
+    const results = await listAllOpenLiveTrades(tx);
+    const ids = results.map((r) => r.id);
+
+    assert.ok(ids.includes(liveWithNativeTradeId), 'live trade ΜΕ ενεργό native order πρέπει να επιστρέφεται');
+    assert.ok(ids.includes(liveNoNativeTradeId), 'ΚΡΙΣΙΜΟ: live trade ΧΩΡΙΣ native order πρέπει ΕΠΙΣΗΣ να επιστρέφεται — αυτό είναι το κενό που καλύπτει το watchdog');
+    assert.ok(!ids.includes(paperTradeId), 'ΚΡΙΣΙΜΟ: ένα paper trade δεν πρέπει ΠΟΤΕ να επιστραφεί εδώ');
+
+    const withNative = results.find((r) => r.id === liveWithNativeTradeId);
+    assert.equal(withNative?.actualEntryAmountSol, 0.052);
+    assert.equal(withNative?.needsManualExit, false);
+  });
+});
+
+test('listAllOpenLiveTrades excludes a closed live trade', async () => {
+  await inRollback(async (tx) => {
+    const decisionId = await insertDecision(
+      { ...baseDecision, tokenAddress: 'WatchdogClosedDDDDDDDDDDDDDDDDDDDDDDD4', decision: 'entered' },
+      tx,
+    );
+    const tradeId = await openTrade(
+      {
+        decisionLogId: decisionId,
+        tokenAddress: 'WatchdogClosedDDDDDDDDDDDDDDDDDDDDDDD4',
+        mode: 'live',
+        intendedSizePct: 0.05,
+        bankrollAtEntry: 1,
+        simulatedEntryPrice: 1,
+        simulatedEntryAmountSol: 0.05,
+        actualEntryAmountSol: 0.05,
+        assumedSlippagePct: 0.5,
+        assumedLatencyMs: 200,
+      },
+      tx,
+    );
+    await closeTrade(
+      tradeId,
+      {
+        exitReason: 'manual',
+        simulatedExitPrice: 1.5,
+        pnlSol: 0.02,
+        pnlPct: 0.4,
+        assumedFeesPct: 0,
+        pnlNetPct: 0.4,
+        actualExitAmountSol: 0.07,
+      },
+      tx,
+    );
+
+    const results = await listAllOpenLiveTrades(tx);
+    assert.ok(!results.some((r) => r.id === tradeId), 'ένα ήδη κλεισμένο live trade δεν πρέπει να επιστραφεί');
   });
 });
