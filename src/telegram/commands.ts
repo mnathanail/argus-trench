@@ -18,8 +18,41 @@ import type { TradeSummary, WalletLeaderboardEntry } from '../db/repositories/pa
  * το algorithmic threshold μπορεί να απενεργοποιηθεί χειροκίνητα.
  */
 
-/** Το ίδιο floor με το auto-discovery, αλλά advisory-only για manual wallets. */
-export const ADVISORY_WIN_RATE_FLOOR = 0.5;
+/**
+ * Το ίδιο floor με το auto-discovery, αλλά advisory-only για manual wallets. Χρησιμοποιείται
+ * ΚΑΙ στο bootstrap threshold του `walletDiscovery.ts` ΚΑΙ στο auto-deactivate/reactivate
+ * lifecycle του `scoring.ts` (`passesThreshold`) — μία σταθερά, τρία σημεία χρήσης.
+ *
+ * ΔΙΟΡΘΩΣΗ 2026-09-18 (πραγματικό εύρημα, ρητό αίτημα χρήστη): 0.5 → 0.4. Real incident:
+ * το watchlist είχε μεγαλώσει σταθερά 109→141 active wallets (11/9-18/9) μέσω του ωριαίου
+ * auto-discovery bootstrap, αλλά στις 18/9 **84 από αυτά απενεργοποιήθηκαν αυτόματα μέσα
+ * στην ΙΔΙΑ μέρα** (`deactivated_reason='below_threshold'`), κόβοντας το ενεργό pool περίπου
+ * στο μισό (52-57 wallets) σε λίγες ώρες. Αυτό αντιστοιχήθηκε 1-προς-1 με μια κατάρρευση
+ * του `signal_logged` volume (27 στις 14/9 → 4 στις 18/9): λιγότερα ενεργά wallets σημαίνει
+ * λιγότερες πιθανότητες να πιάσουμε ένα πραγματικό "trusted wallet buy" σήμα, ΑΝΕΞΑΡΤΗΤΑ από
+ * το πόσο υγιές είναι το gate (το gate pass rate έμενε σταθερό ~40-45% όλη την περίοδο —
+ * το πρόβλημα ήταν αμιγώς εδώ, στο layer 2/3, όχι στο discovery/gate).
+ *
+ * Ρίζα: το `portfolio stats` (χωρίς `--period`) είναι 7-ήμερο ΚΥΛΙΟΜΕΝΟ παράθυρο, όχι
+ * lifetime (βλ. CLAUDE.md) — με ~98.6% βασικό ποσοστό κατάρρευσης στα pump.fun tokens, το
+ * win rate ενός ακόμα καλού wallet ταλαντεύεται φυσιολογικά αρκετά μέσα σε μια εβδομάδα ώστε
+ * να ξεφύγει προσωρινά κάτω από ένα αυστηρό 50% floor. Το lifecycle χρειάζεται ήδη 2
+ * συνεχόμενες αποτυχημένες μετρήσεις (scoring κάθε 15 λεπτά, άρα ~30 λεπτά "παράθυρο
+ * επιβεβαίωσης") πριν απενεργοποιήσει — αρκετό να φιλτράρει ένα μεμονωμένο μετρητικό μπλιπ,
+ * αλλά ΟΧΙ αρκετό όταν πολλά wallets μπήκαν περίπου ταυτόχρονα (bootstrap) και τα 7-ήμερα
+ * παράθυρά τους "γεμίζουν" με ζημιογόνες θέσεις σχεδόν ταυτόχρονα σε μια κακή περίοδο
+ * αγοράς — τότε το lifecycle αδειάζει τη watchlist μαζικά, ακριβώς το αντίθετο από το
+ * ρητό στόχο του project για breadth ("χρειάζεσαι όγκο ώστε να μη μπερδεύεις κακή τύχη με
+ * κακή στρατηγική", βλ. CLAUDE.md "Bankroll management").
+ *
+ * 0.4 δεν είναι οριστική λύση στο θόρυβο του 7-ήμερου παραθύρου (αυτό θα χρειαζόταν
+ * μεγαλύτερο confirmation window ή διαφορετικό στατιστικό μέτρο) — είναι ένα πιο ανεκτικό
+ * threshold ώστε το φυσιολογικό noise ενός ακόμα-καλού wallet να μην το ρίχνει έξω τόσο
+ * εύκολα. Αν το πρόβλημα επανεμφανιστεί, το επόμενο βήμα είναι να μεγαλώσει το confirmation
+ * window (π.χ. 4-6 συνεχόμενες μετρήσεις αντί για 2) ή να αραιώσει η συχνότητα του scoring
+ * loop για wallets κοντά στο threshold, όχι να χαμηλώσει ξανά το ίδιο το floor επ' αόριστον.
+ */
+export const ADVISORY_WIN_RATE_FLOOR = 0.4;
 export const ADVISORY_TOKEN_COUNT_FLOOR = 15;
 
 export interface CommandDeps {

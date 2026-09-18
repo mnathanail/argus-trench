@@ -2,6 +2,15 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { decideLifecycleTransition } from './scoring.js';
+import { ADVISORY_WIN_RATE_FLOOR } from '../telegram/commands.js';
+
+// ΔΙΟΡΘΩΣΗ 2026-09-18: fixtures εδώ χτίζονται γύρω από ADVISORY_WIN_RATE_FLOOR (0.4, ήταν
+// 0.5) αντί για hardcoded τιμές — βλ. σχόλιο στο commands.ts. Πριν, τα "failing" win rates
+// (0.42-0.45) ήταν σκόπιμα κάτω από το ΤΟΤΕ floor 0.5· μετά τη χαλάρωση θα ήταν πλέον
+// PASSING τιμές και τα tests θα έλεγχαν λάθος σενάριο σιωπηλά.
+const BELOW_FLOOR = ADVISORY_WIN_RATE_FLOOR - 0.05;
+const FURTHER_BELOW_FLOOR = ADVISORY_WIN_RATE_FLOOR - 0.08;
+const JUST_ABOVE_FLOOR = ADVISORY_WIN_RATE_FLOOR + 0.05;
 
 function wallet(overrides: Partial<Parameters<typeof decideLifecycleTransition>[0]> = {}) {
   return {
@@ -15,16 +24,16 @@ function wallet(overrides: Partial<Parameters<typeof decideLifecycleTransition>[
 
 test('decideLifecycleTransition: no transition when already-active wallet just dips once (advisory territory)', () => {
   const result = decideLifecycleTransition(
-    wallet({ active: true, winRate: 0.55, tradeCount: 50 }), // previous reading: passing
-    { winRate: 0.45, tradeCount: 50 }, // current: failing (first dip)
+    wallet({ active: true, winRate: JUST_ABOVE_FLOOR, tradeCount: 50 }), // previous reading: passing
+    { winRate: BELOW_FLOOR, tradeCount: 50 }, // current: failing (first dip)
   );
   assert.equal(result, null);
 });
 
 test('decideLifecycleTransition: deactivates on the SECOND consecutive failing reading', () => {
   const result = decideLifecycleTransition(
-    wallet({ active: true, winRate: 0.45, tradeCount: 50 }), // previous reading: already failing
-    { winRate: 0.42, tradeCount: 50 }, // current: still failing
+    wallet({ active: true, winRate: BELOW_FLOOR, tradeCount: 50 }), // previous reading: already failing
+    { winRate: FURTHER_BELOW_FLOOR, tradeCount: 50 }, // current: still failing
   );
   assert.equal(result, 'deactivate');
 });
@@ -39,7 +48,7 @@ test('decideLifecycleTransition: low trade_count alone (even with good win rate)
 
 test('decideLifecycleTransition: does not reactivate on a single passing reading after deactivation', () => {
   const result = decideLifecycleTransition(
-    wallet({ active: false, deactivatedReason: 'below_threshold', winRate: 0.4, tradeCount: 50 }),
+    wallet({ active: false, deactivatedReason: 'below_threshold', winRate: BELOW_FLOOR, tradeCount: 50 }),
     { winRate: 0.55, tradeCount: 50 }, // first recovery reading
   );
   assert.equal(result, null);

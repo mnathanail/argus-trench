@@ -5,6 +5,7 @@ import { test } from 'node:test';
 
 import { parseTrenchesResponse } from '../gmgn/trenches.js';
 import type { WalletStats } from '../gmgn/walletStats.js';
+import { ADVISORY_WIN_RATE_FLOOR } from '../telegram/commands.js';
 import {
   passesAutoDiscoveryThreshold,
   pickRecentGraduated,
@@ -95,10 +96,12 @@ function stats(overrides: Partial<WalletStats> = {}): WalletStats {
   };
 }
 
-test('passesAutoDiscoveryThreshold matches the manual advisory floor exactly: winRate > 0.5 AND tokenCount >= 15', () => {
+test('passesAutoDiscoveryThreshold matches the manual advisory floor exactly: winRate > ADVISORY_WIN_RATE_FLOOR AND tokenCount >= 15', () => {
   assert.equal(passesAutoDiscoveryThreshold(stats({ winRate: 0.6, tokenCount: 20 })), true);
-  // Boundary: win rate είναι strict >, token count είναι >=.
-  assert.equal(passesAutoDiscoveryThreshold(stats({ winRate: 0.5, tokenCount: 20 })), false);
+  // Boundary: win rate είναι strict >, token count είναι >=. Χρησιμοποιεί την ίδια σταθερά
+  // με το production code (ΔΙΟΡΘΩΣΗ 2026-09-18: 0.5 → 0.4, βλ. σχόλιο στο commands.ts) αντί
+  // για hardcoded 0.5 — αλλιώς αυτό το boundary test θα ξαναμείνει stale στην επόμενη αλλαγή.
+  assert.equal(passesAutoDiscoveryThreshold(stats({ winRate: ADVISORY_WIN_RATE_FLOOR, tokenCount: 20 })), false);
   assert.equal(passesAutoDiscoveryThreshold(stats({ winRate: 0.6, tokenCount: 15 })), true);
   assert.equal(passesAutoDiscoveryThreshold(stats({ winRate: 0.6, tokenCount: 14 })), false);
 });
