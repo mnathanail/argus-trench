@@ -158,7 +158,24 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
   let wallet;
   try {
     wallet = await fetchLiveSolWallet();
-  } catch {
+  } catch (error) {
+    // ΔΙΟΡΘΩΣΗ 2026-09-18 (πραγματικό εύρημα): πριν, αυτό το catch ήταν ΕΝΤΕΛΩΣ σιωπηλό —
+    // ούτε log, ούτε trade_execution_errors row, τίποτα. Αν το `portfolio info` αρχίσει
+    // να αποτυγχάνει (429 παρατεταμένο, ληγμένο API key/session, αλλαγή στο wallet
+    // binding, ό,τι δήποτε), ΚΑΘΕ σήμα καταλήγει σιωπηλά log_only επ' αόριστον — καμία
+    // ένδειξη στο kill-switch (ποτέ δεν φτάνει ως εκεί), καμία στο trade_execution_errors
+    // (αυτό το catch είναι ΠΡΙΝ φτάσει εκεί). Ο χρήστης το ανακάλυψε μόνο επειδή παρατήρησε
+    // ότι δεν έβλεπε πια νέα trades στο ίδιο το GMGN UI, ώρες αργότερα — ΧΩΡΙΣ αυτή τη
+    // διόρθωση δεν υπάρχει κανένα ερώτημα στη βάση που να το αποκαλύπτει άμεσα.
+    console.error(`[live-entry] fetchLiveSolWallet απέτυχε — fallback σε log_only: ${error instanceof Error ? error.message : String(error)}`);
+    await recordExecutionError({
+      paperTradeId: null,
+      tokenAddress,
+      action: 'buy',
+      amountSol: null,
+      errorMessage: `δεν διαβάστηκε το live SOL wallet (portfolio info) — ${error instanceof Error ? error.message : String(error)}`,
+      errorDetail: error,
+    });
     return LOG_ONLY_OUTCOME; // δεν μπορέσαμε καν να διαβάσουμε το υπόλοιπο — ασφαλές fallback
   }
 
