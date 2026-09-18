@@ -44,3 +44,25 @@ test('fallbackOutcomeFor: every non-live outcome has no real entry data (actualE
     assert.equal(outcome.nativeOrderVerified, false);
   }
 });
+
+// --- killSwitchJustTriggered: νέο 2026-09-18, πραγματικό εύρημα -------------------------
+// Ο χρήστης έμαθε ότι το kill-switch είχε ξαναχτυπήσει μόνο ώρες αργότερα, από ένα
+// μπαγιάτικο daily digest — καμία proactive ειδοποίηση δεν έφευγε τη στιγμή που συνέβη.
+
+test('fallbackOutcomeFor: killSwitchJustTriggered defaults to false when omitted', () => {
+  const outcome = fallbackOutcomeFor('risk_gate_blocked');
+  assert.equal(outcome.killSwitchJustTriggered, false);
+});
+
+test('fallbackOutcomeFor: risk_gate_blocked with justHalted=true surfaces killSwitchJustTriggered — this is what triggers the proactive alert', () => {
+  const outcome = fallbackOutcomeFor('risk_gate_blocked', true);
+  assert.equal(outcome.mode, 'log_only', 'το mode δεν αλλάζει, μόνο το flag');
+  assert.equal(outcome.killSwitchJustTriggered, true);
+});
+
+test('fallbackOutcomeFor: killSwitchJustTriggered=true is ignored for every reason OTHER than risk_gate_blocked — only the kill-switch path can set it', () => {
+  for (const reason of ['insufficient_capital', 'reservation_lost', 'swap_failed'] as const) {
+    const outcome = fallbackOutcomeFor(reason, true);
+    assert.equal(outcome.killSwitchJustTriggered, false, `${reason} δεν πρέπει ποτέ να πυροδοτεί το kill-switch alert`);
+  }
+});

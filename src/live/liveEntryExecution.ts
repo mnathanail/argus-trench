@@ -33,6 +33,13 @@ export interface LiveEntryOutcome {
    * "πέτυχε" αλλά η επιβεβαίωση δεν το βρήκε υγιές) — τότε το δικό μας realtime tracking
    * (checkTick) παραμένει ο ΜΟΝΑΔΙΚΟΣ μηχανισμός προστασίας, ΑΚΡΙΒΩΣ όπως πριν. */
   nativeOrderVerified: boolean;
+  /** ΔΙΟΡΘΩΣΗ 2026-09-18: true ΜΟΝΟ όταν αυτή η προσπάθεια ήταν αυτή που μόλις ενεργοποίησε
+   * το kill-switch (LIVE_KILL_SWITCH_CONSEC_LOSSES συνεχόμενες ζημιές) — βλ.
+   * RiskGateResult.justHalted. Ο caller
+   * (handleRealtimeEntryEvent/main.ts) το χρησιμοποιεί για proactive Telegram alert, ώστε
+   * ο χρήστης να το μάθει ΑΜΕΣΩΣ αντί μόνο από το επόμενο (πιθανώς μπαγιάτικο) daily
+   * digest — πραγματικό εύρημα 2026-09-17/18, ο χρήστης μπερδεύτηκε με στιγμιότυπο digest. */
+  killSwitchJustTriggered: boolean;
 }
 
 const LOG_ONLY_OUTCOME: LiveEntryOutcome = {
@@ -41,6 +48,7 @@ const LOG_ONLY_OUTCOME: LiveEntryOutcome = {
   entryPrice: null,
   liveStrategyOrderId: null,
   nativeOrderVerified: false,
+  killSwitchJustTriggered: false,
 };
 
 /**
@@ -66,6 +74,7 @@ const PAPER_OUTCOME: LiveEntryOutcome = {
   entryPrice: null,
   liveStrategyOrderId: null,
   nativeOrderVerified: false,
+  killSwitchJustTriggered: false,
 };
 
 /**
@@ -75,11 +84,22 @@ const PAPER_OUTCOME: LiveEntryOutcome = {
  * (βλ. σχόλιο στο PAPER_OUTCOME): πριν, αυτή η επιλογή ζούσε ανώνυμα μέσα σε
  * `if (...) return LOG_ONLY_OUTCOME`, χωρίς κανένα test να την κλειδώνει, και το bug
  * ήταν αόρατο μέχρι να το δει ο χρήστης στην παραγωγή.
+ *
+ * `killSwitchJustTriggered` περνάει ξεχωριστά (ΟΧΙ σαν επιπλέον reason) γιατί αλλάζει
+ * ΜΟΝΟ ένα πεδίο πάνω στο ίδιο, καθορισμένο LOG_ONLY_OUTCOME — μόνο το `risk_gate_blocked`
+ * μπορεί ποτέ να το θέσει true, οι υπόλοιποι λόγοι το αγνοούν ρητά.
  */
 export function fallbackOutcomeFor(
   reason: 'insufficient_capital' | 'risk_gate_blocked' | 'reservation_lost' | 'swap_failed',
+  killSwitchJustTriggered = false,
 ): LiveEntryOutcome {
-  return reason === 'insufficient_capital' ? PAPER_OUTCOME : LOG_ONLY_OUTCOME;
+  if (reason === 'insufficient_capital') return PAPER_OUTCOME;
+  // ΜΟΝΟ το risk_gate_blocked περνάει ποτέ killSwitchJustTriggered=true στην πράξη (μόνο
+  // εκεί καλείται το checkLiveRiskGate) — αλλά ελέγχουμε ρητά το reason εδώ, όχι μόνο το
+  // flag, ώστε ένα μελλοντικό λάθος στον caller να μην μπορεί ποτέ να στείλει το alert
+  // κάτω από λάθος λόγο αποτυχίας (π.χ. reservation_lost/swap_failed).
+  const shouldFlag = reason === 'risk_gate_blocked' && killSwitchJustTriggered;
+  return shouldFlag ? { ...LOG_ONLY_OUTCOME, killSwitchJustTriggered: true } : LOG_ONLY_OUTCOME;
 }
 
 /** Πόσο περιμένουμε πριν το πρώτο verify poll — το strategy order χρειάζεται λίγο χρόνο
@@ -148,7 +168,7 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
   }
 
   const risk = await checkLiveRiskGate();
-  if (!risk.allowed) return fallbackOutcomeFor('risk_gate_blocked');
+  if (!risk.allowed) return fallbackOutcomeFor('risk_gate_blocked', risk.justHalted);
 
   const reserved = await reserveLiveCapital(balance, LIVE_POSITION_SIZE_SOL);
   // ένα σχεδόν-ταυτόχρονο σήμα μόλις δέσμευσε ό,τι έμενε
@@ -184,6 +204,7 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
       entryPrice: result.executedPrice,
       liveStrategyOrderId: nativeOrderVerified ? result.strategyOrderId : null,
       nativeOrderVerified,
+      killSwitchJustTriggered: false, // επιτυχές live trade — δεν πυροδότησε τίποτα
     };
   } catch (error) {
     await recordExecutionError({

@@ -31,6 +31,7 @@ import { closePool } from './db/pool.js';
 import { listActiveWallets } from './db/repositories/watchlistWallets.js';
 import { listOpenTradesWithWallet } from './db/repositories/paperTrades.js';
 import { logicVersion } from './decision/gateConfig.js';
+import { LIVE_KILL_SWITCH_CONSEC_LOSSES } from './decision/paperTradingConfig.js';
 import { msUntilNextAthensTime } from './util/athensTime.js';
 import { PumpPortalConnection } from './realtime/pumpportalConnection.js';
 import { subscribeAllActiveWallets, subscribeOpenTrades } from './realtime/subscriptionManager.js';
@@ -143,6 +144,17 @@ realtimeConnection = pumpportalApiKey
         handleRealtimeEntryEvent(event, realtimeConnection)
           .then(async (entry) => {
             if (entry === null) return;
+            // ΔΙΟΡΘΩΣΗ 2026-09-18 (πραγματικό εύρημα): πριν, το kill-switch ενεργοποιούνταν
+            // σιωπηλά μέσα στο checkLiveRiskGate — ο χρήστης το μάθαινε μόνο από το επόμενο
+            // daily digest (ή ένα ήδη-μπαγιάτικο digest, ακριβώς αυτό που τον μπέρδεψε
+            // 2026-09-17 βράδυ). Proactive alert ΑΜΕΣΩΣ, μία φορά (killSwitchJustTriggered
+            // είναι true ΜΟΝΟ την πρώτη φορά που ενεργοποιείται, βλ. liveRiskGate.ts).
+            if (entry.killSwitchJustTriggered) {
+              await notify(
+                `🔴 Live trading kill-switch ΕΝΕΡΓΟΠΟΙΗΘΗΚΕ ΤΩΡΑ — ${LIVE_KILL_SWITCH_CONSEC_LOSSES} συνεχόμενες ζημιές.\n` +
+                  `Κανένα νέο live trade μέχρι /resume_live. Δες /trades για λεπτομέρειες.`,
+              );
+            }
             const walletLabel = entry.walletName ?? short(entry.walletAddress);
             await notify(
               `⚡🎯 νέο trade (realtime) — ${short(entry.tokenAddress)} | wallet ${walletLabel} ` +

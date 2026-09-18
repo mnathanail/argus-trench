@@ -14,14 +14,28 @@ export async function getLiveHaltState(conn?: Queryable): Promise<LiveTradingHal
   return { haltedAt: row?.halted_at ?? null, haltedReason: row?.halted_reason ?? null };
 }
 
-/** Ενεργοποιεί το kill-switch — ΜΕΝΕΙ έτσι μέχρι ρητό `clearLiveHalt()` (χειροκίνητο,
+/**
+ * Ενεργοποιεί το kill-switch — ΜΕΝΕΙ έτσι μέχρι ρητό `clearLiveHalt()` (χειροκίνητο,
  * ΠΟΤΕ αυτόματο — ρητή απόφαση χρήστη 2026-09-11). Idempotent: αν είναι ήδη halted, δεν
- * αντικαθιστά το αρχικό `halted_at`/`halted_reason` — κρατάμε πότε ΠΡΩΤΟΠΡΩΤΑ σκάλωσε. */
-export async function setLiveHalted(reason: string, conn?: Queryable): Promise<void> {
-  await db(conn).query(
-    `UPDATE live_trading_state SET halted_at = COALESCE(halted_at, now()), halted_reason = COALESCE(halted_reason, $1) WHERE id = 1`,
+ * αντικαθιστά το αρχικό `halted_at`/`halted_reason` — κρατάμε πότε ΠΡΩΤΟΠΡΩΤΑ σκάλωσε.
+ *
+ * ΔΙΟΡΘΩΣΗ 2026-09-18 (πραγματικό εύρημα — ο χρήστης έμαθε ότι το kill-switch είχε
+ * ξαναχτυπήσει μόνο επειδή το daily digest το έδειξε, ώρες αργότερα, και μπερδεύτηκε με
+ * ένα μπαγιάτικο digest που δεν είχε ανανεωθεί): επιστρέφει `true` ΜΟΝΟ όταν ΑΥΤΗ η κλήση
+ * ήταν αυτή που ΠΡΑΓΜΑΤΙΚΑ το ενεργοποίησε (πρώτη φορά, `halted_at` ήταν NULL πριν) —
+ * `false` αν ήταν ήδη ενεργό (απλή επιβεβαίωση, τίποτα νέο). Το `RETURNING xmax` δε
+ * χρειάζεται εδώ· αρκεί να συγκρίνουμε το state πριν/μετά μέσα στο ίδιο statement με ένα
+ * conditional UPDATE ... RETURNING, ώστε ο caller (`checkLiveRiskGate`) να ξέρει πότε να
+ * στείλει proactive alert ΜΙΑ φορά, όχι σε ΚΑΘΕ αποκλεισμένο σήμα μετά.
+ */
+export async function setLiveHalted(reason: string, conn?: Queryable): Promise<boolean> {
+  const result = await db(conn).query(
+    `UPDATE live_trading_state
+        SET halted_at = COALESCE(halted_at, now()), halted_reason = COALESCE(halted_reason, $1)
+      WHERE id = 1 AND halted_at IS NULL`,
     [reason],
   );
+  return (result.rowCount ?? 0) > 0;
 }
 
 /** Χειροκίνητο reset — καλείται ΜΟΝΟ από ρητή ενέργεια χρήστη (π.χ. Telegram εντολή). */

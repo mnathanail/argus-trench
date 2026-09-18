@@ -25,6 +25,11 @@ export interface RealtimeEntryResult {
   walletAddress: string;
   walletName: string | null;
   entryPrice: number;
+  /** ΔΙΟΡΘΩΣΗ 2026-09-18: true όταν αυτή η προσπάθεια μόλις ενεργοποίησε το live
+   * kill-switch — βλ. LiveEntryOutcome.killSwitchJustTriggered. Ο caller (main.ts) το
+   * χρησιμοποιεί για proactive Telegram alert, αντί ο χρήστης να το μαθαίνει μόνο από το
+   * επόμενο daily digest. */
+  killSwitchJustTriggered: boolean;
 }
 
 export type EntryWalletInput = Pick<
@@ -159,5 +164,6 @@ export async function handleRealtimeEntryEvent(
     walletAddress: wallet.address,
     walletName: wallet.name,
     entryPrice: finalEntryPrice,
+    killSwitchJustTriggered: live.killSwitchJustTriggered,
   };
 }

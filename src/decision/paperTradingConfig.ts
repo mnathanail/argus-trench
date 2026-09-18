@@ -77,8 +77,18 @@ export const LIVE_POSITION_SIZE_SOL = LIVE_BANKROLL_SOL * LIVE_POSITION_SIZE_PCT
  * αφήνει περιθώριο για ~5 stop-lossed trades πριν σταματήσει, όχι 2.
  * kill-switch: ΣΤΑΘΕΡΟ μέχρι χειροκίνητο reset, ΟΧΙ αυτόματη επαναφορά — ρητή απόφαση
  * χρήστη 2026-09-11, βλ. liveRiskGate.ts + migration 0010.
+ *
+ * ΔΙΟΡΘΩΣΗ 2026-09-18: ανέβηκε 3→10, ρητό αίτημα χρήστη μετά το real incident 2026-09-17
+ * (τρεις μικρές, ανεξάρτητες, μη ασυνήθιστες ζημιές — 1194 stop_loss -0.0286, 1195/1196
+ * exit_signal -0.0133/-0.0027 SOL, σύνολο -0.045 SOL, πολύ κάτω από το daily cap — έκλεισαν
+ * το live trading sticky μέχρι χειροκίνητο /resume_live). Με το ~98.6% collapse base rate
+ * (CLAUDE.md), 3 συνεχόμενες ζημιές είναι στατιστικά αναμενόμενες πολύ συχνά και δεν
+ * υποδεικνύουν από μόνες τους σπασμένη στρατηγική — το 3 ήταν πολύ ευαίσθητο για το
+ * πραγματικό προφίλ ρίσκου εδώ. Το `LIVE_DAILY_LOSS_CAP_SOL` παραμένει το κύριο, πιο
+ * αξιόπιστο guardrail (μετράει πραγματικό μέγεθος ζημιάς, όχι απλά αριθμό trades στη
+ * σειρά) — ΔΕΝ άλλαξε.
  */
-export const LIVE_KILL_SWITCH_CONSEC_LOSSES = 3;
+export const LIVE_KILL_SWITCH_CONSEC_LOSSES = 10;
 export const LIVE_DAILY_LOSS_CAP_SOL = 0.15;
 
 export function conditionOrdersJson(): Record<string, unknown>[] {
