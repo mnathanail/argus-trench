@@ -50,7 +50,41 @@ async function checkOneTrade(
   // Τίποτα νέο να κάνουμε, αποφεύγει διπλό alert σε κάθε κύκλο μέχρι να λυθεί χειροκίνητα.
   if (trade.needsManualExit) return { flagged: false, alert: null };
 
-  const balance = await fetchTokenBalance(walletAddress, trade.tokenAddress);
+  let balance: number;
+  try {
+    balance = await fetchTokenBalance(walletAddress, trade.tokenAddress);
+  } catch (error) {
+    // ΔΙΟΡΘΩΣΗ 2026-09-19 (πραγματικό εύρημα, incident: trade #1225 — +400%+ θέση, GMGN
+    // την έδειξε κλειστή, εμείς ακόμα open): πριν, ΚΑΘΕ αποτυχία του `fetchTokenBalance`
+    // εδώ ανέβαινε ως γενικό exception μέχρι το `catch` του `runLiveTradeWatchdogCycle`,
+    // που απλά κάνει `result.failures += 1` — ΧΩΡΙΣ console.error, χωρίς
+    // trade_execution_errors row, τίποτα. Στα production logs αυτού του incident, το
+    // `[live-trade-watchdog] ... failures=1` εμφανιζόταν σε ΣΧΕΔΟΝ ΚΑΘΕ κύκλο των 5
+    // λεπτών, ΚΑΘ' ΟΛΗ τη διάρκεια ζωής του trade #1225 — δηλαδή ο μοναδικός μηχανισμός
+    // που θα μπορούσε να ανιχνεύσει «η θέση έκλεισε αλλού, on-chain balance=0» πιθανότατα
+    // απέτυχε σιωπηλά σε ΚΑΘΕ προσπάθεια, γι' αυτό το trade ποτέ δε σημαδεύτηκε
+    // `needs_manual_exit`. Ύποπτος #1: το `parseTokenBalance()` στο `gmgn/tokenBalance.ts`
+    // δεν έχει ποτέ επιβεβαιωθεί έναντι πραγματικού response σχήματος σε αυτό το
+    // sandbox — ένα απρόσμενο field name θα πετούσε `GmgnResponseError` σε κάθε call.
+    // Ίδιο pattern με το silent `fetchLiveSolWallet()` bug (commit ab12fdb) — εδώ ίδιο
+    // fix: καταγραφή ΠΡΙΝ το rethrow, ώστε το επόμενο επεισόδιο να δείχνει αμέσως ΤΙ
+    // trade και ΓΙΑΤΙ, αντί για ένα αδιάφορο αθροιστικό `failures=N`.
+    rethrowIfRateLimited(error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[live-trade-watchdog] fetchTokenBalance απέτυχε για trade #${trade.id} ` +
+        `(${short(trade.tokenAddress)}): ${errorMessage}`,
+    );
+    await recordExecutionError({
+      paperTradeId: trade.id,
+      tokenAddress: trade.tokenAddress,
+      action: 'sell',
+      amountSol: null,
+      errorMessage: `live-trade-watchdog: fetchTokenBalance απέτυχε — ${errorMessage}`,
+      errorDetail: error,
+    });
+    throw error; // ίδια συμπεριφορά προς τα έξω (μετράει στο failures=N), τώρα με ίχνος
+  }
   if (balance > 0) return { flagged: false, alert: null }; // η θέση υπάρχει ακόμα on-chain — υγιές
 
   // balance === 0 αλλά η βάση μας ακόμα δείχνει open: η θέση έκλεισε αλλού, ΧΩΡΙΣ ΠΟΤΕ να
@@ -85,7 +119,12 @@ export async function runLiveTradeWatchdogCycle(): Promise<LiveTradeWatchdogResu
   try {
     walletAddress = (await fetchLiveSolWallet()).address;
   } catch (error) {
+    // Ίδιο σκεπτικό με το per-trade catch παραπάνω: πριν, αυτό ήταν εξίσου σιωπηλό —
+    // αν το `portfolio info` αρχίσει να αποτυγχάνει, ΟΛΟΚΛΗΡΟΣ ο κύκλος ακυρώνεται
+    // επ' αόριστον χωρίς κανένα ίχνος πέρα από το αθροιστικό `failures=trades.length`.
     rethrowIfRateLimited(error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`[live-trade-watchdog] fetchLiveSolWallet απέτυχε — παραλείπεται όλος ο κύκλος: ${errorMessage}`);
     result.failures = trades.length;
     return result;
   }
