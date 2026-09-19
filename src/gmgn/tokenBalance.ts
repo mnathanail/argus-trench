@@ -1,6 +1,6 @@
 import { runCli, type RunOptions } from './exec.js';
 import { GmgnResponseError } from './errors.js';
-import { expectObject, toNumber } from './validate.js';
+import { expectArray, expectObject, toNumber } from './validate.js';
 
 /**
  * Watchdog client (2026-09-17, incident #1193 — βλ. migration 0013/0014, CLAUDE.md
@@ -15,12 +15,30 @@ import { expectObject, toNumber } from './validate.js';
  * πάγωσε σιωπηλά χωρίς 'close' event — καμία heartbeat/staleness ανίχνευση υπάρχει ακόμα
  * στο pumpportalConnection.ts) — βλ. σχόλιο στο liveTradeWatchdog.ts.
  *
- * ⚠️ Το `.agents/skills/gmgn-portfolio/SKILL.md` δίνει ΜΟΝΟ usage examples για αυτό το
- * route — ΚΑΜΙΑ τεκμηρίωση response schema (επιβεβαιωμένο 2026-09-17). Δεν μπορούμε να
- * το δοκιμάσουμε live εδώ (χωρίς πραγματικό API key σε αυτό το sandbox) — γραμμένο
- * αμυντικά, δοκιμάζοντας τα πιο πιθανά ονόματα πεδίων και πετώντας `GmgnResponseError`
- * με πλήρες context αν κανένα δεν ταιριάζει, ίδιο σκεπτικό με `parsePortfolioInfoSol*`
- * στο portfolio.ts. Αν αργότερα φανεί το πραγματικό σχήμα, μόνο αυτό το αρχείο αλλάζει.
+ * ΔΙΟΡΘΩΣΗ 2026-09-19 (πραγματικό εύρημα, live production call): το αρχικό parsing
+ * (πριν αυτή τη διόρθωση) δοκίμαζε top-level πεδία (`balance`/`token_balance`/`amount`/
+ * `ui_amount`) απευθείας στο root object — ΛΑΘΟΣ σχήμα. Το πραγματικό response είναι:
+ * ```json
+ * { "balances": [ { "wallet_address": "...", "token_address": "...", "balance": "0",
+ *                    "decimal": 0, "height": 448450539, "tx_index": 0 } ] }
+ * ```
+ * δηλαδή ένα **wrapper array `balances`**, με το πραγματικό `balance` (string) μέσα στο
+ * ΠΡΩΤΟ στοιχείο — όχι top-level. Αυτό το ασύμφωνο σχήμα (unsafe cast/wrong-shape
+ * ανάγνωση) έκανε το `fetchTokenBalance` να πετάει `GmgnResponseError` σε ΚΑΘΕ κλήση,
+ * ό,τι κι αν ήταν το πραγματικό balance — επιβεβαιωμένο live: `live-trade-watchdog:
+ * fetchTokenBalance απέτυχε` σε κάθε κύκλο των 5 λεπτών, για τρία ανοιχτά live trades
+ * (#1243/#1246/#1248) που είχαν ήδη κλείσει χειροκίνητα στο GMGN — ο watchdog δεν
+ * μπόρεσε ΠΟΤΕ να τα σημαδέψει `needs_manual_exit`, ίδιο μοτίβο ακριβώς με το #1225
+ * (εκεί ήταν το `portfolio info`/SOL wallet schema, εδώ το token-balance schema).
+ *
+ * Άδειο `balances` array (κανένα token account γι' αυτό το mint) σημαίνει επίσης
+ * balance=0 — ΔΕΝ είναι σφάλμα, είναι έγκυρη αναπαράσταση "καμία θέση".
+ *
+ * Το `decimal` πεδίο ΔΕΝ χρησιμοποιείται εδώ — το `balance` string φαίνεται ήδη
+ * human-readable (π.χ. "0"), ίδιο μοτίβο με άλλα string-typed numeric πεδία στο GMGN CLI
+ * (βλ. CLAUDE.md, "Verified CLI contract"). Ανεπιβεβαίωτο σε μη-μηδενική τιμή ακόμα — αν
+ * ποτέ φανεί raw on-chain base-units τιμή αντί για human-readable, θα χρειαστεί
+ * `balance / 10**decimal` εδώ.
  */
 
 export async function fetchTokenBalance(
@@ -36,22 +54,25 @@ export async function fetchTokenBalance(
   return parseTokenBalance(raw);
 }
 
-/** Εξαγόμενο ξεχωριστά ώστε να τεσταρίζεται χωρίς πραγματικό CLI call (ίδιο pattern με
- * parsePortfolioInfoSolBalances). Δοκιμάζει, με σειρά προτεραιότητας, τα πιο πιθανά
- * top-level ονόματα πεδίου για ένα single-value balance response. */
+/** Εξαγόμενο ξεχωριστά ώστε να τεσταρίζεται χωρίς πραγματικό CLI call. Το πραγματικό
+ * σχήμα (επιβεβαιωμένο live 2026-09-19): `{ balances: [{ balance: "<string>", ... }] }`.
+ * Άδειο array -> 0 (καμία θέση). Παίρνει το ΠΡΩΤΟ στοιχείο — το route φιλτράρει ήδη με
+ * `--wallet`/`--token`, άρα δεν αναμένεται ποτέ >1 αποτέλεσμα σε αυτή τη χρήση. */
 export function parseTokenBalance(raw: unknown): number {
   const response = expectObject(raw, 'portfolio.token-balance');
 
-  const candidateKeys = ['balance', 'token_balance', 'amount', 'ui_amount'] as const;
-  for (const key of candidateKeys) {
-    const value = response[key];
-    if (value !== undefined && value !== null) {
-      return toNumber(value, `portfolio.token-balance.${key}`);
-    }
+  const balancesRaw = response['balances'];
+  if (balancesRaw === undefined || balancesRaw === null) {
+    throw new GmgnResponseError(`missing 'balances' array in response`, 'portfolio.token-balance');
   }
+  const balances = expectArray(balancesRaw, 'portfolio.token-balance.balances');
 
-  throw new GmgnResponseError(
-    `no recognized balance field (tried: ${candidateKeys.join(', ')})`,
-    'portfolio.token-balance',
-  );
+  if (balances.length === 0) return 0; // κανένα token account γι' αυτό το mint -> balance 0
+
+  const first = expectObject(balances[0], 'portfolio.token-balance.balances[0]');
+  const value = first['balance'];
+  if (value === undefined || value === null) {
+    throw new GmgnResponseError(`missing 'balance' field in balances[0]`, 'portfolio.token-balance.balances[0]');
+  }
+  return toNumber(value, 'portfolio.token-balance.balances[0].balance');
 }
