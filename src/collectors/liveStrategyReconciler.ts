@@ -2,8 +2,10 @@ import {
   closeTrade,
   deactivateNativeOrder,
   listOpenLiveTradesWithNativeOrder,
+  markNeedsManualExit,
   type LiveTradeWithNativeOrder,
 } from '../db/repositories/paperTrades.js';
+import { recordExecutionError } from '../db/repositories/tradeExecutionErrors.js';
 import { estimateExitAmountSol, getStrategyOrder, inferExitReason } from '../gmgn/strategyOrders.js';
 import { fetchLiveSolWallet } from '../gmgn/portfolio.js';
 import { rethrowIfRateLimited } from '../gmgn/errors.js';
@@ -59,6 +61,38 @@ async function reconcileOneTrade(
   }
 
   if (strategy.status === 'closed') {
+    // ΔΙΟΡΘΩΣΗ 2026-09-19 (incident, trade #1225): το `closePrice` μπορεί να είναι null
+    // ακόμα κι όταν status==='closed' — το top-level `close_price` λείπει σε ορισμένα
+    // πραγματικά GMGN responses (βλ. σχόλιο στο strategyOrders.ts). Μια προηγούμενη
+    // εκδοχή αυτού του κώδικα δοκίμασε να μαντέψει την τιμή από άλλα πεδία (check_price
+    // του sub-order, usdt_profit) — ΚΑΙ ΤΑ ΔΥΟ αποδείχθηκαν λάθος όταν συγκρίθηκαν με το
+    // πραγματικό on-chain sell amount (Solscan): το ένα έδωσε +100% αντί για το
+    // πραγματικό +438.75%, το άλλο +186%. Άρα ΔΕΝ μαντεύουμε άλλο pnl από ασαφή GMGN
+    // πεδία — ξέρουμε ΜΕ ΒΕΒΑΙΟΤΗΤΑ ότι η θέση έκλεισε (status==='closed'), αλλά ΟΧΙ σε
+    // τι τιμή. Αυτό είναι διαφορετικό από "δεν ξέρουμε αν έκλεισε" — σημαδεύουμε
+    // needs_manual_exit ώστε ο χρήστης να το επιβεβαιώσει με το πραγματικό on-chain
+    // ποσό (π.χ. Solscan), ΠΟΤΕ closeTrade με μαντεμένο ή null pnl.
+    if (strategy.closePrice === null) {
+      await recordExecutionError({
+        paperTradeId: trade.id,
+        tokenAddress: trade.tokenAddress,
+        action: 'sell',
+        amountSol: trade.actualEntryAmountSol,
+        errorMessage:
+          'Live strategy reconciler: το native GMGN order έκλεισε (status=closed) αλλά ' +
+          'χωρίς top-level close_price στο response — ΔΕΝ μαντεύουμε pnl από άλλα πεδία ' +
+          '(επιβεβαιωμένα αναξιόπιστα, βλ. incident trade #1225). Χρειάζεται χειροκίνητη ' +
+          'επιβεβαίωση του πραγματικού exit amount (π.χ. από Solscan) και reconcile.',
+      });
+      await markNeedsManualExit(trade.id);
+      return {
+        outcome: 'fallback',
+        alert:
+          `🕵️ native order έκλεισε για trade #${trade.id} (${short(trade.tokenAddress)}) αλλά ` +
+          `χωρίς αξιόπιστη τιμή εξόδου — σημαδεύτηκε needs_manual_exit, δες /trades`,
+      };
+    }
+
     const actualExitAmountSol = estimateExitAmountSol(trade.actualEntryAmountSol, strategy.openPrice, strategy.closePrice);
     const pnlSol =
       actualExitAmountSol !== null && trade.actualEntryAmountSol !== null
@@ -68,7 +102,7 @@ async function reconcileOneTrade(
       pnlSol !== null && trade.actualEntryAmountSol !== null && trade.actualEntryAmountSol > 0
         ? pnlSol / trade.actualEntryAmountSol
         : null;
-    const exitPrice = strategy.closePrice ?? strategy.openPrice ?? 0;
+    const exitPrice = strategy.closePrice;
 
     const closed = await closeTrade(trade.id, {
       exitReason: inferExitReason(strategy.reasonCode),
