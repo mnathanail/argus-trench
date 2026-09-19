@@ -84,12 +84,25 @@ export const LIVE_POSITION_SIZE_SOL = LIVE_BANKROLL_SOL * LIVE_POSITION_SIZE_PCT
  * το live trading sticky μέχρι χειροκίνητο /resume_live). Με το ~98.6% collapse base rate
  * (CLAUDE.md), 3 συνεχόμενες ζημιές είναι στατιστικά αναμενόμενες πολύ συχνά και δεν
  * υποδεικνύουν από μόνες τους σπασμένη στρατηγική — το 3 ήταν πολύ ευαίσθητο για το
- * πραγματικό προφίλ ρίσκου εδώ. Το `LIVE_DAILY_LOSS_CAP_SOL` παραμένει το κύριο, πιο
+ * πραγματικό προφίλ ρίσκου εδώ. Το `LIVE_DAILY_LOSS_CAP_SOL` παρέμεινε τότε το κύριο, πιο
  * αξιόπιστο guardrail (μετράει πραγματικό μέγεθος ζημιάς, όχι απλά αριθμό trades στη
- * σειρά) — ΔΕΝ άλλαξε.
+ * σειρά).
+ *
+ * ΔΙΟΡΘΩΣΗ 2026-09-19: ανέβηκε 0.15→0.50 SOL (50% του LIVE_BANKROLL_SOL=1), ρητό αίτημα
+ * χρήστη. Πραγματικό εύρημα: στις 2026-09-19 το σύνολο ζημιών σε live trades έφτασε
+ * 0.330 SOL μέσα στην ίδια Athens ημέρα (37 κλεισμένα live trades, μείγμα κερδών/ζημιών —
+ * βλ. `getTodayRealizedLossSol`), υπερβαίνοντας το τότε όριο 0.15 SOL και μπλοκάροντας
+ * σωστά (`checkLiveRiskGate` → `mode='log_only'`) κάθε νέο σήμα μέχρι αλλαγή
+ * ημερολογιακής ημέρας Αθήνας — καμία εξαίρεση/μαντεψιά, ο κώδικας δούλεψε όπως
+ * σχεδιάστηκε. Το 0.15 αποδείχθηκε στην πράξη πολύ σφιχτό για το πραγματικό ημερήσιο
+ * trading volume σε αυτή τη φάση (πολλαπλά μικρά live trades/ημέρα, όχι μόνο 1-2) — το
+ * 0.50 αφήνει ρεαλιστικό περιθώριο χωρίς να αχρηστεύει το guardrail. Sticky ΜΕΧΡΙ αλλαγή
+ * ημέρας παραμένει (καμία αλλαγή reset-λογικής) — το `/resume_live`-style χειροκίνητο
+ * reset παραμένει ξεχωριστό, μόνο για το kill-switch (`clearLiveHalt`), όχι για το daily
+ * cap, που πάντα ξεκίναγε ξανά μόνο του την επόμενη Athens ημέρα.
  */
 export const LIVE_KILL_SWITCH_CONSEC_LOSSES = 10;
-export const LIVE_DAILY_LOSS_CAP_SOL = 0.15;
+export const LIVE_DAILY_LOSS_CAP_SOL = 0.5;
 
 export function conditionOrdersJson(): Record<string, unknown>[] {
   return [
