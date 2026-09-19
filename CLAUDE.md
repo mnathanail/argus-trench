@@ -2,123 +2,125 @@
 
 Repository: `argus-trench`
 
-## Τι είναι αυτό
-Σύστημα αυτόματου trading για Solana meme coins (pump.fun), βασισμένο στο GMGN skill
-ecosystem (gmgn-cli), με στόχο: track wallets/tokens, entry/exit signals, phased rollout
-από log-only έως live auto-trading.
+## What this is
+An automated trading system for Solana meme coins (pump.fun), built on the GMGN skill
+ecosystem (gmgn-cli), aiming to: track wallets/tokens, generate entry/exit signals, and
+phase the rollout from log-only up to live auto-trading.
 
-## Αρχιτεκτονική — 6 layers
-1. **Discovery & gate** — `gmgn-cli market trenches` με server-side min/max filters
+## Architecture — 6 layers
+1. **Discovery & gate** — `gmgn-cli market trenches` with server-side min/max filters
    (rug_ratio, bundler_rate, insider_ratio, top_holder_rate, smart_degen_count,
-   creator_created_open_ratio, twitter_rename_count). Όλα ΕΠΙΒΕΒΑΙΩΜΕΝΑ ως πραγματικά
-   flags — βλ. "Verified CLI contract". Αυτό ΕΙΝΑΙ το hard-gate.
-   **Δύο calls ανά κύκλο, όχι ένα** (μετρημένο 2026-08-25, `near_completion` / sol):
-   - *Gated call* → το actionable candidate set. Το server-side filtering φτάνει πολύ
-     βαθύτερα στο pool: 60 qualifying Pump.fun tokens, ενώ το ungated window περιείχε
-     μόνο 15 από αυτά. Χωρίς αυτό χάνουμε 4× candidates.
-   - *Ungated call* → η ΜΟΝΗ πηγή `skipped_gate` rows. Το gated response επιστρέφει
-     αποκλειστικά survivors· τα κομμένα tokens δεν εμφανίζονται πουθενά. Εφαρμόζουμε τα
-     ίδια thresholds client-side πάνω στο window και γράφουμε ΚΑΙ passes ΚΑΙ fails.
+   creator_created_open_ratio, twitter_rename_count). All CONFIRMED as real
+   flags — see "Verified CLI contract". This IS the hard gate.
+   **Two calls per cycle, not one** (measured 2026-08-25, `near_completion` / sol):
+   - *Gated call* → the actionable candidate set. Server-side filtering reaches much
+     deeper into the pool: 60 qualifying Pump.fun tokens, while the ungated window only
+     contained 15 of them. Without this we'd miss 4× the candidates.
+   - *Ungated call* → the ONLY source of `skipped_gate` rows. The gated response returns
+     exclusively survivors; filtered-out tokens never appear anywhere. We apply the
+     same thresholds client-side on top of the window and write BOTH passes and fails.
 
-   Άρα το "δε χτίζουμε δικό μας φιλτράρισμα" ισχύει για το τι **εκτελούμε**, όχι για το
-   τι **καταγράφουμε** — αλλιώς το `decision_log` δε γράφει ποτέ skipped_gate και το
-   tuning της Φάσης 2 μένει τυφλό (βλ. `candidate_source`, migration 0003).
-   Φάση 1: **`--launchpad-platform Pump.fun` μόνο** — ένα launchpad, καθαρότερο dataset.
-2. **Wallet curation** — standing, ανεξάρτητη διαδικασία, δύο παράλληλα μονοπάτια:
-   - *Αυτόματο*: **υλοποιημένο 2026-08-26** (`collectors/walletDiscovery.ts`), μέσω
-     `token holders --tag smart_degen` πάνω σε ~20-30 πρόσφατα **graduated** (`market
-     trenches --type completed`, ταξινομημένα κατά `complete_timestamp` — ΟΧΙ
-     `created_timestamp`) Pump.fun tokens. Το `track smartmoney`/`kol` μονοπάτι (η άλλη
-     επιλογή του αρχικού σχεδίου) παραμένει ανοιχτό/ανυλοποίητο.
-     Wallets σε >1 token **δε μπλοκάρουν** όσα εμφανίζονται σε ένα μόνο — η συχνότητα
-     είναι προτεραιότητα scoring (multi-token candidates σκοράρονται πρώτα, αφού ο
-     throttled κύκλος μπορεί να μη προλάβει όλους), όχι hard filter, καμία αλλαγή schema.
-     Scoring μέσω `portfolio stats --wallet <addr>`, INSERT (`ON CONFLICT DO NOTHING`,
-     ΠΟΤΕ update) μόνο αν `pnl_stat.winrate > 0.5 AND pnl_stat.token_num >= 15` —
-     αλλιώς skip, καμία inactive γραμμή. Το `ON CONFLICT DO NOTHING` προστατεύει διπλά:
-     δεν υποβαθμίζει ποτέ ένα ήδη υπάρχον `manual` wallet σε `smart_money`, και δεν
-     ξαναγράφει score για ήδη γνωστό `smart_money` wallet (αυτό είναι δουλειά του
-     ενιαίου wallet-scoring loop, όχι discovery — αλλιώς θα διπλογραφόταν η λογική).
-     **Weekly = μόνο το bootstrap νέων candidates.** Μόλις ένα wallet μπει στη
-     watchlist, ξανασκοράρεται στο ΙΔΙΟ fast interval με όλα τα active wallets (βλ.
-     "Manual wallet watching" → `wallet_score_history`) — δεν υπάρχει ξεχωριστό, πιο
-     αργό re-scoring cadence *αποκλειστικά* για τα ήδη-discovered, όπως θα υπονοούσε
-     μια κυριολεκτική ανάγνωση του "weekly re-scoring" πιο πάνω. Το ενιαίο scoring loop
-     σκοράρει ΟΠΟΙΟΔΗΠΟΤΕ active wallet, όποιου source, στο ίδιο interval.
-     ⚠️ **`--tag` είναι single-value, ΟΧΙ repeatable** (σε αντίθεση με `market trenches
-     --type`) — δοκιμασμένο 2026-08-26. Για ΚΑΙ `smart_degen` ΚΑΙ `renowned` θέλει δύο
-     ξεχωριστά calls (διπλάσιο weight 5+5 ανά token). Το `renowned` υποστηρίζεται
-     (`includeRenowned` option) αλλά είναι **off by default** ακριβώς γι' αυτό το κόστος.
-     ⚠️ **Το response έχει ΚΑΙ `address` ΚΑΙ `account_address`** — το `address` είναι ο
-     owner/wallet, το `account_address` είναι το on-chain token account (ATA). Λάθος
-     επιλογή θα έγραφε ATA addresses στο watchlist αντί για wallets.
-     ⚠️ **Το `portfolio stats` ΔΕΝ κάνει batch** (δοκιμασμένο 2026-08-25, και με
-     `--wallet A B` και με `--wallet A --wallet B`): επιστρέφει ένα object, μόνο για το
-     πρώτο wallet, παρά το help text "supports multiple wallets". Άρα το scoring κοστίζει
-     **3 weight ανά wallet**. Το `portfolio profits` όντως κάνει batch (`{list:[...]}`,
-     1–100 wallets, weight 3) αλλά **δεν** περιέχει `pnl_stat`, δηλαδή δεν δίνει win rate —
-     άρα δεν υποκαθιστά το `stats` για τον κανόνα μας. Το per-cycle re-scoring είναι
-     ρεαλιστικό όσο η watchlist είναι μικρή, όχι επειδή μπαίνουν σε ένα call.
-   - *Χειροκίνητο*: ο χρήστης προσθέτει wallets που ήδη εμπιστεύεται — βλ. "Manual
-     wallet watching" section παρακάτω.
-   Και τα δύο αποθηκεύονται στο ίδιο `watchlist_wallets` table. ΔΕΝ εξαρτάται από
-   "follow" μέσα στο GMGN UI.
-3. **Signal triggers** — τομή των δύο παραπάνω ρευμάτων: trusted wallet (από τη λίστα
-   μας) αγοράζει ένα token που έχει περάσει το gate.
-   ⚠️ **Το `track follow-wallet` ΔΕΝ κάνει γι' αυτό** (επιβεβαιωμένο 2026-08-25): το
-   resolve-άρει τη λίστα από τα follows του GMGN account που είναι δεμένο στο API key,
-   δηλαδή εξαρτάται από το GMGN UI — αυτό που ρητά απορρίπτουμε στο layer 2. Θέλει και
-   signed auth. Το `track smartmoney`/`kol` μένει χρήσιμο, αλλά για GMGN-tagged wallets,
-   όχι για τη λίστα μας.
-   Πηγή για ΤΑ ΔΙΚΑ ΜΑΣ wallets: **`portfolio activity --wallet <addr> --type buy`,
-   polled ανά wallet** (paginated, με `next` cursor). Κόστος 1 request/wallet/κύκλο αντί
-   για 1 συνολικά — μπαίνει στα μαθηματικά του rate limit, βλ. "Verified CLI contract".
-   Συμπληρωματικά: PumpPortal WebSocket `subscribeAccountTrade` (push, χαμηλό latency —
-   όχι υποκατάστατο του GMGN, και όχι πριν υπάρχει δουλεύον pipeline).
-4. **Exit decision** — δύο μηχανισμοί μαζί, όχι ένας:
-   - Μηχανικό order τη στιγμή της αγοράς: `swap --condition-orders` με συνδυασμό
-     `profit_stop` (fixed tier) + `profit_stop_trace` (trailing, με `drawdown_rate`).
-   - Ενεργό exit-signal: `track smartmoney`/Smart Money Exit Signal — βγαίνεις όταν
-     βγαίνουν τα wallets που ακολουθείς, ανεξάρτητα από τιμή.
-5. **Εκτέλεση** — `gmgn-cli swap`. Ασφαλιστική δικλείδα: το `--yes` (headless mode)
-   απαιτεί ρητά `GMGN_ALLOW_AUTOMATED_TRADES=1`. Αυτό ΕΙΝΑΙ το paper/live switch —
-   μένει unset μέχρι Φάση 5.
-6. **Καταγραφή & tuning** — Postgres (βλ. schema) + Telegram bot (υπάρχον stack).
-   Feedback loop για backtesting/threshold tuning.
+   So "we don't build our own filtering" holds for what we **execute**, not for what we
+   **log** — otherwise `decision_log` never records skipped_gate and Phase 2 tuning is
+   blind (see `candidate_source`, migration 0003).
+   Phase 1: **`--launchpad-platform Pump.fun` only** — one launchpad, cleaner dataset.
+2. **Wallet curation** — a standing, independent process, two parallel paths:
+   - *Automatic*: **implemented 2026-08-26** (`collectors/walletDiscovery.ts`), via
+     `token holders --tag smart_degen` over ~20-30 recently **graduated** (`market
+     trenches --type completed`, sorted by `complete_timestamp` — NOT
+     `created_timestamp`) Pump.fun tokens. The `track smartmoney`/`kol` path (the other
+     option from the original plan) remains open/unimplemented.
+     Wallets appearing in >1 token **don't block** ones that only appear in one — frequency
+     is a scoring priority (multi-token candidates get scored first, since the throttled
+     cycle may not get through everyone), not a hard filter, no schema change.
+     Scoring via `portfolio stats --wallet <addr>`, INSERT (`ON CONFLICT DO NOTHING`,
+     NEVER update) only if `pnl_stat.winrate > 0.5 AND pnl_stat.token_num >= 15` —
+     otherwise skip, no inactive row. `ON CONFLICT DO NOTHING` protects twice over:
+     it never downgrades an existing `manual` wallet to `smart_money`, and it never
+     re-writes the score for an already-known `smart_money` wallet (that's the job of
+     the unified wallet-scoring loop, not discovery — otherwise the logic would be
+     duplicated).
+     **Weekly = only the bootstrap of new candidates.** Once a wallet enters the
+     watchlist, it gets re-scored on the SAME fast interval as all active wallets (see
+     "Manual wallet watching" → `wallet_score_history`) — there is no separate, slower
+     re-scoring cadence *exclusively* for already-discovered wallets, as a literal
+     reading of "weekly re-scoring" above might imply. The single scoring loop scores
+     ANY active wallet, regardless of source, on the same interval.
+     ⚠️ **`--tag` is single-value, NOT repeatable** (unlike `market trenches
+     --type`) — tested 2026-08-26. Getting BOTH `smart_degen` AND `renowned` needs two
+     separate calls (double weight, 5+5 per token). `renowned` is supported
+     (`includeRenowned` option) but is **off by default** exactly for this cost.
+     ⚠️ **The response has BOTH `address` AND `account_address`** — `address` is the
+     owner/wallet, `account_address` is the on-chain token account (ATA). Picking the
+     wrong one would write ATA addresses into the watchlist instead of wallets.
+     ⚠️ **`portfolio stats` does NOT batch** (tested 2026-08-25, both with
+     `--wallet A B` and with `--wallet A --wallet B`): it returns a single object, only
+     for the first wallet, despite the help text saying "supports multiple wallets". So
+     scoring costs **3 weight per wallet**. `portfolio profits` does genuinely batch
+     (`{list:[...]}`, 1–100 wallets, weight 3) but does **not** contain `pnl_stat`, i.e.
+     it doesn't give win rate — so it doesn't substitute for `stats` for our rule.
+     Per-cycle re-scoring is realistic as long as the watchlist stays small, not because
+     they fit in one call.
+   - *Manual*: the user adds wallets they already trust — see "Manual
+     wallet watching" section below.
+   Both are stored in the same `watchlist_wallets` table. It does NOT depend on
+   "follow" inside the GMGN UI.
+3. **Signal triggers** — the intersection of the two streams above: a trusted wallet (from
+   our list) buys a token that has passed the gate.
+   ⚠️ **`track follow-wallet` does NOT work for this** (confirmed 2026-08-25): it
+   resolves the list from the follows of the GMGN account tied to the API key,
+   i.e. it depends on the GMGN UI — exactly what we explicitly reject in layer 2. It also
+   needs signed auth. `track smartmoney`/`kol` remains useful, but for GMGN-tagged wallets,
+   not for our own list.
+   Source for OUR OWN wallets: **`portfolio activity --wallet <addr> --type buy`,
+   polled per wallet** (paginated, with a `next` cursor). Cost is 1 request/wallet/cycle
+   instead of 1 total — this factors into the rate-limit math, see "Verified CLI contract".
+   Complementary: PumpPortal WebSocket `subscribeAccountTrade` (push, low latency —
+   not a substitute for GMGN, and not before a working pipeline exists).
+4. **Exit decision** — two mechanisms together, not one:
+   - A mechanical order at the moment of purchase: `swap --condition-orders` combining
+     `profit_stop` (fixed tier) + `profit_stop_trace` (trailing, with `drawdown_rate`).
+   - An active exit signal: `track smartmoney`/Smart Money Exit Signal — exit when
+     the wallets you follow exit, regardless of price.
+5. **Execution** — `gmgn-cli swap`. Safety interlock: `--yes` (headless mode)
+   explicitly requires `GMGN_ALLOW_AUTOMATED_TRADES=1`. This IS the paper/live switch —
+   stays unset until Phase 5.
+6. **Logging & tuning** — Postgres (see schema) + Telegram bot (existing stack).
+   Feedback loop for backtesting/threshold tuning.
 
-Σημείωση: layers 1-2 τρέχουν παράλληλα/συνεχώς ως background processes, όχι διαδοχικά
-per-token. Layers 3-6 είναι το per-event pipeline.
+Note: layers 1-2 run in parallel/continuously as background processes, not sequentially
+per token. Layers 3-6 are the per-event pipeline.
 
-## Verified CLI contract (gmgn-cli 1.5.8, επιβεβαιωμένο 2026-08-25)
-Ό,τι είναι εδώ έχει επαληθευτεί με πραγματικά calls, όχι διαβασμένο από docs. Τα skills
-(`.agents/skills/`) περιγράφουν το **raw API**· το CLI κανονικοποιεί αλλού.
+## Verified CLI contract (gmgn-cli 1.5.8, confirmed 2026-08-25)
+Everything here has been verified with real calls, not read off the docs. The skills
+(`.agents/skills/`) describe the **raw API**; the CLI normalizes elsewhere.
 
-**Setup**: `npm install -g gmgn-cli` (global, όχι project dep) → `gmgn-cli config --check`
-(exit 0 = ok, 1 = unconfigured) → `gmgn-cli config` (γεννά Ed25519 keypair, δίνει URL) →
-`gmgn-cli config --apply <KEY>`. Γράφει `~/.config/gmgn/.env` (`GMGN_API_KEY` +
-`GMGN_PRIVATE_KEY`) και `~/.config/gmgn/keypair.pem`, perms 600.
+**Setup**: `npm install -g gmgn-cli` (global, not a project dep) → `gmgn-cli config --check`
+(exit 0 = ok, 1 = unconfigured) → `gmgn-cli config` (generates an Ed25519 keypair, gives a URL) →
+`gmgn-cli config --apply <KEY>`. Writes `~/.config/gmgn/.env` (`GMGN_API_KEY` +
+`GMGN_PRIVATE_KEY`) and `~/.config/gmgn/keypair.pem`, perms 600.
 
-**Παγίδες όπου το documentation διαφωνεί με την πραγματικότητα:**
-- Το response key είναι **`near_completion`**, ΟΧΙ `pump`. Το skill doc δηλώνει
-  κατηγορηματικά το αντίθετο ("always returns this category under the key `pump`").
-  Κώδικας γραμμένος από το doc θα διάβαζε σιωπηλά `undefined`.
-- Top-level keys χωρίς `data` wrapper: `{ new_creation, near_completion, completed }`.
-- **Το `--limit` αγνοείται** — ζήτησα 3, πήρα 60. Response ~250KB, 89 fields/item.
-  Το payload size δεν είναι ελέγξιμο.
-- **`private_vault_hold_rate` είναι 0 σε όλα τα results** — άχρηστο ως filter.
-- Τα numeric fields στο `trenches` είναι JSON **numbers**. Στο `portfolio activity` όμως
-  τα `token_amount` / `cost_usd` / `price_usd` είναι **strings**, και στο `kline` τα prices
-  επίσης strings. **Μη γενικεύεις ανά driver — είναι ανά endpoint.** Ο adapter έχει μία
-  `toNumber` που δέχεται και τα δύο.
-- Στο `portfolio activity` τα πεδία είναι **`event_type`** και **`tx_hash`** — το doc λέει
-  `type` και `transaction_hash`. Το `timestamp` είναι number (unix seconds).
-- **Ο αριθμός των fields δεν είναι σταθερός**: το ίδιο `trenches` call έδωσε 89 fields/item
-  και λίγο αργότερα 97. Γι' αυτό κρατάμε το `raw` αυτούσιο στο `gate_snapshot_json` και
-  επικυρώνουμε μόνο ό,τι χρησιμοποιούμε.
+**Traps where the documentation disagrees with reality:**
+- The response key is **`near_completion`**, NOT `pump`. The skill doc categorically
+  states the opposite ("always returns this category under the key `pump`").
+  Code written from the doc would silently read `undefined`.
+- Top-level keys with no `data` wrapper: `{ new_creation, near_completion, completed }`.
+- **`--limit` is ignored** — asked for 3, got 60. Response ~250KB, 89 fields/item.
+  Payload size is not controllable.
+- **`private_vault_hold_rate` is 0 across all results** — useless as a filter.
+- Numeric fields in `trenches` are JSON **numbers**. But in `portfolio activity`,
+  `token_amount` / `cost_usd` / `price_usd` are **strings**, and in `kline` the prices
+  are also strings. **Don't generalize per driver — it's per endpoint.** The adapter has
+  one `toNumber` that accepts both.
+- In `portfolio activity` the fields are **`event_type`** and **`tx_hash`** — the doc says
+  `type` and `transaction_hash`. `timestamp` is a number (unix seconds).
+- **The field count isn't stable**: the same `trenches` call gave 89 fields/item
+  and shortly after, 97. That's why we keep the `raw` payload as-is in `gate_snapshot_json`
+  and only validate what we actually use.
 
-**Flag → field mapping** (τα ονόματα ΔΕΝ ταιριάζουν, ο adapter θέλει ρητό table):
+**Flag → field mapping** (names do NOT match, the adapter needs an explicit table):
 
-| Filter flag | Field στο response |
+| Filter flag | Field in response |
 |---|---|
 | `--max-top-holder-rate` | `top_10_holder_rate` |
 | `--max-insider-ratio` | `suspected_insider_hold_rate` |
@@ -128,343 +130,396 @@ per-token. Layers 3-6 είναι το per-event pipeline.
 | `--max-creator-created-open-ratio` | `creator_created_open_ratio` |
 | `--max-twitter-rename-count` | `twitter_rename_count` |
 
-**Rate limits** — leaky bucket `rate=20 capacity=20`, **κοινός σε όλα τα routes** (άρα ένα
-βαρύ poll κλέβει budget από τα άλλα). Weights: `trenches` 3, `signal` 3, `hot-searches` 3,
+**Rate limits** — leaky bucket `rate=20 capacity=20`, **shared across all routes** (so one
+heavy poll steals budget from the others). Weights: `trenches` 3, `signal` 3, `hot-searches` 3,
 `kline` 2, `trending` 1, `search` 1, `portfolio activity` 3, `portfolio stats` 3,
 `portfolio profits` 3, `portfolio holdings` 5, `portfolio info` 1, `token holders` 5,
 `track smartmoney` 1, `track kol` 1, `track follow-wallet` 3.
-Το two-call discovery κοστίζει 6/κύκλο. Ακριβά είναι τα per-wallet routes: `portfolio
-activity` **και** `portfolio stats` είναι weight 3 **ανά wallet** και κανένα από τα δύο δε
-κάνει batch. 50 wallets σε activity = 150 weight = 7.5s στο πλήρες rate· άλλα 150 αν
-σκοράρουμε τα ίδια. Μόνο το `portfolio profits` κάνει πραγματικά batch (100 wallets,
-weight 3) — αλλά δίνει P&L, όχι win rate. Το `token holders` (weight 5, το ακριβότερο
-route) είναι ακόμα πιο ακριβό: ~10 tokens/ώρα στο wallet-discovery bootstrap
-είναι περίπου 50 weight μόνο για το holders pass.
-Πρακτικός κανόνας: το budget των 20/s το τρώνε τα wallets, όχι το discovery. Στο 429: διάβασε `X-RateLimit-Reset` header ή `reset_at` στο body.
-**ΜΗΝ κάνεις naive retry** — κάθε request μέσα στο cooldown επεκτείνει το ban κατά 5s,
-έως 5 λεπτά. Ο adapter θέλει token bucket, όχι retry loop.
-⚠️ **Το `retryAt` parsing πρέπει να χειρίζεται ΚΑΙ JSON `reset_at` ΚΑΙ human-readable 429**:
-το live `RATE_LIMIT_EXCEEDED` variant επιστρέφει "Rate limit resets at ... (~30s
-remaining)" χωρίς αριθμητικό `reset_at` πεδίο, οπότε ο `parseResetAt` στο
-`gmgn/exec.ts` έπρεπε να διαβάζει και το κείμενο για να μην πέσει στο fallback των 60s.
-Το patch αυτό διασφαλίζει ότι ο shared cooldown ακολουθεί την πραγματική ώρα reset,
-χωρίς να τρέχει το app ξανά μέσα στο ban και να επιδεινώνει το 429.
-⚠️ **Κάθε per-item loop πάνω σε πολλά wallets/tokens πρέπει να rethrow-άρει
-`GmgnRateLimitError`, ΟΧΙ να το καταπίνει ως "ένα item απέτυχε"** (πραγματικό bug,
-βρέθηκε 2026-08-26 στο `scoring.ts` ενώ χτιζόταν το `walletDiscovery.ts`, και
-επιβεβαιώθηκε live: ένα 429 στο wallet #N θα άφηνε τα #N+1..end να ξαναχτυπήσουν το API
-ΜΕΣΑ στο ban, επεκτείνοντάς το κατά 5s ανά request). Το `rethrowIfRateLimited()` στο
-`gmgn/errors.ts` είναι το shared guard — κάθε νέο per-item collector loop πρέπει να το
-καλεί πρώτο μέσα στο `catch`.
+The two-call discovery costs 6/cycle. The expensive part is the per-wallet routes: `portfolio
+activity` **and** `portfolio stats` are weight 3 **per wallet** and neither one
+batches. 50 wallets in activity = 150 weight = 7.5s at full rate; another 150 if we
+score the same ones. Only `portfolio profits` genuinely batches (100 wallets,
+weight 3) — but it gives P&L, not win rate. `token holders` (weight 5, the most expensive
+route) is even more expensive: ~10 tokens/hour in the wallet-discovery bootstrap
+is about 50 weight just for the holders pass.
+Rule of thumb: the 20/s budget gets eaten by wallets, not discovery. On 429: read the
+`X-RateLimit-Reset` header or `reset_at` in the body.
+**DO NOT naive-retry** — each request inside the cooldown extends the ban by 5s,
+up to 5 minutes. The adapter wants a token bucket, not a retry loop.
+⚠️ **`retryAt` parsing must handle BOTH the JSON `reset_at` AND the human-readable 429**:
+the live `RATE_LIMIT_EXCEEDED` variant returns "Rate limit resets at ... (~30s
+remaining)" with no numeric `reset_at` field, so `parseResetAt` in
+`gmgn/exec.ts` had to also parse the text to avoid falling back to the 60s default.
+This patch ensures the shared cooldown follows the real reset time,
+instead of the app running again mid-ban and worsening the 429.
+⚠️ **Every per-item loop over multiple wallets/tokens must rethrow
+`GmgnRateLimitError`, NOT swallow it as "one item failed"** (a real bug,
+found 2026-08-26 in `scoring.ts` while building `walletDiscovery.ts`, and
+confirmed live: a single 429 on wallet #N would let items #N+1..end keep hitting the API
+WHILE banned, extending it by 5s per request). `rethrowIfRateLimited()` in
+`gmgn/errors.ts` is the shared guard — every new per-item collector loop must
+call it first inside `catch`.
 
-**IPv6 δεν υποστηρίζεται** — δίνει 401/403 με σωστά credentials. Έλεγχος πριν το Railway
-deploy: αν το `https://ipv6.icanhazip.com` απαντά, το outbound βγαίνει από IPv6.
+**IPv6 is not supported** — gives 401/403 even with correct credentials. Check before a
+Railway deploy: if `https://ipv6.icanhazip.com` responds, outbound traffic is going over IPv6.
 
-**`portfolio stats` — η σημασιολογία του scoring (κρίσιμο, επιβεβαιωμένο 2026-08-25):**
-- Το win rate **ΔΕΝ** είναι top-level `win_rate`· είναι **`pnl_stat.winrate`**.
-- Υπολογίζεται πάνω σε **tokens/θέσεις, όχι σε trades**: τα buckets `pnl_lt_nd5_num`,
-  `pnl_nd5_0x_num`, `pnl_0x_2x_num`, `pnl_2x_5x_num`, `pnl_gt_5x_num` αθροίζουν ακριβώς
-  σε `pnl_stat.token_num` (μετρημένο: 0+497+549+16+4 = 1066 = token_num).
-- Άρα το `trade_count >= 15` του κανόνα μας δένει με **`pnl_stat.token_num`**, ΟΧΙ με
-  `buy + sell`. Στο ίδιο wallet: token_num 1066 vs buy+sell 5080. Αν βάζαμε το δεύτερο,
-  αριθμητής και παρονομαστής θα μέτραγαν διαφορετικά πράγματα και το threshold θα ήταν
-  ~5× χαλαρότερο απ' όσο νομίζουμε.
-- ⚠️ **Το `pnl_multiplier` του schema είναι misnomer**: η πηγή είναι `realized_profit_pnl`,
-  που είναι **ratio/ROI** (0.3264 = +32.6%), όχι πολλαπλασιαστής (θα ήταν 1.33). Το
-  αποθηκεύουμε ως έχει. Αν κάποτε το διαβάσει κώδικας ως multiplier, θα υποτιμήσει
-  δραματικά — δεν μετονομάστηκε για να μη σπάσει το υπάρχον schema, αλλά ΠΡΟΣΟΧΗ.
-- Χρήσιμο bonus: `pnl_stat.avg_holding_period` (δευτερόλεπτα) ξεχωρίζει sniper bot από
-  πραγματικό trader· τα pnl buckets δίνουν κατανομή, όχι μόνο μέσο όρο.
+**`portfolio stats` — the semantics of scoring (critical, confirmed 2026-08-25):**
+- Win rate is **NOT** the top-level `win_rate`; it's **`pnl_stat.winrate`**.
+- It's computed over **tokens/positions, not trades**: the buckets `pnl_lt_nd5_num`,
+  `pnl_nd5_0x_num`, `pnl_0x_2x_num`, `pnl_2x_5x_num`, `pnl_gt_5x_num` sum exactly to
+  `pnl_stat.token_num` (measured: 0+497+549+16+4 = 1066 = token_num).
+- So the `trade_count >= 15` in our rule ties to **`pnl_stat.token_num`**, NOT to
+  `buy + sell`. On the same wallet: token_num 1066 vs buy+sell 5080. If we used the
+  latter, numerator and denominator would be counting different things and the threshold
+  would be ~5× looser than we think.
+- ⚠️ **The schema's `pnl_multiplier` is a misnomer**: its source is `realized_profit_pnl`,
+  which is a **ratio/ROI** (0.3264 = +32.6%), not a multiplier (that would be 1.33). We
+  store it as-is. If code ever reads it as a multiplier, it will dramatically
+  underestimate — it wasn't renamed to avoid breaking the existing schema, but BE CAREFUL.
+- Useful bonus: `pnl_stat.avg_holding_period` (seconds) distinguishes a sniper bot from
+  a real trader; the pnl buckets give a distribution, not just an average.
 
-**Fields που δεν ήταν στο αρχικό σχέδιο και αξίζουν σκέψη ως gate v2** (υπάρχουν και ως
-`--min-*`/`--max-*` flags): `entrapment_ratio`, `top70_sniper_hold_rate`,
+**Fields that weren't in the original plan and are worth considering as gate v2** (also
+exist as `--min-*`/`--max-*` flags): `entrapment_ratio`, `top70_sniper_hold_rate`,
 `fresh_wallet_rate`, `bot_degen_rate`/`bot_count`, `dev_team_hold_rate`, `progress`
-(bonding curve), `--min-created`/`--max-created` (ηλικία token, unit suffix υποχρεωτικό:
+(bonding curve), `--min-created`/`--max-created` (token age, unit suffix mandatory:
 `30s`/`5m`). Copycat detection: `twitter_dup`, `website_dup`, `telegram_dup`, `image_dup`,
 `twitter_rename_count`, `twitter_del_post_token_count`. Dev reputation: `fund_from_address`
-(πηγή χρηματοδότησης creator), `creator_token_status`, `is_wash_trading`, `cto_flag`.
-Υπάρχει και `--filter-preset safe|smart-money|strict` — το `strict` είναι σχεδόν το gate μας.
+(creator's funding source), `creator_token_status`, `is_wash_trading`, `cto_flag`.
+There's also `--filter-preset safe|smart-money|strict` — `strict` is close to our own gate.
 
-## Decision philosophy (v1) — ΟΧΙ scoring/weighted model
-Αποφασίστηκε ρητά να ΜΗΝ χρησιμοποιηθεί weighted score (αυθαίρετα βάρη). Αντ' αυτού:
-- **Hard-gate cascade**: veto gates (security + dev reputation) — μη διαπραγματεύσιμα,
-  καμία απόχρωση.
-- **Wallet-following / consensus**: το entry trigger είναι κανόνας
-  ("trusted wallet buy" + "πέρασε το gate" = entry), όχι αριθμητικό score.
-- Scoring/ML model μπαίνει σε v2, ΜΟΝΟ αφού υπάρχουν πραγματικά labeled outcomes από
-  το logging (όχι μαντεμένα βάρη σήμερα).
+## Decision philosophy (v1) — NOT a scoring/weighted model
+Explicitly decided NOT to use a weighted score (arbitrary weights). Instead:
+- **Hard-gate cascade**: veto gates (security + dev reputation) — non-negotiable,
+  no nuance.
+- **Wallet-following / consensus**: the entry trigger is a rule
+  ("trusted wallet buy" + "passed the gate" = entry), not a numeric score.
+- A scoring/ML model comes in v2, ONLY once real labeled outcomes exist from
+  logging (not guessed weights today).
 
-## Skills σε χρήση (από τα 40+ στο gmgn.ai/ai/skills_market)
+## Skills in use (from the 40+ at gmgn.ai/ai/skills_market)
 - **Core v1 (25 skills)**: Token Security Check, Liquidity Pool Analysis, Top Holders,
   Dev Wallet Info, Dev Token Launch History, Token Overview, Wallet Holdings/P&L/Activity,
   Copy Trade Assessment, Pump.fun New/Near-Graduation Tokens, Token Kline Chart,
   Followed Wallet Activity, Smart Money Trades/Buy/Exit Signal, Buy with TP&SL,
   Trailing Take Profit/Stop Loss, Market/Limit Buy/Sell, Open/Cancel Order.
-- **Deferred v2**: KOL Call/Trade Activity, Price Surge Signal (δεύτερο confirmation
+- **Deferred v2**: KOL Call/Trade Activity, Price Surge Signal (a second confirmation
   layer), OpenNews MCP, OpenTwitter MCP (narrative/sentiment layer), Top Traders,
   Smart Money/KOL Holders context, Migrated Tokens.
-- **Skip**: Cooking/Launch skills (άλλη περίπτωση χρήσης — token deployment, όχι trading),
-  Multi-Wallet Buy, Limit Buy/Sell (v1 είναι signal-triggered όχι price-triggered),
+- **Skip**: Cooking/Launch skills (a different use case — token deployment, not trading),
+  Multi-Wallet Buy, Limit Buy/Sell (v1 is signal-triggered, not price-triggered),
   Wallet Token Balance, Pump Claim Signal.
 
-## Postgres schema — detailed logging design (v2, αντικαθιστά το απλό trade_log)
-Βασική αρχή: καταγράφουμε ΚΑΘΕ candidate που αξιολογήθηκε, όχι μόνο ό,τι έγινε trade —
-αλλιώς δεν υπάρχει τρόπος να μετρήσουμε αν τα gates είναι πολύ αυστηρά (χαμένοι winners)
-ή πολύ χαλαρά, και το tuning στη Φάση 2-3 είναι τυφλό στο μισό πρόβλημα.
+## Postgres schema — detailed logging design (v2, replaces the simple trade_log)
+Core principle: we log EVERY candidate that was evaluated, not just what became a trade —
+otherwise there's no way to measure whether the gates are too strict (missed winners)
+or too loose, and Phase 2-3 tuning is blind to half the problem.
 
 ```sql
 watchlist_wallets(address, chain, source, win_rate, pnl_multiplier, trade_count,
                    active, added_at, last_reviewed_at)
 
--- ΚΑΘΕ candidate που αξιολογήθηκε, trade ή όχι
+-- EVERY candidate that was evaluated, trade or not
 decision_log(
   id, token_address, chain, evaluated_at,
-  logic_version,                          -- tag των thresholds/κανόνων εκείνη τη στιγμή
+  logic_version,                          -- tag of the thresholds/rules at that moment
   gate_snapshot_json,                     -- rug_ratio, bundler_rate, insider_ratio, top_holder_rate, smart_degen_count, creator_created_open_ratio, raw
   gate_passed,
-  gate_fail_reason,                       -- π.χ. "rug_ratio 0.34 > max 0.2", null αν πέρασε
-  trigger_type,                           -- smart_money_buy / kol_call / none (kol_call: reserved για v2, ανενεργό στο v1 — KOL Call Signal είναι Deferred)
+  gate_fail_reason,                       -- e.g. "rug_ratio 0.34 > max 0.2", null if it passed
+  trigger_type,                           -- smart_money_buy / kol_call / none (kol_call: reserved for v2, inactive in v1 — KOL Call Signal is Deferred)
   trigger_wallet_address,
-  trigger_wallet_snapshot_json,           -- win_rate/pnl_multiplier ΤΗ ΣΤΙΓΜΗ εκείνη, όχι σήμερα
+  trigger_wallet_snapshot_json,           -- win_rate/pnl_multiplier AT THAT MOMENT, not today
   decision,                               -- entered / signal_logged / skipped_gate / skipped_no_trigger / skipped_bankroll_limit
-  decision_reason_text,                   -- human-readable, για γρήγορο scan / Telegram alert
-  linked_trade_id                         -- FK, μόνο αν decision = entered
+  decision_reason_text,                   -- human-readable, for a quick scan / Telegram alert
+  linked_trade_id                         -- FK, only if decision = entered
 )
 
--- ΜΟΝΟ για ό,τι μπήκε
+-- ONLY for what actually got taken
 paper_trades(
   id, decision_log_id, token_address, chain, mode,       -- log_only / paper / live
   intended_size_pct, bankroll_at_entry,
   simulated_entry_price, simulated_entry_amount_sol,
-  assumed_slippage_pct, assumed_latency_ms,               -- τίμιο paper trading = μοντελοποιεί καθυστέρηση, όχι instant fill
-  condition_orders_json,                                  -- το exit plan που μπήκε τη στιγμή του entry
+  assumed_slippage_pct, assumed_latency_ms,               -- honest paper trading = models delay, not instant fill
+  condition_orders_json,                                  -- the exit plan set at the moment of entry
   entry_at, status,
   exit_reason,                                            -- tp_tier_1 / tp_tier_2 / trailing_stop / exit_signal / timeout
-  exit_trigger_detail_json,                                -- π.χ. ποιο wallet έβγαλε το exit_signal
+  exit_trigger_detail_json,                                -- e.g. which wallet fired the exit_signal
   simulated_exit_price, exit_at,
   pnl_sol, pnl_pct, assumed_fees_pct, pnl_net_pct
 )
 
--- follow-up σε ό,τι ΔΕΝ πήραμε, για να μετράμε false negatives
+-- follow-up on what we did NOT take, to measure false negatives
 rejected_candidate_followup(
-  decision_log_id, checked_at,            -- π.χ. +1h, +24h μετά την αξιολόγηση
+  decision_log_id, checked_at,            -- e.g. +1h, +24h after evaluation
   price_change_pct_since_evaluation,
-  would_have_hit_profit_tier              -- bool: θα κερδίζαμε αν το παίρναμε;
+  would_have_hit_profit_tier              -- bool: would we have won if we'd taken it?
 )
 ```
-`decision_log` είναι το πιο κρίσιμο table — καταγράφει ΚΑΙ τα trades ΚΑΙ τα skipped
-candidates, ώστε το backtesting/tuning να βλέπει ολόκληρη την εικόνα από την πρώτη μέρα,
-όχι μόνο τη μεροληπτική όψη των όσων εκτελέστηκαν.
+`decision_log` is the most critical table — it logs BOTH the trades AND the skipped
+candidates, so backtesting/tuning sees the whole picture from day one,
+not just the biased view of what was actually executed.
 
-**Το `decision` δεν έχει CHECK constraint** — είναι TEXT με σχόλιο. Γι' αυτό προστέθηκε η
-τιμή **`signal_logged`** χωρίς migration: στη Φάση 1 ο κανόνας εισόδου ενεργοποιείται
-(gate πέρασε ΚΑΙ trusted wallet αγόρασε) αλλά δεν εκτελείται συναλλαγή. Το
-`skipped_no_trigger` γίνεται ψευδές μόλις υπάρχει trigger, και το `entered` θα υπονοούσε
-θέση που δεν άνοιξε ποτέ. Στη Φάση 3 αυτά τα rows είναι ακριβώς το σύνολο που θα γινόταν
-`entered` με paper trade.
+**`decision` has no CHECK constraint** — it's TEXT with a comment. That's why the
+value **`signal_logged`** was added without a migration: in Phase 1 the entry rule
+fires (gate passed AND trusted wallet bought) but no trade is executed. The
+`skipped_no_trigger` value would become false once there's a trigger, and `entered` would
+imply a position that never opened. In Phase 3 these rows are exactly the set that would
+become `entered` with a paper trade.
 
 **Migration 0004 (collector state):**
-- **Unique index `(token_address, logic_version, candidate_source)`** — ένα row ανά
-  candidate ανά πηγή παρατήρησης, ΟΧΙ ανά poll tick. Ένα token μένει στο trenches για ώρες,
-  άρα χωρίς dedup το `decision_log` θα μέτραγε poll ticks. Το `candidate_source` ανήκει στο
-  κλειδί: ένα token εμφανίζεται και στο gated και στο ungated call, και αν dedup-άραμε μόνο
-  σε (token, version) η μία παρατήρηση θα χανόταν, χαλώντας το pass-rate εκείνης της πηγής.
-- `last_evaluated_at` + `evaluation_count` — πόσες φορές το ξαναείδαμε, χωρίς πλήρη
-  χρονοσειρά. Το `evaluated_at` μένει «πρώτη φορά».
-- `watchlist_wallets.last_seen_tx_hash` / `last_seen_activity_at` — cursor του activity
-  polling. Χωρίς αυτό κάθε κύκλος ξανα-παράγει τα ίδια buys ως νέα triggers.
-- Ο upsert έχει `WHERE decision <> 'entered'`: μόλις ένα row δεθεί με πραγματικό trade,
-  επόμενος κύκλος δε πρέπει να το γυρίσει σε `skipped_*` και να αφήσει ορφανό trade.
+- **Unique index `(token_address, logic_version, candidate_source)`** — one row per
+  candidate per observation source, NOT per poll tick. A token stays in trenches for hours,
+  so without dedup `decision_log` would count poll ticks. `candidate_source` belongs in the
+  key: a token appears in both the gated and ungated call, and if we deduped only on
+  (token, version), one observation would be lost, corrupting that source's pass-rate.
+- `last_evaluated_at` + `evaluation_count` — how many times we've seen it again, without a
+  full time series. `evaluated_at` stays "first time".
+- `watchlist_wallets.last_seen_tx_hash` / `last_seen_activity_at` — cursor for activity
+  polling. Without this, every cycle re-produces the same buys as new triggers.
+- The upsert has `WHERE decision <> 'entered'`: once a row is tied to a real trade,
+  the next cycle must not flip it back to `skipped_*` and orphan the trade.
 
-**Migration 0003 πρόσθεσε `candidate_source`** (`gated_pool` / `sample_window`, NOT NULL
-χωρίς default, με CHECK). Είναι απαραίτητο λόγω του two-call design του layer 1: τα δύο
-calls ΔΕΝ έχουν την ίδια στατιστική σημασία. Το `gated_pool` δίνει survivors από όλο το
-βάθος του pool αλλά μηδενική ορατότητα στους rejects· το `sample_window` δίνει και τα δύο
-αλλά είναι sample, όχι πλήρης πληθυσμός. Χωρίς τη στήλη, η Φάση 2 θα υπολόγιζε pass-rate
-πάνω σε ανάμεικτα sampling frames και θα έβγαζε λάθος συμπέρασμα για το πόσο αυστηρά
-είναι τα gates.
+**Migration 0003 added `candidate_source`** (`gated_pool` / `sample_window`, NOT NULL
+with no default, with a CHECK). It's necessary because of layer 1's two-call design: the two
+calls do NOT carry the same statistical meaning. `gated_pool` gives survivors from the full
+depth of the pool but zero visibility into rejects; `sample_window` gives both
+but is a sample, not the full population. Without the column, Phase 2 would compute pass-rate
+over mixed sampling frames and draw the wrong conclusion about how strict
+the gates are.
 
-## Manual wallet watching (χρήστης-provided, migration 0002)
-Πέρα από το αυτόματο discovery, ο χρήστης μπορεί να προσθέσει wallets που θέλει να
-παρακολουθεί απευθείας:
-- **Bot**: `@shitcoin_intel_bot` ("Shitcoin Intel"). **Προϋπήρχε** — δεν φτιάχτηκε νέο, και
-  ο χρήστης επιβεβαίωσε 2026-08-25 ότι αυτό είναι το σωστό, doubly confirmed 2026-08-26.
-  Αναθεωρεί την προηγούμενη απόφαση "νέο bot" — παλιότερη, ασύμφωνη σημείωση στο
-  "Runtime & environment variables" διορθώθηκε στο ίδιο commit. Αν αργότερα μπερδεύονται
-  alerts με άλλο σύστημα στο ίδιο chat, το
-  ξεχωρίζουμε τότε.
-- **Authorization — fail closed**: το `TELEGRAM_CHAT_ID` είναι allowlist (comma-separated)
-  και **κενό σημαίνει κανείς, όχι όλοι**. Το bot username είναι ανακαλύψιμο, οποιοσδήποτε
-  μπορεί να του γράψει, και τα `/watch`/`/unwatch` γράφουν στη watchlist που τροφοδοτεί τα
-  entry signals — δηλαδή ένα ανοιχτό bot είναι μονοπάτι για να βάλει τρίτος τα wallets του
-  στη στρατηγική μας. Σε μη εξουσιοδοτημένο chat **δεν απαντάμε καθόλου** (μια απάντηση
-  επιβεβαιώνει ότι το bot υπάρχει και ποιος το έχει) — μόνο log.
-- **Πώς μπαίνουν**: Telegram bot command `/watch <address>` (source='manual',
-  active=true αμέσως — ΔΕΝ περνάει το αυτόματο threshold win_rate/trade_count,
-  εμπιστευόμαστε την κρίση του χρήστη). Το `/watch` κάνει πρώτα το upsert και μετά το
-  scoring: αν το GMGN είναι κάτω, το wallet μπαίνει παρά ταύτα — το score είναι
-  πληροφορία, όχι προϋπόθεση.
-- **`/unwatch <address>` δουλεύει σε ΟΠΟΙΟΔΗΠΟΤΕ wallet, ανεξαρτήτως source**
-  (διορθώθηκε 2026-08-26 — δεν ήταν ποτέ περιορισμένο στο repository layer, αλλά η
-  τεκμηρίωση το περιέγραφε σαν manual-only εντολή). Λειτουργεί ως χειροκίνητο
-  override/veto: ακόμα και ένα auto-discovered wallet που πέρασε το algorithmic
-  threshold (`win_rate > 0.5 AND trade_count >= 15`) μπορεί να απενεργοποιηθεί
-  χειροκίνητα. Το ιστορικό score παραμένει.
-- ⚠️ **`wallet_score_history` καταγράφει ΚΑΘΕ re-score, ΟΠΟΙΟΥΔΗΠΟΤΕ active wallet —
-  ΟΧΙ μόνο manual** (διορθώθηκε 2026-08-26· προηγούμενη διατύπωση εδώ έλεγε λάθος ότι
-  το table είναι για τα manual wallets). Το layer 2 scoring loop σκοράρει ΟΛΑ τα
-  active wallets σε κάθε κύκλο (`portfolio stats`, όχι cached μόνιμα), ανεξαρτήτως αν
-  μπήκαν χειροκίνητα ή μέσω του αυτόματου discovery:
+## Manual wallet watching (user-provided, migration 0002)
+Beyond automatic discovery, the user can add wallets they want to
+watch directly:
+- **Bot**: `@shitcoin_intel_bot` ("Shitcoin Intel"). **Pre-existing** — no new one was built, and
+  the user confirmed 2026-08-25 that this is the right one, doubly confirmed 2026-08-26.
+  This revises an earlier "new bot" decision — an older, inconsistent note in the
+  "Runtime & environment variables" section was corrected in the same commit. If alerts
+  ever get confused with another system in the same chat, we'll
+  separate it out then.
+- **Authorization — fail closed**: `TELEGRAM_CHAT_ID` is an allowlist (comma-separated)
+  and **empty means no one, not everyone**. The bot's username is discoverable, anyone
+  can message it, and `/watch`/`/unwatch` write to the watchlist that feeds
+  entry signals — i.e. an open bot is a path for a third party to inject their own wallets
+  into our strategy. On an unauthorized chat we **don't respond at all** (a reply
+  confirms the bot exists and who has it) — log only.
+- **How they get added**: Telegram bot command `/watch <address>` (source='manual',
+  active=true immediately — does NOT go through the automatic win_rate/trade_count
+  threshold, we trust the user's judgment). `/watch` does the upsert first and then the
+  scoring: if GMGN is down, the wallet gets added anyway — the score is
+  information, not a precondition.
+- **`/unwatch <address>` works on ANY wallet, regardless of source**
+  (fixed 2026-08-26 — it was never restricted at the repository layer, but the
+  documentation described it as a manual-only command). It acts as a manual
+  override/veto: even an auto-discovered wallet that passed the algorithmic
+  threshold (`win_rate > 0.5 AND trade_count >= 15`) can be manually
+  deactivated. Its score history remains.
+- ⚠️ **`wallet_score_history` records EVERY re-score, for ANY active wallet —
+  NOT just manual ones** (fixed 2026-08-26; a previous note here wrongly said
+  the table was for manual wallets). The layer 2 scoring loop scores ALL
+  active wallets every cycle (`portfolio stats`, never permanently cached), regardless of
+  whether they were added manually or via automatic discovery:
   ```sql
   wallet_score_history(id, wallet_address, recorded_at,
                         win_rate, pnl_multiplier, trade_count)
   ```
-  Το hourly bootstrap collector (`walletDiscovery.ts`, βλ. "Αυτόματο" μονοπάτι του
-  layer 2 πιο πάνω) είναι **υλοποιημένο 2026-08-26**, αλλά μόνο για το discovery ΝΕΩΝ
-  candidates — δεν είναι ξεχωριστό re-scoring cadence για τα ήδη-γνωστά. Μόλις ένα
-  `smart_money` wallet μπει στη watchlist, ξανασκοράρεται στο ΙΔΙΟ ενιαίο loop, στο
-  ίδιο interval, με όλα τα υπόλοιπα active wallets.
-- **Ορατότητα**: `/score <address>` on-demand (δείχνει trend από το history table).
-  `/watchlist` (alias: `/list`) λιστάρει ΟΛΑ τα active wallets — address, source, win
-  rate, pnl, πλήθος θέσεων — ώστε να φαίνεται τι υπάρχει πριν αποφασίσεις `/unwatch`
-  σε κάτι. Επιπλέον, proactive alert όταν το score ΟΠΟΙΟΥΔΗΠΟΤΕ active wallet πέσει
-  κάτω από το floor του auto-discovery (win_rate < 0.5) — προτείνει review, ΔΕΝ
-  το απενεργοποιεί μόνο του (ο χρήστης αποφασίζει, ακόμα και για wallets που δεν
-  πρόσθεσε ο ίδιος — βλ. `/unwatch` παραπάνω).
-- "Real-time" εδώ σημαίνει: στην ίδια συχνότητα polling με το υπόλοιπο σύστημα — το
-  GMGN `portfolio stats` δεν έχει websocket/push endpoint, άρα δεν υπάρχει true
+  The hourly bootstrap collector (`walletDiscovery.ts`, see the "Automatic" path of
+  layer 2 above) is **implemented 2026-08-26**, but only for discovering NEW
+  candidates — it is not a separate re-scoring cadence for already-known wallets. Once a
+  `smart_money` wallet enters the watchlist, it gets re-scored in the SAME unified loop, on
+  the same interval, as every other active wallet.
+- **Visibility**: `/score <address>` on demand (shows trend from the history table).
+  `/watchlist` (alias: `/list`) lists ALL active wallets — address, source, win
+  rate, pnl, position count — so you can see what's there before deciding to `/unwatch`
+  something. Additionally, a proactive alert when ANY active wallet's score drops
+  below the auto-discovery floor (win_rate < 0.5) — it suggests review, does NOT
+  deactivate it on its own (the user decides, even for wallets they didn't
+  add themselves — see `/unwatch` above).
+- "Real-time" here means: at the same polling frequency as the rest of the system — the
+  GMGN `portfolio stats` has no websocket/push endpoint, so there is no true
   streaming score.
 
 ## Recent operational hardening (2026-08-29)
-Το live deployment αποκάλυψε ότι το κρίσιμο πρόβλημα δεν ήταν το gate logic, αλλά η
-συλλογική ροή αιτημάτων προς το GMGN: όλοι οι regular loops μοιράζονταν το ίδιο IP-level
-rate bucket και το scheduler επέτρεπε να τρέχουν ταυτόχρονα. Το αποτέλεσμα ήταν burst
-requests, παρατεινόμενα 429 και backlog ανοιχτών paper trades επειδή το exit resolver δεν
-έφτανε να κλείνει τα trades πριν προλάβει να ανοίξει νέα.
+The live deployment revealed that the critical problem wasn't the gate logic, but the
+collective flow of requests to GMGN: all the regular loops shared the same IP-level
+rate bucket and the scheduler let them run concurrently. The result was burst
+requests, prolonged 429s, and a backlog of open paper trades because the exit resolver
+couldn't keep up closing trades before new ones opened.
 
-### Το patch που εφαρμόστηκε
-- **Scheduler serialization**: το `runScheduler()` / `ExclusiveCoordinator` τρέχει τα regular
-  loops σε serial order, ώστε μόνο ένα regular loop να είναι ενεργό κάθε φορά. Ένα
-  `exclusive` loop (π.χ. wallet-discovery maintenance window) μπλοκάρει νέα regular work
-  μέχρι να ολοκληρωθεί.
-- **Shared cooldown για όλο το app**: κάθε 429 ενεργοποιεί κοινό cooldown σε όλα τα loops,
-  όχι μόνο στο loop που το πέτυχε. Αυτή η λογική είναι υλοποιημένη στο `SharedCooldown`
-  και στο `GmgnRateLimitError` path.
-- **Retry backoff**: τα loops έχουν αυστηρότερο backoff για συνεχόμενες αποτυχίες,
-  αντί για flat retries σε μικρά διαστήματα που επεκτείνουν το ban.
-- **Wallet activity burst reduction**: το polling περιορίστηκε σε 2 wallets/κύκλο,
-  η round-robin επιλογή διατηρεί σταθερό δείκτη για να μην λιμοκτονεί τα ίδια wallets,
-  και υπήρξε guard για μεγάλο open-trade backlog (`max open trades before pause`).
-- **Dedupe και cursoring**: το `filterNewBuys()` αφαιρεί διπλάκες `txHash` και το
-  `last_seen_tx_hash` / `last_seen_activity_at` διατηρούν το cursor του τελευταίου buy,
-  ώστε να μην ξαναγράφετε τα ίδια signals σε κάθε κύκλο.
-- **Exit resolution priority**: το exit resolver είναι πλέον προτεραιότητα, ώστε να κλείνει
-  ανοιχτά trades πριν το system μπει σε νέα trigger traffic.
-- **Rate-limit safety guard**: κάθε per-item loop rethrows `GmgnRateLimitError` και δεν το
-  καταπίνει ως “ενδεικτικό item failure”, γιατί αυτό θα επέτρεπε στο επόμενο item να
-  χτυπήσει ξανά το API μέσα στο ban.
+### The patch that was applied
+- **Scheduler serialization**: `runScheduler()` / `ExclusiveCoordinator` runs the regular
+  loops in serial order, so only one regular loop is active at a time. An
+  `exclusive` loop (e.g. the wallet-discovery maintenance window) blocks new regular work
+  until it completes.
+- **Shared cooldown across the whole app**: every 429 triggers a shared cooldown across all
+  loops, not just the loop that hit it. This logic is implemented in `SharedCooldown`
+  and the `GmgnRateLimitError` path.
+- **Retry backoff**: loops have stricter backoff for consecutive failures,
+  instead of flat retries at short intervals that extend the ban.
+- **Wallet activity burst reduction**: polling was capped at 2 wallets/cycle,
+  round-robin selection keeps a stable pointer so the same wallets don't starve,
+  and there's a guard for a large open-trade backlog (`max open trades before pause`).
+- **Dedupe and cursoring**: `filterNewBuys()` removes duplicate `txHash` values and
+  `last_seen_tx_hash` / `last_seen_activity_at` track the cursor of the last buy,
+  so the same signals aren't re-logged every cycle.
+- **Exit resolution priority**: the exit resolver is now prioritized, so it closes
+  open trades before the system takes on new trigger traffic.
+- **Rate-limit safety guard**: every per-item loop rethrows `GmgnRateLimitError` instead of
+  swallowing it as "one item failed", since that would let the next item
+  hit the API again while banned.
 
-### Τι είδαμε στην πράξη
-- Το `wallet-activity` έδινε bursts σε 4 wallets/κύκλο και άνοιγε πολλά `signal_logged`
-  entries ταυτόχρονα.
-- Το `wallet-discovery` και το `wallet-scoring` μοιράζονταν το ίδιο GMGN bucket, άρα ένα 429
-  σε ένα endpoint επηρέαζε και τα άλλα loops.
-- Το `paper_trades` ήταν ανοιχτό backlog με `status='open'` και `exit_reason=NULL`, επειδή
-  ο exit loop πήγαινε σε 429 και δεν κατάφερνε να εκτελέσει closes.
-- Το πραγματικό “burst on a single wallet” δεν ήταν μαγεία· ήταν την ίδια σελίδα activity να
-  επανα-στέλνεται στο ίδιο φάσμα των wallets έως ότου η GMGN έβαζε τον IP σε ban.
+### What we saw in practice
+- `wallet-activity` produced bursts of 4 wallets/cycle and opened many `signal_logged`
+  entries simultaneously.
+- `wallet-discovery` and `wallet-scoring` shared the same GMGN bucket, so a 429
+  on one endpoint affected the other loops too.
+- `paper_trades` had an open backlog with `status='open'` and `exit_reason=NULL`, because
+  the exit loop was hitting 429s and couldn't execute closes.
+- The real "burst on a single wallet" wasn't magic; it was the same activity page being
+  re-sent across the same span of wallets until GMGN banned the IP.
 
-### Τύπος της μελλοντικής προστασίας
-- Το architecture παραμένει “read-only with logging” για τη Φάση 1.
-- Η περιστολή του ποσοστού αιτημάτων είναι το primary lever. Η ροή πρέπει να μένει
-  controlled / serialized και να μην φορτώνει το κοινό GMGN rate bucket σε bursts.
-- Αν το 429 συνεχίσει να εμφανίζεται ακόμη και με serial looping, τότε το επόμενο βήμα είναι
-  διαχωρισμός GMGN capacity (ξεχωριστό API key / IP / account), όχι περισσότερη request
-  pressure στο ίδιο IP.
+### Shape of the future protection
+- The architecture stays "read-only with logging" for Phase 1.
+- Throttling the request rate is the primary lever. The flow needs to stay
+  controlled / serialized and not load the shared GMGN rate bucket in bursts.
+- If 429s keep showing up even with serial looping, the next step is
+  splitting GMGN capacity (a separate API key / IP / account), not more request
+  pressure on the same IP.
+
+## Live strategy order reconciliation incident (2026-09-19) — trade #1225
+A live trade (token `CjtxpmhGyHMhdN5MmS7vooYbDVi6utNz5DxJVjF8bjoZ`) closed on GMGN with a
+real, large profit via the native trailing-stop (`profit_stop_trace`, 40% drawdown) —
+confirmed independently on-chain via Solscan: buy 0.05213884 SOL → sell 0.2809 SOL =
+**+438.75%** — but stayed stuck `status='open'`, `pnl=NULL` in our DB, with no Telegram
+alert. Root-caused via a real production `order strategy list` response fetched directly
+by the user, not guesswork.
+
+**Two independent parsing bugs in `src/gmgn/strategyOrders.ts`'s `parseStrategyOrder`:**
+1. The top-level `status` field can be `"canceled"` — a value OUTSIDE both the documented
+   (`gmgn-swap` skill: "Order lifecycle status: open / closed") and the code's own
+   `StrategyOrderStatus = 'open' | 'closed'` enum. The original unsafe cast
+   (`status as StrategyOrderStatus`) let this pass through silently, so every consumer
+   (`liveStrategyReconciler.ts`'s `status === 'closed'` check, `realtimeExitHandler.ts`'s
+   `status !== 'closed'` check) never recognized a "canceled" strategy as closed, even
+   though the position had genuinely, successfully closed (`reason_by: "trade_finish"`,
+   one sub-order `status: "success"` on a `profit_stop_trace`, the other `status: "cancel"`
+   because the first sub-order had already closed the position).
+2. The top-level `close_price` field can be ENTIRELY ABSENT even when the strategy
+   genuinely closed successfully.
+
+**Two guessed fallbacks for the missing `close_price` were tried and BOTH proved wrong**
+against the real on-chain sell transaction (0.2809 SOL proceeds vs 0.05213884 SOL entry =
++438.75%): (a) the successful sub-order's `check_price` (0.00006074563742368) gave only
++100%; (b) `usdt_profit`/`buy_quote_price` gave +186%. **Conclusion**: no field in this
+GMGN response schema reliably represents the real executed exit price/amount — the
+correct fix is to NOT guess.
+
+**Fix (commit `5b723d5` / local `6b086a3`):**
+- `normalizeStrategyStatus()`: any status other than `'open'` normalizes to `'closed'` —
+  no more silently letting an unrecognized value pass through.
+- `closePrice` stays strictly the (possibly-null) top-level `close_price` — never
+  inferred from any sub-order field.
+- `liveStrategyReconciler.ts`: when `strategy.status === 'closed' && strategy.closePrice
+  === null`, records an execution error and marks the trade `needs_manual_exit`, instead
+  of proceeding to close the trade with a guessed or null pnl.
+- `src/gmgn/strategyOrders.test.ts` reproduces the real incident response shape
+  verbatim (`status: 'canceled'`, no `close_price`) and asserts on the corrected
+  behavior.
+- Trade #1225 itself was reconciled manually in the DB using the confirmed on-chain
+  amounts (0.05213884 SOL entry, 0.2809 SOL exit).
+
+Separately, the same investigation found the general live-trade watchdog
+(`liveTradeWatchdog.ts`, fixed in `e5ef13d`) had also been silently swallowing
+`fetchTokenBalance`/`fetchLiveSolWallet` failures for this same trade — a parallel,
+independent gap, not the primary root cause, now logged via `recordExecutionError`.
+
+**Takeaway**: do not trust GMGN response field semantics for financial correctness
+without independent on-chain verification when the stakes are real money — no field in
+this schema was found to reliably substitute for a missing `close_price`.
 
 ## Phased rollout
-0. ✅ Setup & instrumentation (API key, plugin install, logging σκελετός) — **έγινε**
-1. 🚧 Read-only signal collection (καμία συναλλαγή, μόνο logging) — **υλοποιημένο**:
+0. ✅ Setup & instrumentation (API key, plugin install, logging skeleton) — **done**
+1. 🚧 Read-only signal collection (no trading, logging only) — **implemented**:
    5 collector loops (discovery, wallet-activity, wallet-scoring, wallet-discovery, exit-resolver)
-   σε ένα process με κοινό cooldown και serial regular execution. Το wallet-discovery
-   και το exit-resolver τρέχουν σε controlled windows ώστε να μην παρεμποδίζουν ο ένας τον
-   άλλο ή να γεμίζουν το shared GMGN bucket.
-   `logic_version = gate-v1-<hash των thresholds>`.
-2. Backtesting & threshold tuning πάνω σε πραγματικά logged δεδομένα
-3. Paper trading (πλήρες decision engine, simulated fills)
-4. Μικρό live κεφάλαιο (αυστηρό position sizing)
-5. Σταδιακή κλιμάκωση
+   in a single process with a shared cooldown and serial regular execution. wallet-discovery
+   and the exit-resolver run in controlled windows so they don't block each other
+   or flood the shared GMGN bucket.
+   `logic_version = gate-v1-<hash of the thresholds>`.
+2. Backtesting & threshold tuning on real logged data
+3. Paper trading (full decision engine, simulated fills)
+4. Small live capital (strict position sizing)
+5. Gradual scale-up
 
-## Bankroll management (το πραγματικό lever, όχι τα signals) — επιβεβαιωμένα νούμερα
-~98.6% των pump.fun tokens καταρρέουν κάτω από ελάχιστη liquidity — κανένα φίλτρο δεν
-εξαφανίζει αυτό το base rate, μόνο το μειώνει. Guardrails:
-- **1% του κεφαλαίου ανά θέση**, fixed-fractional (ΠΟΤΕ αυξανόμενο μετά από wins —
-  αυτό θα ήταν martingale-style sizing, αντίθετο με 98.6% failure rate). Ανεβαίνει
-  ΜΟΝΟ αφού η Φάση 2 (backtesting) δείξει μετρήσιμο edge, όχι επειδή "πάει καλά".
-- **Concurrent positions cap: 5-10 σε paper trading**, για breadth (χρειάζεσαι όγκο
-  ώστε να μη μπερδεύεις κακή τύχη με κακή στρατηγική). **1-2 ξεχωριστά, χαμηλότερο
-  cap στη Φάση 4 (μικρό live κεφάλαιο)** — πρώτα επιβεβαιώνεις ότι η live εκτέλεση
-  ταιριάζει με τις παραδοχές του paper mode, πριν ανοίξεις πολλαπλές θέσεις με
-  πραγματικά λεφτά.
-- Daily loss circuit breaker, μόνιμα ενεργό — ακριβές ποσοστό παραμένει ανοιχτό.
-- Όλα τα παραπάνω config values, δεμένα με το `logic_version` του `decision_log` —
-  όταν αλλάζουν μετά το backtesting, το ιστορικό δείχνει ποιοι κανόνες ίσχυαν ανά trade.
+## Bankroll management (the real lever, not the signals) — confirmed numbers
+~98.6% of pump.fun tokens collapse below minimum liquidity — no filter
+eliminates this base rate, only reduces it. Guardrails:
+- **1% of capital per position**, fixed-fractional (NEVER increasing after wins —
+  that would be martingale-style sizing, the opposite of a 98.6% failure rate). It only
+  goes up ONCE Phase 2 (backtesting) shows a measurable edge, not because "it's going well".
+- **Concurrent positions cap: 5-10 in paper trading**, for breadth (you need volume
+  so you don't confuse bad luck with bad strategy). **1-2 separately, a lower
+  cap in Phase 4 (small live capital)** — first confirm live execution
+  matches paper mode's assumptions, before opening multiple positions with
+  real money.
+- Daily loss circuit breaker, always on — the exact percentage remains open.
+- All the config values above are tied to `decision_log`'s `logic_version` —
+  when they change after backtesting, the history shows which rules applied to which trade.
 
-## Υπάρχον stack (να ενσωματωθεί, όχι να αντικατασταθεί)
-Railway (hosting) · PostgreSQL · Telegram bot (alerts) · Helius WebSocket (διαθέσιμο ως
-backup/redundancy, όχι απαραίτητο πλέον για pump.fun discovery — το καλύπτει το GMGN
-trenches) · PumpPortal WebSocket `subscribeAccountTrade` (νέο, για low-latency wallet
-triggers, συμπληρωματικό στο GMGN).
+## Existing stack (to be integrated, not replaced)
+Railway (hosting) · PostgreSQL · Telegram bot (alerts) · Helius WebSocket (available as
+backup/redundancy, no longer necessary for pump.fun discovery — GMGN
+trenches covers it) · PumpPortal WebSocket `subscribeAccountTrade` (new, for low-latency
+wallet triggers, complementary to GMGN).
 
-## Ό,τι μένει ακόμα ανοιχτό
-- **Daily loss circuit breaker**: η αρχή είναι επιβεβαιωμένη (μόνιμα ενεργό), το
-  ακριβές ποσοστό όχι ακόμα.
-Τα υπόλοιπα (bankroll %, watchlist bootstrap, concurrent caps) επιβεβαιώθηκαν — βλ.
-"Bankroll management" και "Wallet curation" (layer 2) παραπάνω.
+## What's still open
+- **Daily loss circuit breaker**: the principle is confirmed (always on), the
+  exact percentage isn't yet.
+Everything else (bankroll %, watchlist bootstrap, concurrent caps) has been confirmed — see
+"Bankroll management" and "Wallet curation" (layer 2) above.
 
-## Runtime & environment variables (ΕΠΙΒΕΒΑΙΩΜΕΝΑ 2026-08-25)
-- **Runtime**: Node.js/TypeScript, ESM, strict. Επιβεβαιώθηκε. Deps σκόπιμα ελάχιστα:
-  `pg` + `dotenv` + **`gmgn-cli`** (pinned exact `1.5.8`, όχι `^` — το contract του
-  "Verified CLI contract" πιο πάνω είναι δεμένο σε αυτή την έκδοση, οπότε auto-upgrade
-  θα μπορούσε να αλλάξει σιωπηλά συμπεριφορά που έχουμε ήδη τεκμηριώσει). **Tests:
-  `node:test`** (built-in, μηδέν deps) — όχι vitest/jest.
-  ⚠️ Το `gmgn-cli` είναι **regular dependency, ΟΧΙ global install** (διορθώθηκε
-  2026-08-26 — ήταν global στο dev μηχάνημα, που θα έσπαγε σε Railway build χωρίς global
-  npm state). Ο adapter (`src/gmgn/exec.ts`) λύνει το binary path module-relative
-  (`node_modules/.bin/gmgn-cli`), όχι μέσω PATH — γιατί αν το process ξεκινήσει χωρίς
-  `npm run`/`npm start` (π.χ. απευθείας `node dist/main.js`), το `node_modules/.bin` δεν
-  είναι εγγυημένα στο PATH. Test κλειδώνει ότι το binary υπάρχει μετά `npm install`.
-- **Process topology**: **ένα** Node process με internal scheduler για όλα (pollers, bot),
-  όχι ξεχωριστά Railway services. Το σπάμε όταν υπάρξει πραγματικός λόγος κλιμάκωσης.
-- **Deploy**: GitHub push στο `master` → Railway auto-deploy. Pre-deploy command
-  `npm run migrate:prod` (compiled `dist/`, γιατί το `tsx` είναι devDependency και
-  κόβεται στο production install). Commits **απευθείας στο master**, χωρίς branches.
-- **Project `.env`** (τοπικά): `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`,
-  `GMGN_ALLOW_AUTOMATED_TRADES` (unset/false by default — αυτό είναι το paper/live
-  switch). Το `GMGN_API_KEY`/`GMGN_PRIVATE_KEY` ΔΕΝ μπαίνουν εδώ τοπικά — το `gmgn-cli`
-  διαχειρίζεται δικό του config global, στο `~/.config/gmgn/.env`, μέσω
-  `config --apply <key>`, ανεξάρτητο από το project.
-- ⚠️ **Railway variables (διορθώθηκε 2026-08-26 — παλαιότερα εδώ έλεγε ότι δε
-  χρειάζονται ποτέ στο project env, λάθος για production):** `GMGN_API_KEY` και
-  `GMGN_PRIVATE_KEY` ΠΡΕΠΕΙ να μπουν ως Railway environment variables. Ένα ephemeral
-  container δεν έχει persistent `~/.config`, και δεν υπάρχει interactive βήμα εκεί για
-  `config --apply`. Επιβεβαιωμένο με άδειο `HOME`: το `gmgn-cli` διαβάζει αυτές τις δύο
-  μεταβλητές απευθείας από process env αν υπάρχουν, και το `execFile` του adapter
-  περνάει όλο το parent env στο child process by default — άρα αρκεί να οριστούν στο
-  Railway dashboard, καμία αλλαγή κώδικα. Αν αργότερα κληθεί το GMGN REST απευθείας
-  αντί για το CLI (βλ. layer "Εκτέλεση"), ήδη θα υπάρχουν εκεί.
-- **Telegram bot**: `@shitcoin_intel_bot` ("Shitcoin Intel") — προϋπάρχον, ΣΚΟΠΙΜΑ
-  reused, ΟΧΙ νέο. Επιβεβαιωμένο 2026-08-25, doubly confirmed 2026-08-26 (βλ. "Manual
-  wallet watching" για το πλήρες σκεπτικό). Token ήδη configured στο project `.env`.
+## Runtime & environment variables (CONFIRMED 2026-08-25)
+- **Runtime**: Node.js/TypeScript, ESM, strict. Confirmed. Deps deliberately minimal:
+  `pg` + `dotenv` + **`gmgn-cli`** (pinned exact `1.5.8`, not `^` — the contract in
+  "Verified CLI contract" above is tied to this version, so an auto-upgrade
+  could silently change behavior we've already documented). **Tests:
+  `node:test`** (built-in, zero deps) — not vitest/jest.
+  ⚠️ `gmgn-cli` is a **regular dependency, NOT a global install** (fixed
+  2026-08-26 — it was global on the dev machine, which would break a Railway build without
+  global npm state). The adapter (`src/gmgn/exec.ts`) resolves the binary path module-relative
+  (`node_modules/.bin/gmgn-cli`), not via PATH — because if the process starts without
+  `npm run`/`npm start` (e.g. directly via `node dist/main.js`), `node_modules/.bin` isn't
+  guaranteed to be on PATH. A test locks in that the binary exists after `npm install`.
+- **Process topology**: **one** Node process with an internal scheduler for everything
+  (pollers, bot), not separate Railway services. We split this once there's a real
+  reason to scale.
+- **Deploy**: GitHub push to `master` → Railway auto-deploy. Pre-deploy command
+  `npm run migrate:prod` (compiled `dist/`, since `tsx` is a devDependency and
+  gets stripped in the production install). Commits **go directly to master**, no branches.
+- **Project `.env`** (locally): `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`,
+  `GMGN_ALLOW_AUTOMATED_TRADES` (unset/false by default — this is the paper/live
+  switch). `GMGN_API_KEY`/`GMGN_PRIVATE_KEY` do NOT go here locally — `gmgn-cli`
+  manages its own global config, at `~/.config/gmgn/.env`, via
+  `config --apply <key>`, independent of the project.
+- ⚠️ **Railway variables (fixed 2026-08-26 — this used to say they're
+  never needed in the project env, wrong for production):** `GMGN_API_KEY` and
+  `GMGN_PRIVATE_KEY` MUST be set as Railway environment variables. An ephemeral
+  container has no persistent `~/.config`, and there's no interactive step there for
+  `config --apply`. Confirmed with an empty `HOME`: `gmgn-cli` reads these two
+  variables directly from the process env if present, and the adapter's `execFile`
+  passes the whole parent env to the child process by default — so it's enough to set them in
+  the Railway dashboard, no code change. If the GMGN REST API is ever called directly
+  instead of via the CLI (see the "Execution" layer), they'll already be there.
+- **Telegram bot**: `@shitcoin_intel_bot` ("Shitcoin Intel") — pre-existing, DELIBERATELY
+  reused, NOT new. Confirmed 2026-08-25, doubly confirmed 2026-08-26 (see "Manual
+  wallet watching" for the full reasoning). Token already configured in the project `.env`.
 
-## Setup που μένει χειροκίνητο (μία φορά)
-✅ **Έγινε 2026-08-25**: λογαριασμός GMGN → `gmgn-cli config` (Ed25519 keypair) →
-`config --apply <key>`. Το `config --check` επιστρέφει 0.
-✅ **Έγινε**: Telegram bot — `@shitcoin_intel_bot`, προϋπάρχον/reused (βλ. "Manual
-wallet watching"). Token στο project `.env`, `TELEGRAM_CHAT_ID` γνωστό.
-⬜ **Μένει**: binding trading wallet (χρειάζεται πριν τη Φάση 4, όχι για read-only).
-Το `portfolio info` επιστρέφει `{"wallets": []}` — **κανένα wallet δεμένο**. Αυτό είναι
-δεύτερο, ανεξάρτητο ασφαλιστικό πάνω από το `GMGN_ALLOW_AUTOMATED_TRADES`: ακόμα κι αν
-κάτι καλέσει `swap`, δεν υπάρχει wallet να συναλλάξει. Κρατάμε το έτσι μέχρι τη Φάση 4.
-Τίποτα άλλο δε χρειάζεται χειροκίνητο κλικ μέσα στο GMGN UI — το wallet curation ζει
-εξ ολοκλήρου στο δικό μας Postgres.
+## Setup that remains manual (one-time)
+✅ **Done 2026-08-25**: GMGN account → `gmgn-cli config` (Ed25519 keypair) →
+`config --apply <key>`. `config --check` returns 0.
+✅ **Done**: Telegram bot — `@shitcoin_intel_bot`, pre-existing/reused (see "Manual
+wallet watching"). Token already in the project `.env`, `TELEGRAM_CHAT_ID` known.
+⬜ **Remaining**: binding a trading wallet (needed before Phase 4, not for read-only).
+`portfolio info` returns `{"wallets": []}` — **no wallet bound**. This is a
+second, independent safeguard on top of `GMGN_ALLOW_AUTOMATED_TRADES`: even if
+something calls `swap`, there's no wallet to trade with. We keep it this way until Phase 4.
+Nothing else needs a manual click inside the GMGN UI — wallet curation lives
+entirely in our own Postgres.
