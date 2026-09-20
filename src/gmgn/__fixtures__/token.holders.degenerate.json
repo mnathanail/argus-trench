@@ -1,0 +1,6 @@
+{
+  "list": [
+    { "address": "DexPoolNearlyAll111111111111111111111111111", "addr_type": 2, "amount_percentage": 0.999, "balance": 999000000, "maker_token_tags": [] },
+    { "address": "DustWallet1111111111111111111111111111111", "addr_type": 0, "amount_percentage": 0.001, "balance": 1000, "maker_token_tags": ["bundler"] }
+  ]
+}

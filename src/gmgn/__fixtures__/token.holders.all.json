@@ -1,0 +1,11 @@
+{
+  "list": [
+    { "address": "BurnAddr111111111111111111111111111111111", "addr_type": 1, "amount_percentage": 0.10, "balance": 100000000, "maker_token_tags": [] },
+    { "address": "DexPoolAddr22222222222222222222222222222222", "addr_type": 2, "amount_percentage": 0.60, "balance": 600000000, "maker_token_tags": [] },
+    { "address": "NormalWhale1111111111111111111111111111111", "addr_type": 0, "amount_percentage": 0.05, "balance": 50000000, "maker_token_tags": [] },
+    { "address": "BundlerWallet111111111111111111111111111111", "addr_type": 0, "amount_percentage": 0.08, "balance": 80000000, "maker_token_tags": ["bundler"] },
+    { "address": "RatTraderWallet1111111111111111111111111111", "addr_type": 0, "amount_percentage": 0.04, "balance": 40000000, "maker_token_tags": ["rat_trader"] },
+    { "address": "SniperAndBundlerWallet111111111111111111111", "addr_type": 0, "amount_percentage": 0.03, "balance": 30000000, "maker_token_tags": ["sniper", "bundler"] },
+    { "address": "CleanRetailWallet1111111111111111111111111", "addr_type": 0, "amount_percentage": 0.10, "balance": 100000000, "maker_token_tags": [] }
+  ]
+}
