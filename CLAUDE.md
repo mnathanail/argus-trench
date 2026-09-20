@@ -221,6 +221,19 @@ Railway deploy: if `https://ipv6.icanhazip.com` responds, outbound traffic is go
   underestimate — it wasn't renamed to avoid breaking the existing schema, but BE CAREFUL.
 - Useful bonus: `pnl_stat.avg_holding_period` (seconds) distinguishes a sniper bot from
   a real trader; the pnl buckets give a distribution, not just an average.
+- **`common.*` — implemented 2026-09-20** (`gmgn/walletStats.ts`): the SAME `portfolio
+  stats` response (already weight 3, already called every scoring cycle) also carries a
+  `common` block with wallet identity/provenance — confirmed in a real captured response
+  (`__fixtures__/portfolio.stats.json`, 2026-09-11), not just documented. Two fields now
+  extracted at zero extra cost: `common.created_at` (unix seconds, first funding tx —
+  wallet age) and `common.fund_from_address` (the address that funded this wallet —
+  future sybil/cluster-coordination signal: multiple "smart"-tagged wallets sharing a
+  funding source in the same cluster suggest coordination, not independent conviction).
+  `null` when `common` is absent or the field is an empty string (GMGN doesn't always
+  know it — confirmed asymmetric in the same fixture: `fund_from` empty while
+  `fund_from_address` populated). **Logged only, not wired to any filter or the
+  documented-but-unbuilt cluster signal yet** — explicit user choice, same
+  collect-first-decide-later pattern as `is_open_or_close`/holder-risk-pct.
 
 **Fields that weren't in the original plan and are worth considering as gate v2** (also
 exist as `--min-*`/`--max-*` flags): `entrapment_ratio`, `top70_sniper_hold_rate`,

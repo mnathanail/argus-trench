@@ -524,6 +524,8 @@ function stubDeps(statsOverride: Partial<WalletStats> = {}): CommandDeps {
     sellCount: 120,
     avgHoldingPeriodSec: 2702,
     lastTradeAt: 1787666779,
+    walletCreatedAt: null,
+    fundFromAddress: null,
     ...statsOverride,
   };
   return {

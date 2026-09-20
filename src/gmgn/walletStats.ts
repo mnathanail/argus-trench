@@ -15,6 +15,25 @@ import { expectObject, expectString, toNumber, toNumberOrNull } from './validate
  *   ΟΧΙ το `buy + sell` (πόσες συναλλαγές). Το ίδιο wallet έδειξε token_num 1066 ενώ
  *   buy+sell = 5080. Αν βάζαμε το δεύτερο, αριθμητής και παρονομαστής θα μέτραγαν
  *   διαφορετικά πράγματα και το threshold θα ήταν 5× χαλαρότερο απ' όσο νομίζουμε.
+ *
+ * **`common.*` (2026-09-20, proposal "#1")** — το ΙΔΙΟ response (`portfolio stats`, ήδη
+ * weight 3, ήδη καλείται) περιέχει ΚΑΙ ένα `common` block με ταυτότητα/προέλευση του
+ * wallet, επιβεβαιωμένο σε πραγματικό captured response (`__fixtures__/portfolio.stats.json`,
+ * 2026-09-11) — ΟΧΙ απλά τεκμηριωμένο, πράγματι το είδαμε. Μέχρι τώρα αγνοούνταν εντελώς.
+ * Δύο πεδία εξάγονται τώρα, ΜΗΔΕΝΙΚΟ επιπλέον κόστος (ίδιο call):
+ * - `common.created_at` (unix seconds) — πότε χρηματίστηκε το wallet για πρώτη φορά. Ένα
+ *   πολύ φρέσκο wallet με ήδη `smart_degen` tag είναι πιο ύποπτο για tag-farming παρά
+ *   πραγματική ιστορία.
+ * - `common.fund_from_address` — η διεύθυνση που το χρημάτισε αρχικά. Χρήσιμο ΑΡΓΟΤΕΡΑ
+ *   για sybil/cluster ανάλυση: πολλά "smart"-tagged wallets με ΚΟΙΝΟ funding source σε
+ *   ένα cluster σήμα υποδηλώνουν συντονισμό, όχι ανεξάρτητη συναίνεση (βλ. gmgn-portfolio
+ *   SKILL.md, `common.fund_from_address`/`common.fund_from`).
+ * Ρητή επιλογή χρήστη 2026-09-20: μόνο καταγραφή τώρα (μαζί με τα υπόλοιπα stats πεδία
+ * στο ίδιο σημείο του pipeline, `wallet_score_history`) — ΟΧΙ ακόμα φίλτρο/cluster-λογική
+ * πάνω σε αυτά· εκείνο εξαρτάται από το ξεχωριστό, αχτίστο ακόμα "cluster signal"
+ * (πολλαπλά wallets στο ίδιο token/παράθυρο — proposal #2, deferred).
+ * `common` απών ή χωρίς τα πεδία ⇒ `null`, ΟΧΙ σφάλμα — όχι κάθε wallet response έχει
+ * ταυτότητα (βλ. ήδη υπάρχον σχόλιο του SKILL.md: "If common is absent, omit silently").
  */
 export interface WalletStats {
   walletAddress: string;
@@ -33,6 +52,13 @@ export interface WalletStats {
   /** Δευτερόλεπτα. Χρήσιμο ως sanity check: sniper bot vs. πραγματικός trader. */
   avgHoldingPeriodSec: number | null;
   lastTradeAt: number | null;
+  /** `common.created_at`, unix seconds — πότε χρηματίστηκε το wallet για πρώτη φορά.
+   * `null` όταν το `common` block απουσιάζει, ΟΧΙ όταν είναι απλά μηδέν/κενό. */
+  walletCreatedAt: number | null;
+  /** `common.fund_from_address` — η διεύθυνση-πηγή της αρχικής χρηματοδότησης. `null`
+   * όταν το `common` block απουσιάζει Ή το πεδίο είναι κενό string (GMGN δεν το γνωρίζει
+   * πάντα, βλ. fixture: `fund_from` κενό ενώ `fund_from_address` γεμάτο — ασύμμετρα). */
+  fundFromAddress: string | null;
 }
 
 export interface FetchWalletStatsOptions extends RunOptions {
@@ -54,6 +80,7 @@ export function parseWalletStats(raw: unknown): WalletStats {
   const pnl = isObject(root['pnl_stat'])
     ? (root['pnl_stat'] as Record<string, unknown>)
     : {};
+  const common = isObject(root['common']) ? (root['common'] as Record<string, unknown>) : {};
 
   return {
     walletAddress: expectString(root['wallet_address'], 'wallet_address'),
@@ -65,7 +92,16 @@ export function parseWalletStats(raw: unknown): WalletStats {
     sellCount: toNumberOrNull(root['sell'], 'sell'),
     avgHoldingPeriodSec: toNumberOrNull(pnl['avg_holding_period'], 'pnl_stat.avg_holding_period'),
     lastTradeAt: toNumberOrNull(root['last_timestamp'], 'last_timestamp'),
+    walletCreatedAt: toNumberOrNull(common['created_at'], 'common.created_at'),
+    fundFromAddress: nonEmptyStringOrNull(common['fund_from_address']),
   };
+}
+
+/** `common.fund_from_address` μπορεί να είναι κενό string (GMGN δεν ξέρει την πηγή) —
+ * ίδιο σκεπτικό με `toStringOrNull` στο validate.ts, αλλά εδώ χρειάζεται τοπικά γιατί
+ * διαβάζει από το ήδη-εξαγμένο `common` object, όχι απευθείας raw response field. */
+function nonEmptyStringOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value !== '' ? value : null;
 }
 
 /** Ο έλεγχος συνέπειας που μας έσωσε: τα buckets πρέπει να αθροίζουν σε `token_num`. */

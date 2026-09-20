@@ -92,6 +92,8 @@ function stats(overrides: Partial<WalletStats> = {}): WalletStats {
     sellCount: 480,
     avgHoldingPeriodSec: 3600,
     lastTradeAt: 0,
+    walletCreatedAt: null,
+    fundFromAddress: null,
     ...overrides,
   };
 }
