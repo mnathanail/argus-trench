@@ -29,8 +29,14 @@ export type Decision =
    */
   | 'signal_logged';
 
-/** `kol_call` reserved για v2 — ανενεργό στο v1. */
-export type TriggerType = 'smart_money_buy' | 'kol_call' | 'none';
+/**
+ * `kol_call` reserved για v2 — ανενεργό στο v1.
+ * `gmgn_smartmoney` — προστέθηκε 2026-09-20 (`collectors/gmgnSmartMoney.ts`): trigger
+ * από GMGN's ΔΙΚΑ ΤΟΥ tagged smart-money wallets (`track smartmoney`), ΟΧΙ από τη δική
+ * μας self-curated watchlist (αυτό παραμένει 'smart_money_buy'). Ξεχωριστή τιμή ρητά
+ * ώστε το hit-rate των δύο πηγών να μετριέται ανεξάρτητα, όχι αναμεμιγμένο.
+ */
+export type TriggerType = 'smart_money_buy' | 'kol_call' | 'gmgn_smartmoney' | 'none';
 
 export type TradeMode = 'log_only' | 'paper' | 'live';
 

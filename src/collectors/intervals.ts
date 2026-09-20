@@ -166,6 +166,26 @@ export const WALLET_DISCOVERY_RETRY_BACKOFF_MS = [
 ] as const;
 
 /**
+ * `track smartmoney` collector (2026-09-20, `collectors/gmgnSmartMoney.ts`) — δεύτερο,
+ * ανεξάρτητο trigger-κανάλι πλάι στο layer 3, βλ. σχόλιο εκεί για το πλήρες σκεπτικό.
+ *
+ * Weight 1 ΣΥΝΟΛΙΚΑ ανά κύκλο (όχι ανά wallet, σε αντίθεση με WALLET_ACTIVITY, weight
+ * 3/wallet) — μπορεί να τρέχει πολύ πιο συχνά χωρίς να πιέζει το shared 20/s bucket.
+ * 30s: αρκετά συχνό ώστε ένα φρέσκο smartmoney buy να μην περιμένει πολύ πριν
+ * ελεγχθεί το gate, χωρίς να πλησιάζει καν το budget (1 weight / 30s ≈ 0.033/s,
+ * αμελητέο πάνω σε 20/s shared budget — βλ. WALLET_DISCOVERY_INTERVAL_MS για το ίδιο
+ * επιχείρημα σε άλλο collector).
+ */
+export const GMGN_SMARTMONEY_INTERVAL_MS = 30_000;
+export const GMGN_SMARTMONEY_INITIAL_DELAY_MS = 10_000;
+export const GMGN_SMARTMONEY_RETRY_BACKOFF_MS = [
+  60_000,
+  2 * 60_000,
+  5 * 60_000,
+  10 * 60_000,
+] as const;
+
+/**
  * Ημερήσια αναφορά στο Telegram — μία φορά κάθε 24 ώρες. Η ΩΡΑ (00:05 τοπική ώρα
  * Αθήνας) υπολογίζεται στο main.ts μέσω `msUntilNextAthensTime`, όχι εδώ — χρειάζεται
  * το πραγματικό "τώρα" τη στιγμή του process start, το οποίο δεν το ξέρει ένα module με

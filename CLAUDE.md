@@ -28,8 +28,7 @@ phase the rollout from log-only up to live auto-trading.
    - *Automatic*: **implemented 2026-08-26** (`collectors/walletDiscovery.ts`), via
      `token holders --tag smart_degen` over ~20-30 recently **graduated** (`market
      trenches --type completed`, sorted by `complete_timestamp` — NOT
-     `created_timestamp`) Pump.fun tokens. The `track smartmoney`/`kol` path (the other
-     option from the original plan) remains open/unimplemented.
+     `created_timestamp`) Pump.fun tokens.
      Wallets appearing in >1 token **don't block** ones that only appear in one — frequency
      is a scoring priority (multi-token candidates get scored first, since the throttled
      cycle may not get through everyone), not a hard filter, no schema change.
@@ -65,18 +64,43 @@ phase the rollout from log-only up to live auto-trading.
      wallet watching" section below.
    Both are stored in the same `watchlist_wallets` table. It does NOT depend on
    "follow" inside the GMGN UI.
-3. **Signal triggers** — the intersection of the two streams above: a trusted wallet (from
-   our list) buys a token that has passed the gate.
-   ⚠️ **`track follow-wallet` does NOT work for this** (confirmed 2026-08-25): it
-   resolves the list from the follows of the GMGN account tied to the API key,
-   i.e. it depends on the GMGN UI — exactly what we explicitly reject in layer 2. It also
-   needs signed auth. `track smartmoney`/`kol` remains useful, but for GMGN-tagged wallets,
-   not for our own list.
-   Source for OUR OWN wallets: **`portfolio activity --wallet <addr> --type buy`,
-   polled per wallet** (paginated, with a `next` cursor). Cost is 1 request/wallet/cycle
-   instead of 1 total — this factors into the rate-limit math, see "Verified CLI contract".
-   Complementary: PumpPortal WebSocket `subscribeAccountTrade` (push, low latency —
-   not a substitute for GMGN, and not before a working pipeline exists).
+3. **Signal triggers** — two independent, parallel channels, not one:
+   - **Our own watchlist** — the intersection of the two layer-2 streams above: a
+     trusted wallet (from our list) buys a token that has passed the gate.
+     ⚠️ **`track follow-wallet` does NOT work for this** (confirmed 2026-08-25): it
+     resolves the list from the follows of the GMGN account tied to the API key,
+     i.e. it depends on the GMGN UI — exactly what we explicitly reject in layer 2. It
+     also needs signed auth.
+     Source for OUR OWN wallets: **`portfolio activity --wallet <addr> --type buy`,
+     polled per wallet** (paginated, with a `next` cursor). Cost is 1 request/wallet/cycle
+     instead of 1 total — this factors into the rate-limit math, see "Verified CLI
+     contract". Complementary: PumpPortal WebSocket `subscribeAccountTrade` (push, low
+     latency — not a substitute for GMGN, and not before a working pipeline exists).
+   - **GMGN's own platform-wide smart-money feed — implemented 2026-09-20**
+     (`collectors/gmgnSmartMoney.ts`), via `track smartmoney`. Weight 1 **total per
+     cycle**, not per wallet — the cheapest broad signal source available, and much
+     broader than our self-curated watchlist (~100-150 addresses, expensive to grow).
+     Runs every 30s (`GMGN_SMARTMONEY_INTERVAL_MS`), independent of the layer-2
+     watchlist entirely: these are GMGN's own tagged wallets, never written into
+     `watchlist_wallets` (that table stays reserved for wallets we curate — see below).
+     Signals from this channel get their own `decision_log.trigger_type =
+     'gmgn_smartmoney'`, kept deliberately distinct from `'smart_money_buy'` (our own
+     watchlist) so the two channels' hit-rates can be measured independently before
+     either is trusted more than the other. **Always `mode='log_only'` for now** — a
+     brand-new, unvalidated signal source starts at the same read-only logging stage
+     the whole system started at (see "Phased rollout"), not wired to paper or live
+     trading yet.
+     ⚠️ **`decision_log.trigger_wallet_address` lost its FK to `watchlist_wallets`**
+     (migration 0014) to allow this — a GMGN smartmoney wallet is never one of ours, so
+     the FK would reject every such trigger row outright. Existing display code already
+     used `LEFT JOIN watchlist_wallets`, so a non-matching address just shows with no
+     name (as it should) — nothing assumed an unconditional match.
+   - `track kol` (weight 1, same shape as smartmoney) is documented and adapter-ready
+     (`gmgn/trackSmartmoney.ts`'s pattern applies directly) but not yet wired to its own
+     collector loop — natural next step once `gmgn_smartmoney`'s hit-rate is assessed.
+   - The **cluster signal** concept from the `gmgn-track` skill (multiple tracked
+     wallets buying the same token in a short window = stronger conviction than one) is
+     NOT implemented in decision logic yet — noted as a follow-up, not built.
 4. **Exit decision** — two mechanisms together, not one:
    - A mechanical order at the moment of purchase: `swap --condition-orders` combining
      `profit_stop` (fixed tier) + `profit_stop_trace` (trailing, with `drawdown_rate`).
@@ -226,7 +250,7 @@ decision_log(
   gate_snapshot_json,                     -- rug_ratio, bundler_rate, insider_ratio, top_holder_rate, smart_degen_count, creator_created_open_ratio, raw
   gate_passed,
   gate_fail_reason,                       -- e.g. "rug_ratio 0.34 > max 0.2", null if it passed
-  trigger_type,                           -- smart_money_buy / kol_call / none (kol_call: reserved for v2, inactive in v1 — KOL Call Signal is Deferred)
+  trigger_type,                           -- smart_money_buy (our watchlist) / gmgn_smartmoney (GMGN's own tagged wallets, no FK) / kol_call / none (kol_call: reserved for v2, inactive in v1 — KOL Call Signal is Deferred)
   trigger_wallet_address,
   trigger_wallet_snapshot_json,           -- win_rate/pnl_multiplier AT THAT MOMENT, not today
   decision,                               -- entered / signal_logged / skipped_gate / skipped_no_trigger / skipped_bankroll_limit

@@ -1,0 +1,181 @@
+import { findPassedTokens } from '../db/repositories/decisionLog.js';
+import { recordSignal } from '../db/repositories/entries.js';
+import { countOpenTrades } from '../db/repositories/paperTrades.js';
+import { WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE } from './intervals.js';
+import { PHASE1_THRESHOLDS, logicVersion } from '../decision/gateConfig.js';
+import { subscribeForNewTrade } from '../realtime/subscriptionManager.js';
+import type { PumpPortalConnection } from '../realtime/pumpportalConnection.js';
+import { applyEntrySlippage } from '../decision/pnl.js';
+import {
+  PAPER_ASSUMED_LATENCY_MS,
+  PAPER_ASSUMED_SLIPPAGE_PCT,
+  PAPER_BANKROLL_SOL,
+  PAPER_POSITION_SIZE_PCT,
+  conditionOrdersJson,
+} from '../decision/paperTradingConfig.js';
+import { fetchSmartMoneyTrades, type SmartMoneyTrade } from '../gmgn/trackSmartmoney.js';
+import { toNumberOrNull } from '../gmgn/validate.js';
+
+/**
+ * Δεύτερο, ανεξάρτητο trigger-κανάλι πλάι στο layer 3 (walletActivity.ts /
+ * realtimeEntryHandler.ts) — `track smartmoney`, GMGN's ΔΙΚΑ ΤΟΥ tagged smart-money/whale
+ * wallets, ΟΧΙ η δική μας self-curated watchlist. CLAUDE.md το είχε ρητά σημειώσει ως
+ * "παραμένει open/unimplemented" (layer 2 σχόλιο) — αυτό είναι η πρώτη υλοποίηση.
+ *
+ * Weight 1 ΣΥΝΟΛΙΚΑ ανά κύκλο (όχι ανά wallet, βλ. routes.ts) — πολύ φθηνότερο από το
+ * layer 3 (weight 3/wallet/κύκλο), γι' αυτό μπορεί να τρέχει συχνά χωρίς να πιέζει το
+ * shared 20/s bucket.
+ *
+ * ΣΚΟΠΙΜΑ mode='log_only' ΠΑΝΤΑ σε αυτό το πρώτο πέρασμα, ΠΟΤΕ live — ίδια φιλοσοφία με
+ * το "Phased rollout" του CLAUDE.md: μια ολοκαίνουρια, ανεπικύρωτη πηγή σήματος
+ * καταγράφεται πρώτα (δικό της trigger_type: 'gmgn_smartmoney', διαφορετικό από το δικό
+ * μας 'smart_money_buy') ώστε να μετρηθεί ξεχωριστά το hit-rate της πριν εμπιστευτεί
+ * πραγματικό κεφάλαιο ή ακόμα και paper trading. Καμία αλλαγή στο recordSignal/entries.ts
+ * χρειάστηκε — το mode ήταν ήδη ρητή παράμετρος του caller, όχι κλειδωμένο.
+ *
+ * ΔΕΝ κάνει δικό του GMGN call για την τιμή εισόδου — χρησιμοποιεί το ήδη υπάρχον
+ * `gate_snapshot_json.price` από το πέρασμα του gate (discovery.ts), ΑΚΡΙΒΩΣ το ίδιο
+ * μοτίβο με το walletActivity.ts — καμία επιπλέον GMGN weight μόνο για ένα simulated
+ * entry.
+ *
+ * Δεν υπάρχει τεκμηριωμένη σελιδοποίηση/cursor σε αυτό το route (μόνο `--limit` πάνω σε
+ * πρόσφατα trades, βλ. gmgn-track skill) — το dedup γίνεται εδώ, in-memory, μέσω
+ * `transactionHash`. Σκόπιμη απλοποίηση για ένα πρώτο, log-only πέρασμα: σε restart,
+ * ένα μικρό αριθμό ήδη-επεξεργασμένων trades μπορεί να ξαναδούμε, αλλά το recordTrigger
+ * (decisionLog.ts) είναι ήδη idempotent σε αυτό (WHERE decision <> 'entered' AND
+ * linked_trade_id IS NULL, plus το guard για ήδη ανοιχτό trade στο ίδιο ζευγάρι
+ * token+wallet) — ίδια ασφάλεια με το ήδη υπάρχον polling fallback path. Αν αυτό το
+ * κανάλι προαχθεί πέρα από πείραμα, ένα persisted cursor (migration) θα άξιζε τον κόπο.
+ */
+export interface GmgnSmartMoneyOptions {
+  limit?: number;
+  realtimeConnection?: PumpPortalConnection;
+  /** Test-only override· production παίρνει πάντα φρέσκο module-level Set. */
+  seenTxHashes?: Set<string>;
+}
+
+export interface GmgnSmartMoneyResult {
+  version: string;
+  tradesFetched: number;
+  newTrades: number;
+  signalsRecorded: number;
+}
+
+/** Module-level, επιζεί ανάμεσα σε κύκλους μέσα στο ίδιο process — βλ. σχόλιο πάνω από
+ * το interface για γιατί δεν χρειάζεται persisted cursor σε αυτό το πρώτο πέρασμα.
+ * Bounded ώστε να μη μεγαλώνει επ' αόριστον σε ένα μακρόχρονο process. */
+const defaultSeenTxHashes = new Set<string>();
+const MAX_SEEN_TX_HASHES = 5_000;
+
+export async function runGmgnSmartMoneyCycle(
+  options: GmgnSmartMoneyOptions = {},
+): Promise<GmgnSmartMoneyResult> {
+  const version = logicVersion(PHASE1_THRESHOLDS);
+  const seen = options.seenTxHashes ?? defaultSeenTxHashes;
+
+  const openTrades = await countOpenTrades();
+  if (openTrades >= WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE) {
+    return { version, tradesFetched: 0, newTrades: 0, signalsRecorded: 0 };
+  }
+
+  const trades = await fetchSmartMoneyTrades({ side: 'buy' });
+  const fresh = filterNewSmartMoneyTrades(trades, seen);
+  rememberSeen(seen, trades);
+
+  if (fresh.length === 0) {
+    return { version, tradesFetched: trades.length, newTrades: 0, signalsRecorded: 0 };
+  }
+
+  const gated = await findPassedTokens(
+    fresh.map((trade) => trade.tokenAddress),
+    version,
+  );
+
+  let signalsRecorded = 0;
+  for (const trade of fresh) {
+    const gateSnapshot = gated.get(trade.tokenAddress);
+    if (gateSnapshot === undefined) continue; // δεν έχει (ακόμα) περάσει το gate
+
+    const rawEntryPrice = toNumberOrNull(gateSnapshot['price'], 'gate_snapshot.price');
+    const entryPrice = rawEntryPrice === null ? null : applyEntrySlippage(rawEntryPrice, PAPER_ASSUMED_SLIPPAGE_PCT);
+    const simulatedEntryAmountSol = PAPER_BANKROLL_SOL * PAPER_POSITION_SIZE_PCT;
+
+    const recorded = await recordSignal(
+      {
+        tokenAddress: trade.tokenAddress,
+        logicVersion: version,
+        // Ξεχωριστό trigger_type από το δικό μας 'smart_money_buy' — επίτηδες, ώστε το
+        // hit-rate αυτής της νέας, GMGN-wide πηγής να μετριέται ανεξάρτητα από τη δική
+        // μας self-curated watchlist, όχι αναμεμιγμένο μαζί της.
+        triggerType: 'gmgn_smartmoney',
+        triggerWalletAddress: trade.makerAddress,
+        triggerWalletSnapshot: {
+          // Δεν έχουμε win_rate/pnl_multiplier/trade_count για ΑΥΤΟ το wallet — δεν
+          // είναι στη δική μας watchlist, δεν έχει σκοραριστεί ποτέ μέσω portfolio
+          // stats. Καταγράφουμε ό,τι πράγματι ξέρουμε από το ίδιο το trade αντί να
+          // γεμίσουμε ψευδή μηδενικά.
+          source: 'gmgn_smartmoney',
+          maker_tags: trade.makerTags,
+          buy_amount_usd: trade.amountUsd,
+          buy_price_usd: trade.priceUsd,
+          buy_tx_hash: trade.transactionHash,
+          buy_timestamp: trade.timestamp,
+        },
+        decision: 'signal_logged',
+        decisionReasonText: `GMGN smartmoney wallet ${short(trade.makerAddress)} αγόρασε ${trade.tokenSymbol ?? short(trade.tokenAddress)} — gate είχε περάσει`,
+      },
+      {
+        tokenAddress: trade.tokenAddress,
+        // ΠΑΝΤΑ log_only σε αυτό το πρώτο πέρασμα — βλ. σχόλιο πάνω από τη function.
+        mode: 'log_only',
+        intendedSizePct: PAPER_POSITION_SIZE_PCT,
+        bankrollAtEntry: PAPER_BANKROLL_SOL,
+        simulatedEntryPrice: entryPrice ?? 0,
+        simulatedEntryAmountSol,
+        assumedSlippagePct: PAPER_ASSUMED_SLIPPAGE_PCT,
+        assumedLatencyMs: PAPER_ASSUMED_LATENCY_MS,
+        conditionOrders: conditionOrdersJson(),
+        // Η πραγματική on-chain στιγμή του smartmoney trade, ΟΧΙ now() — ίδιο σκεπτικό
+        // με walletActivity.ts (σωστό 24ωρο timeout ακόμα και σε catch-up batches).
+        entryAt: new Date(trade.timestamp * 1000),
+      },
+    );
+    if (recorded !== null) {
+      signalsRecorded += 1;
+      if (options.realtimeConnection) {
+        subscribeForNewTrade(options.realtimeConnection, trade.tokenAddress, trade.makerAddress);
+      }
+    }
+  }
+
+  return { version, tradesFetched: trades.length, newTrades: fresh.length, signalsRecorded };
+}
+
+/** Χωριστά από το fetch ώστε να τεσταρίζεται χωρίς δίκτυο — ίδιο μοτίβο με
+ * filterNewBuys στο activity.ts. */
+export function filterNewSmartMoneyTrades(
+  trades: readonly SmartMoneyTrade[],
+  seen: ReadonlySet<string>,
+): SmartMoneyTrade[] {
+  const result: SmartMoneyTrade[] = [];
+  const dedupedThisBatch = new Set<string>();
+  for (const trade of trades) {
+    if (seen.has(trade.transactionHash) || dedupedThisBatch.has(trade.transactionHash)) continue;
+    dedupedThisBatch.add(trade.transactionHash);
+    result.push(trade);
+  }
+  return result;
+}
+
+function rememberSeen(seen: Set<string>, trades: readonly SmartMoneyTrade[]): void {
+  for (const trade of trades) seen.add(trade.transactionHash);
+  // Bound απλό/άκομψο (όχι LRU) αλλά αρκετό: όταν ξεπεράσει το cap, αδειάζει τελείως
+  // και ξαναχτίζεται από το επόμενο fetch — στη χειρότερη περίπτωση μερικά ήδη-δει
+  // trades ξαναπερνούν από το recordTrigger idempotent guard (βλ. σχόλιο πιο πάνω),
+  // ποτέ διπλό trade.
+  if (seen.size > MAX_SEEN_TX_HASHES) seen.clear();
+}
+
+function short(address: string): string {
+  return `${address.slice(0, 4)}…${address.slice(-4)}`;
+}

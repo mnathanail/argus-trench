@@ -23,9 +23,13 @@ import {
   LIVE_TRADE_WATCHDOG_INTERVAL_MS,
   LIVE_TRADE_WATCHDOG_INITIAL_DELAY_MS,
   LIVE_TRADE_WATCHDOG_RETRY_BACKOFF_MS,
+  GMGN_SMARTMONEY_INTERVAL_MS,
+  GMGN_SMARTMONEY_INITIAL_DELAY_MS,
+  GMGN_SMARTMONEY_RETRY_BACKOFF_MS,
 } from './collectors/intervals.js';
 import { runWalletScoringCycle } from './collectors/scoring.js';
 import { runWalletDiscoveryCycle } from './collectors/walletDiscovery.js';
+import { runGmgnSmartMoneyCycle } from './collectors/gmgnSmartMoney.js';
 import { config } from './config.js';
 import { closePool } from './db/pool.js';
 import { listActiveWallets } from './db/repositories/watchlistWallets.js';
@@ -238,6 +242,20 @@ const loops: LoopDefinition[] = [
       if (result.discovered > 0) {
         await notify(`🔎 ${result.discovered} νέο(α) smart_money wallet(s) προστέθηκαν στη watchlist`);
       }
+    },
+  },
+  {
+    name: 'gmgn-smartmoney',
+    intervalMs: GMGN_SMARTMONEY_INTERVAL_MS,
+    initialDelayMs: GMGN_SMARTMONEY_INITIAL_DELAY_MS,
+    retryBackoffMs: GMGN_SMARTMONEY_RETRY_BACKOFF_MS,
+    run: async () => {
+      const result = await runGmgnSmartMoneyCycle({ realtimeConnection });
+      if (result.newTrades === 0 && result.signalsRecorded === 0) return;
+      console.log(
+        `[gmgn-smartmoney] fetched=${result.tradesFetched} new=${result.newTrades} ` +
+          `signals=${result.signalsRecorded}`,
+      );
     },
   },
   {
