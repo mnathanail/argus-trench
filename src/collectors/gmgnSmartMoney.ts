@@ -38,6 +38,17 @@ import { toNumberOrNull } from '../gmgn/validate.js';
  * μοτίβο με το walletActivity.ts — καμία επιπλέον GMGN weight μόνο για ένα simulated
  * entry.
  *
+ * ΠΡΩΤΟ ΠΡΑΓΜΑΤΙΚΟ ΔΕΙΓΜΑ (2026-09-20, 44 σήματα, ~36 κλειστά): 81% (29/36) έκλεισαν με
+ * stop_loss, σχεδόν πάντα στο -99% — το gate μας ΔΕΝ φιλτράρει το βασικό ~98.6%
+ * collapse-rate των pump.fun tokens σε αυτό το κανάλι καλύτερα απ' ό,τι στο layer 3. Οι
+ * σπάνιες νίκες όμως είναι τεράστιες (+6525%, +3466%, +1476%, +212%, +201%, +50%) —
+ * θετικός μέσος όρος (+253%) βασισμένος αποκλειστικά σε λίγα outliers, στατιστικά
+ * εύθραυστο ακόμα. `is_open_or_close` (βλ. `triggerWalletSnapshot` παρακάτω, βλ. σχόλιο
+ * `.claude/skills/gmgn-track/SKILL.md` "Full position events ... carry much stronger
+ * conviction than partial adds") είναι υποψήφιο φίλτρο — καταγράφεται ΤΩΡΑ ρητά για να
+ * ελεγχθεί αναδρομικά μόλις μαζευτεί αρκετό νέο δείγμα, ΔΕΝ χρησιμοποιείται ακόμα ως
+ * φίλτρο εισόδου (πρώτα δεδομένα, μετά απόφαση — ρητό αίτημα χρήστη 2026-09-20).
+ *
  * Δεν υπάρχει τεκμηριωμένη σελιδοποίηση/cursor σε αυτό το route (μόνο `--limit` πάνω σε
  * πρόσφατα trades, βλ. gmgn-track skill) — το dedup γίνεται εδώ, in-memory, μέσω
  * `transactionHash`. Σκόπιμη απλοποίηση για ένα πρώτο, log-only πέρασμα: σε restart,
@@ -120,6 +131,13 @@ export async function runGmgnSmartMoneyCycle(
           buy_price_usd: trade.priceUsd,
           buy_tx_hash: trade.transactionHash,
           buy_timestamp: trade.timestamp,
+          // 2026-09-20 — προστέθηκε για να μπορέσουμε ΑΡΓΟΤΕΡΑ να ελέγξουμε αν αυτό
+          // διαχωρίζει winners/losers (βλ. gmgn-track skill: "A wallet opening a full
+          // new position signals high confidence" vs partial add). ΔΕΝ χρησιμοποιείται
+          // ακόμα ως φίλτρο — πρώτα μαζεύουμε δεδομένα, μετά αποφασίζουμε. Σημασιολογία
+          // ΑΝΤΙΣΤΡΟΦΗ από το follow-wallet: εδώ (kol/smartmoney) 0 = άνοιγμα/προσθήκη
+          // θέσης, 1 = κλείσιμο/μείωση — βλ. trackSmartmoney.ts.
+          is_open_or_close: trade.isOpenOrClose,
         },
         decision: 'signal_logged',
         decisionReasonText: `GMGN smartmoney wallet ${short(trade.makerAddress)} αγόρασε ${trade.tokenSymbol ?? short(trade.tokenAddress)} — gate είχε περάσει`,
