@@ -98,6 +98,23 @@ phase the rollout from log-only up to live auto-trading.
    - `track kol` (weight 1, same shape as smartmoney) is documented and adapter-ready
      (`gmgn/trackSmartmoney.ts`'s pattern applies directly) but not yet wired to its own
      collector loop — natural next step once `gmgn_smartmoney`'s hit-rate is assessed.
+   - **Holder-risk enrichment — implemented 2026-09-20** (`gmgn/holderRisk.ts`): for every
+     fresh `gmgn_smartmoney` signal that passes the gate, one extra `token holders`
+     call (no `--tag`, weight 5 — the most expensive route, now paid **per signal**
+     instead of only during wallet-discovery bootstrap) computes the fraction of the
+     tradeable float held by `bundler`/`rat_trader`/`sniper`-tagged wallets, mirroring
+     only the risk-tag math of the `gmgn-holder-analysis` skill's Python script (NOT its
+     full rating cascade — no dev-holding/airdrop/linked-funding checks). Stored on
+     `triggerWalletSnapshot` as `holder_risk_pct` (`null` = unassessable/degenerate float
+     or not checked, never treat as 0%) + `holder_risk_wallet_count` +
+     `holder_risk_checked`. **Logged only, NOT a filter yet** — same
+     collect-first-decide-later approach as `is_open_or_close`, explicit user choice.
+     Never blocks `recordSignal`: any failure (rate limit or otherwise) records `null`
+     and the signal proceeds. Because this runs inside the per-cycle loop over multiple
+     fresh trades, a rate-limit hit on the first holders call disables further holders
+     calls for the rest of that cycle (`rateLimitedThisCycle` in `gmgnSmartMoney.ts`) so
+     consecutive calls don't extend the shared ban — the signal-recording loop itself
+     keeps running regardless.
    - The **cluster signal** concept from the `gmgn-track` skill (multiple tracked
      wallets buying the same token in a short window = stronger conviction than one) is
      NOT implemented in decision logic yet — noted as a follow-up, not built.
@@ -165,7 +182,9 @@ batches. 50 wallets in activity = 150 weight = 7.5s at full rate; another 150 if
 score the same ones. Only `portfolio profits` genuinely batches (100 wallets,
 weight 3) — but it gives P&L, not win rate. `token holders` (weight 5, the most expensive
 route) is even more expensive: ~10 tokens/hour in the wallet-discovery bootstrap
-is about 50 weight just for the holders pass.
+is about 50 weight just for the holders pass. Since 2026-09-20 it's also called once per
+fresh `gmgn_smartmoney` signal (holder-risk enrichment, see layer 3) — a second,
+independent consumer of this same expensive route, sharing the same 20/s bucket.
 Rule of thumb: the 20/s budget gets eaten by wallets, not discovery. On 429: read the
 `X-RateLimit-Reset` header or `reset_at` in the body.
 **DO NOT naive-retry** — each request inside the cooldown extends the ban by 5s,
