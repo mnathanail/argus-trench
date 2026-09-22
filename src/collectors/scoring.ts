@@ -7,7 +7,7 @@ import {
 } from '../db/repositories/watchlistWallets.js';
 import { rethrowIfRateLimited } from '../gmgn/errors.js';
 import { fetchWalletStats } from '../gmgn/walletStats.js';
-import { WALLET_SCORING_LOOP_PACING_MS } from './intervals.js';
+import { WALLET_SCORING_LOOP_PACING_MS, WALLET_SCORING_WALLETS_PER_CYCLE } from './intervals.js';
 import {
   ADVISORY_TOKEN_COUNT_FLOOR,
   ADVISORY_WIN_RATE_FLOOR,
@@ -22,8 +22,14 @@ import { delay } from '../util/delay.js';
  * ξοδεύουμε weight πάνω τους (βλ. `listWalletsForScoring`).
  *
  * Κόστος: weight 3 **ανά wallet** — το `portfolio stats` δε κάνει batch παρά το help text
- * (δοκιμασμένο). Ανεκτό όσο η watchlist είναι μικρή· αν μεγαλώσει σημαντικά, το interval
- * πρέπει να αραιώσει ή να χωριστεί σε ξεχωριστά loops ανά source.
+ * (δοκιμασμένο). ΝΕΟ 2026-09-22: `listWalletsForScoring` πλέον δέχεται `limit` και κάνει
+ * rotation (`last_reviewed_at ASC NULLS FIRST`, ίδιο pattern με το wallet-activity) αντί
+ * να επιστρέφει ΟΛΑ τα ταιριαστά wallets — πραγματικό incident με 186 wallets (558
+ * weight σε ΕΝΑΝ κύκλο) προκάλεσε επαναλαμβανόμενο RATE_LIMIT_BANNED. Βλ.
+ * `WALLET_SCORING_WALLETS_PER_CYCLE` στο intervals.ts για τους αριθμούς και το πλήρες
+ * σκεπτικό. Κάθε wallet ξαναπερνάει από τη σειρά μετά από `WALLET_SCORING_INTERVAL_MS`
+ * φορές τον αριθμό των κύκλων που χρειάζονται να το ξαναφτάσει η ουρά — πιο αργό
+ * re-scoring ανά wallet παρά πριν, αλλά ασφαλές στο rate limit είναι η προτεραιότητα.
  *
  * ⚠️ Το default `portfolio stats` (χωρίς --period) είναι 7-ήμερο κυλιόμενο παράθυρο, ΟΧΙ
  * lifetime — επιβεβαιωμένο πραγματικό call 2026-09-02 (--period all έδωσε ΤΑΥΤΟΣΗΜΑ
@@ -46,7 +52,7 @@ export interface ScoringResult {
 }
 
 export async function runWalletScoringCycle(): Promise<ScoringResult> {
-  const wallets = await listWalletsForScoring();
+  const wallets = await listWalletsForScoring(WALLET_SCORING_WALLETS_PER_CYCLE);
   const scores: {
     walletAddress: string;
     winRate: number | null;

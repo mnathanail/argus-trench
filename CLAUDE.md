@@ -454,6 +454,43 @@ couldn't keep up closing trades before new ones opened.
   splitting GMGN capacity (a separate API key / IP / account), not more request
   pressure on the same IP.
 
+## Watchlist growth outgrew wallet-scoring's per-cycle cap (2026-09-22)
+Real, active incident: Railway logs showed repeated `RATE_LIMIT_BANNED` (not just plain
+429) across MULTIPLE, unrelated loops (`gmgn-smartmoney`, `wallet-scoring`,
+`live-strategy-reconciler`, `live-trade-watchdog`, `wallet-discovery`, `exit-resolver`,
+`discovery`) simultaneously, with the ban's reset time continuously pushed further into
+the future — the signature of requests still landing inside an active ban and extending
+it (each one costs +5-60s, per the GMGN error message itself).
+
+**Root cause, found by reading the code, not by guessing**: `listWalletsForScoring()`
+(`src/db/repositories/watchlistWallets.ts`) had NO `LIMIT` — it returned every
+active-or-below_threshold wallet, and `runWalletScoringCycle` (`src/collectors/
+scoring.ts`) scored ALL of them serially every cycle, at weight 3 each (`portfolio
+stats`). On 2026-09-22 the watchlist had grown to 186 wallets (155 active + 31
+below_threshold) = **558 weight in a single cycle** — well above the GMGN leaky-bucket
+budget (rate=20/capacity=20) even with zero other loops running concurrently. This is
+the EXACT same failure mode already documented in `intervals.ts` from 2026-09-13 (108
+wallets, ~324 weight, same symptom) — that fix only widened the interval (5min→15min)
+without capping the wallet count per cycle, so the root cause remained and resurfaced
+worse as the watchlist kept growing organically (source: wallet-discovery bootstrap +
+manual `/watch` additions).
+
+**Fix**: `listWalletsForScoring(limit)` now takes a `LIMIT` and rotates via
+`ORDER BY last_reviewed_at ASC NULLS FIRST` — identical pattern to the existing, already
+battle-tested `selectWalletsForActivityCheck` (self-healing by construction, the DB IS
+the rotation state, nothing lost on restart). New constant
+`WALLET_SCORING_WALLETS_PER_CYCLE = 40` in `intervals.ts` (40×weight3=120/cycle, safely
+inside budget even if another loop fires the same second). Trade-off: each individual
+wallet now gets re-scored less often than before as the watchlist grows past 40 (a full
+rotation takes more than one `WALLET_SCORING_INTERVAL_MS` cycle) — accepted, since
+staying inside the rate limit is the priority and scores don't change meaningfully
+minute-to-minute anyway (same reasoning as the 2026-09-13 interval widening).
+
+**Takeaway for future collectors**: any per-item loop over the watchlist (or any other
+table that grows over time) MUST cap+rotate from the start, not just rely on a
+generous interval — an interval that's "safe today" silently stops being safe as the
+underlying table grows, with no code change and no warning until the ban actually hits.
+
 ## Live strategy order reconciliation incident (2026-09-19) — trade #1225
 A live trade (token `CjtxpmhGyHMhdN5MmS7vooYbDVi6utNz5DxJVjF8bjoZ`) closed on GMGN with a
 real, large profit via the native trailing-stop (`profit_stop_trace`, 40% drawdown) —

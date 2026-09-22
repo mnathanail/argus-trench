@@ -273,12 +273,27 @@ export async function setWalletActive(
  * Ποια wallets αξίζει να σκοράρουμε — active, ΚΑΙ auto-deactivated (για να δούμε αν
  * ξαναπέρασαν το threshold), αλλά ΟΧΙ manually /unwatch-ed (ο χρήστης το απέκλεισε
  * σκόπιμα, δεν έχει νόημα να συνεχίζουμε να ξοδεύουμε weight σκοράροντάς το).
+ *
+ * ⚠️ `LIMIT` + rotation (`last_reviewed_at ASC NULLS FIRST`) — ΝΕΟ 2026-09-22, real
+ * incident (repeated GMGN 429/RATE_LIMIT_BANNED σε ΠΟΛΛΑ loops ταυτόχρονα, ban reset time
+ * να προχωράει συνεχώς πιο μπροστά). Πριν αυτό, η function γύριζε ΟΛΑ τα ταιριαστά
+ * wallets χωρίς κανένα cap — στις 2026-09-22 η watchlist είχε φτάσει 186 wallets
+ * (155 active + 31 below_threshold), δηλαδή 186×weight3 = 558 weight ΣΕ ΕΝΑΝ κύκλο, πολύ
+ * πάνω από το leaky-bucket budget (rate=20/capacity=20) ΑΚΟΜΑ ΚΙ ΑΝ κανένα άλλο loop δεν
+ * έτρεχε ταυτόχρονα. Το ΙΔΙΟ ακριβώς πρόβλημα είχε ήδη καταγραφεί στο intervals.ts στις
+ * 2026-09-13 με 108 wallets (~324 weight) — ο τότε fix αραίωσε μόνο το interval
+ * (5min→15min), όχι τον αριθμό wallets/κύκλο, άρα η ρίζα παρέμεινε και επανεμφανίστηκε
+ * χειρότερη καθώς μεγάλωσε η watchlist. Ίδιο rotation pattern με το ήδη υπάρχον
+ * `selectWalletsForActivityCheck` — self-healing by construction, καμία in-memory
+ * κατάσταση να χαθεί σε restart.
  */
-export async function listWalletsForScoring(conn?: Queryable): Promise<WatchlistWallet[]> {
+export async function listWalletsForScoring(limit: number, conn?: Queryable): Promise<WatchlistWallet[]> {
   const { rows } = await db(conn).query<WalletRow>(
     `SELECT ${COLUMNS} FROM watchlist_wallets
       WHERE active OR deactivated_reason = 'below_threshold'
-      ORDER BY added_at`,
+      ORDER BY last_reviewed_at ASC NULLS FIRST
+      LIMIT $1`,
+    [limit],
   );
   return rows.map(mapWallet);
 }

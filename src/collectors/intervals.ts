@@ -73,6 +73,21 @@ export const WALLET_SCORING_RETRY_BACKOFF_MS = [
   10 * 60_000,
   15 * 60_000,
 ] as const;
+/**
+ * ΝΕΟ 2026-09-22 — real incident: η watchlist έφτασε 186 wallets (155 active + 31
+ * below_threshold), δηλαδή 558 weight ΣΕ ΕΝΑΝ κύκλο (weight 3/wallet, `portfolio
+ * stats`) — πάνω από 20× το leaky-bucket budget (rate=20/capacity=20) ΑΚΟΜΑ ΚΙ ΧΩΡΙΣ
+ * κανένα άλλο loop να τρέχει ταυτόχρονα, προκαλώντας επαναλαμβανόμενο
+ * RATE_LIMIT_BANNED σε πολλαπλά, άσχετα loops (κάθε νέο αίτημα μέσα στο ήδη ενεργό ban
+ * το επεκτείνει κατά 5-60s). Cap + rotation (βλ. `listWalletsForScoring`) αντί για
+ * "όλα κάθε φορά" — 40 wallets/κύκλο σε interval 900s σημαίνει ρυθμό ~1 πλήρους
+ * ανανέωσης κάθε ~56 λεπτά με τη σημερινή watchlist, αποδεκτό αφού τα scores δεν
+ * αλλάζουν αρκετά μέσα σε λίγα λεπτά ώστε να χρειάζονται συχνότερο (ίδιο σκεπτικό με
+ * το 2026-09-13 interval bump πιο πάνω). Ρύθμισε ΠΡΟΣ ΤΑ ΚΑΤΩ αν η watchlist ξαναμεγαλώσει
+ * σημαντικά — 40×3=120 weight/κύκλο παραμένει μέσα στο budget ΑΚΟΜΑ ΚΙ ΑΝ ένα άλλο loop
+ * τρέξει στο ίδιο δευτερόλεπτο.
+ */
+export const WALLET_SCORING_WALLETS_PER_CYCLE = 40;
 
 /**
 /**
