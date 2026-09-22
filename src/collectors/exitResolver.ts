@@ -11,6 +11,7 @@ import {
   EXIT_TIER_2_DRAWDOWN_PCT,
   EXIT_TIMEOUT_MS,
   PAPER_ASSUMED_FEES_PCT,
+  PROFIT_FLOOR_SCALE,
   STOP_LOSS_PCT,
 } from '../decision/paperTradingConfig.js';
 import { EXIT_RESOLVER_LOOP_PACING_MS, EXIT_RESOLVER_TRADES_PER_CYCLE } from './intervals.js';
@@ -235,7 +236,13 @@ export function resolveExit(input: ExitCheckInput): ExitCheckResult | null {
     }
 
     if (trailingActive) {
-      const stopPrice = peakSinceActivation * (1 - EXIT_TIER_2_DRAWDOWN_PCT);
+      // ΝΕΟ 2026-09-22 — ίδιο profit-floor δίχτυ ασφαλείας με το checkTick.ts (βλ.
+      // PROFIT_FLOOR_SCALE στο paperTradingConfig.ts): ο stop ποτέ δεν πέφτει κάτω από
+      // το ελάχιστο κατοχυρωμένο κέρδος. Τα δύο engines (tick/candle) πρέπει να
+      // συμφωνούν πάντα για το ΠΟΤΕ θα έκλεινε μια θέση — ίδιο σκεπτικό με το
+      // liveExitConditionOrders στο paperTradingConfig.ts.
+      const floorPrice = input.entryPrice * PROFIT_FLOOR_SCALE;
+      const stopPrice = Math.max(peakSinceActivation * (1 - EXIT_TIER_2_DRAWDOWN_PCT), floorPrice);
       if (candle.low <= stopPrice) {
         // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #2, candle-based μισό): πριν καταγράφαμε
         // πάντα το threshold (stopPrice), ποτέ το πραγματικό candle.low — ίδια διόρθωση

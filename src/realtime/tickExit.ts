@@ -2,6 +2,7 @@ import {
   EXIT_TIER_1_PRICE_SCALE,
   EXIT_TIER_2_ACTIVATION_SCALE,
   EXIT_TIER_2_DRAWDOWN_PCT,
+  PROFIT_FLOOR_SCALE,
   STOP_LOSS_PCT,
 } from '../decision/paperTradingConfig.js';
 
@@ -85,7 +86,14 @@ export function checkTick(input: TickCheckInput): TickCheckResult {
   }
 
   if (trailingActive) {
-    const stopPrice = peak * (1 - EXIT_TIER_2_DRAWDOWN_PCT);
+    // ΝΕΟ 2026-09-22 — βλ. PROFIT_FLOOR_SCALE στο paperTradingConfig.ts: ο stop ΠΟΤΕ δεν
+    // πέφτει κάτω από το ελάχιστο κατοχυρωμένο κέρδος, όσο χαμηλά κι αν πάει το
+    // μαθηματικό peak*(1-drawdown). Με τις τρέχουσες τιμές (+50% activation, 25%
+    // drawdown) αυτό είναι ήδη αδρανές (ελάχιστο δυνατό +12.5% > floor +10%) — υπάρχει
+    // ρητά ως δεύτερο, ανεξάρτητο δίχτυ ασφαλείας για το ενδεχόμενο μελλοντικής αλλαγής
+    // στο drawdown.
+    const floorPrice = input.entryPrice * PROFIT_FLOOR_SCALE;
+    const stopPrice = Math.max(peak * (1 - EXIT_TIER_2_DRAWDOWN_PCT), floorPrice);
     if (input.currentPrice <= stopPrice) {
       // Ίδια διόρθωση με το stop_loss πιο πάνω — ποτέ καλύτερα από το threshold, ποτέ
       // χειρότερα από την πραγματική παρατηρημένη τιμή.

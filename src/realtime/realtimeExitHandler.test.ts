@@ -55,8 +55,11 @@ test('ΕΥΡΗΜΑ #1: a tick arriving after the real 24h boundary is ignored, e
 
 test('a tick just under the 24h boundary is processed normally (not incorrectly ignored)', () => {
   const justBeforeBoundary = new Date(ENTRY_AT.getTime() + 23 * 60 * 60 * 1000); // 23h μετά
+  // ΑΛΛΑΓΗ 2026-09-22: με EXIT_TIER_2_ACTIVATION_SCALE=1.5 πλέον, +60% ενεργοποιεί
+  // trailing (update) αντί να κλείνει σε tp_tier_1 — το ζητούμενο εδώ είναι απλώς "δεν
+  // αγνοήθηκε", όχι συγκεκριμένο exitReason.
   const decision = decideForTick(trade(), eventAtPrice(1.6), justBeforeBoundary);
-  assert.equal(decision.type, 'close');
+  assert.notEqual(decision.type, 'ignore');
 });
 
 test('ΕΥΡΗΜΑ #1 (variant): a wallet-sell arriving after the 24h boundary is ignored too, not just price ticks', () => {
@@ -85,8 +88,9 @@ test('a sell by a DIFFERENT wallet (not the trigger wallet) does not count as ex
 test('a buy event (not a sell) from the trigger wallet does not trigger exit_signal', () => {
   const buyByTrigger = eventAtPrice(1.6, { txType: 'buy', traderPublicKey: WALLET });
   const decision = decideForTick(trade(), buyByTrigger, ENTRY_AT);
-  assert.equal(decision.type, 'close');
-  if (decision.type === 'close') assert.equal(decision.exitReason, 'tp_tier_1');
+  // ΑΛΛΑΓΗ 2026-09-22: +60% πλέον ενεργοποιεί trailing (update), όχι tp_tier_1 (close) —
+  // το ζητούμενο του test παραμένει «δεν είναι exit_signal», ασχέτως τύπου απόφασης.
+  assert.notEqual(decision.type === 'close' && decision.exitReason, 'exit_signal');
 });
 
 test('a token that migrated off the bonding curve (pool !== "pump") is ignored, not treated as a price of 0', () => {
@@ -113,7 +117,7 @@ test('trailing_stop fires correctly through the full decision path (activation o
 
   const afterDrop = decideForTick(
     trade({ peakPriceSinceEntry: peak, trailingActive }),
-    eventAtPrice(1.1), // κάτω από 2.0*(1-0.4)=1.2
+    eventAtPrice(1.1), // κάτω από 2.0*(1-0.25)=1.5
     ENTRY_AT,
   );
   assert.equal(afterDrop.type, 'close');
@@ -130,10 +134,23 @@ test('trailing_stop fires correctly through the full decision path (activation o
 // για το πώς ακυρώνεται πριν από κάθε δική μας πώληση, και το idempotent-guard για το
 // σπάνιο race όπου προλαβαίνει αυτό).
 
-test('nativeOrderActive=true: a price tick that would trigger tp_tier_1 still closes — the tracker is primary regardless', () => {
-  const decision = decideForTick(trade({ nativeOrderActive: true }), eventAtPrice(1.6), ENTRY_AT); // +60%
+test('nativeOrderActive=true: a price tick that would trigger trailing_stop still closes — the tracker is primary regardless', () => {
+  // ΑΛΛΑΓΗ 2026-09-22: tp_tier_1 δεν κλείνει πλέον ποτέ από ένα μεμονωμένο tick (βλ.
+  // σχόλιο στο paperTradingConfig.ts) — trailing_stop είναι πλέον η αντιπροσωπευτική
+  // κατάσταση "κλείνει regardless of nativeOrderActive". Ενεργοποίηση στο +60%, μετά
+  // πτώση κάτω από το stop (peak*(1-0.25)).
+  const afterActivation = decideForTick(trade({ nativeOrderActive: true }), eventAtPrice(1.6), ENTRY_AT);
+  assert.equal(afterActivation.type, 'update');
+  const peak = afterActivation.type === 'update' ? afterActivation.newPeakPriceSinceEntry : 0;
+  const trailingActive = afterActivation.type === 'update' ? afterActivation.newTrailingActive : false;
+
+  const decision = decideForTick(
+    trade({ nativeOrderActive: true, peakPriceSinceEntry: peak, trailingActive }),
+    eventAtPrice(1.1), // κάτω από 1.6*(1-0.25)=1.2
+    ENTRY_AT,
+  );
   assert.equal(decision.type, 'close');
-  if (decision.type === 'close') assert.equal(decision.exitReason, 'tp_tier_1');
+  if (decision.type === 'close') assert.equal(decision.exitReason, 'trailing_stop');
 });
 
 test('nativeOrderActive=true: a price tick that would trigger stop_loss still closes', () => {
@@ -156,9 +173,15 @@ test('nativeOrderActive=true: exit_signal still fires normally — the native or
 });
 
 test('nativeOrderActive=false: identical tier/trailing/stop_loss behavior — the flag makes no difference to the decision', () => {
+  // ΑΛΛΑΓΗ 2026-09-22: +60% ενεργοποιεί πλέον trailing (update), όχι tp_tier_1 (close) —
+  // το ίδιο tick με το αντίστοιχο nativeOrderActive=true test παραπάνω, ώστε να
+  // επιβεβαιώνεται ρητά ότι η απόφαση είναι πανομοιότυπη ανεξαρτήτως flag.
   const decision = decideForTick(trade({ nativeOrderActive: false }), eventAtPrice(1.6), ENTRY_AT);
-  assert.equal(decision.type, 'close');
-  if (decision.type === 'close') assert.equal(decision.exitReason, 'tp_tier_1');
+  assert.equal(decision.type, 'update');
+  if (decision.type === 'update') {
+    assert.equal(decision.newPeakPriceSinceEntry, 1.6);
+    assert.equal(decision.newTrailingActive, true);
+  }
 });
 
 // shouldSkipLiveExitCheck — πραγματικό incident 2026-09-15: μια αποτυχημένη πραγματική

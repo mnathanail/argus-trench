@@ -505,6 +505,64 @@ independent gap, not the primary root cause, now logged via `recordExecutionErro
 without independent on-chain verification when the stakes are real money — no field in
 this schema was found to reliably substitute for a missing `close_price`.
 
+## Trailing-stop structural fix (2026-09-22) — tier1 was winning the exit race
+Most trades were closing green at ~+50% via `tp_tier_1` and `trailing_stop` almost never
+fired, even on tokens that later pumped much further. Root-caused by reading the exit
+code directly (two independent AI analyses were given for this question; the correct
+diagnosis was the structural one, not the "websocket is too slow" one): in both
+`checkTick` (`src/realtime/tickExit.ts`, the per-tick/websocket engine) and `resolveExit`
+(`src/collectors/exitResolver.ts`, the candle-based engine), the OLD constants had
+tier1 at `EXIT_TIER_1_PRICE_SCALE=1.5` (+50%) and trailing activation at
+`EXIT_TIER_2_ACTIVATION_SCALE=2.0` (+100%). Trailing can only activate if a single
+tick/candle jumps directly from below +50% to at/above +100% — virtually impossible on
+real tick-by-tick or candle-by-candle price data. Every ascending price path passes
+through `[+50%, +100%)` first, so `tp_tier_1` almost always fired before trailing ever
+got the chance to activate. This was NOT a "websocket vs. native GMGN order speed"
+problem — the native order (`liveExitConditionOrders()`) merely lacks a tier1 concept at
+all (one position = one trade row = one exit, can't represent a partial tier1 sell),
+which is why it looked "smarter" on fast pumps.
+
+**Fix — three changes, in `src/decision/paperTradingConfig.ts`, applied to BOTH engines
+(tick-based and candle-based) and to BOTH the `checkTick`/`resolveExit` code path and the
+native GMGN order (`liveExitConditionOrders()`, which reads the same constants
+dynamically):**
+1. `EXIT_TIER_2_ACTIVATION_SCALE`: `2.0 → 1.5` (now the SAME point as tier1) — the
+   check order in both engines already gives tier2-activation priority over the tier1
+   check at the same price, so tier1 now effectively never wins the exit race; trailing
+   activates instead at +50% and can keep riding the position higher.
+2. `EXIT_TIER_2_DRAWDOWN_PCT`: `0.4 → 0.25` — had to shrink together with the earlier
+   activation point. A 40% drawdown allowed from a minimum-possible +50% activation peak
+   can mathematically produce a LOSS (peak needs to be ≥+66.7% to stay non-negative at
+   40% drawdown, but activation now happens at only +50%). At 25% drawdown the minimum
+   possible outcome once trailing activates is a guaranteed **+12.5%** (verified
+   numerically, not assumed).
+3. New constant `PROFIT_FLOOR_SCALE = 1.1`: `stopPrice = Math.max(peak * (1 -
+   EXIT_TIER_2_DRAWDOWN_PCT), entryPrice * PROFIT_FLOOR_SCALE)` in both `checkTick` and
+   `resolveExit`. A second, independent safety net — the trailing stop, once active,
+   never falls below `entryPrice * 1.1` regardless of the raw peak-drawdown math. At the
+   CURRENT constants (+50%/25%) this is mathematically inactive/redundant (minimum
+   possible stop is already +12.5% > the +10% floor) — it exists explicitly so a future
+   loosening of the drawdown doesn't silently reopen the loss-zone bug from point 2
+   without someone re-deriving the safety proof. NOT applied to the native GMGN order —
+   GMGN's `profit_stop_trace` API has no equivalent concept.
+
+`stop_loss` (checked first in both engines, -50% from entry, independent of
+peak/trailing) is completely unchanged by this fix.
+
+**Explicit user decision on scope**: the user initially asked for this to apply ONLY to
+live trades, not paper. `checkTick`/`tickExit.ts` turned out to be mode-agnostic shared
+code with no existing per-mode branching (same constants for `live` and `log_only`).
+Presented with the choice (add new per-mode branching vs. apply the same constants
+everywhere), the user chose to apply the constants universally rather than add
+complexity to the exit path — so this change affects `live`, `paper`, AND `log_only`
+trades identically.
+
+Tests updated in `tickExit.test.ts`, `exitResolver.test.ts`, and
+`realtimeExitHandler.test.ts` — the old tests asserting `tp_tier_1` firing on a single
+tick reaching +50%/+60% were testing exactly the bug being fixed, not incidental
+breakage; replaced with tests asserting the new trailing-activation behavior, plus new
+tests specifically covering the profit floor.
+
 ## Phased rollout
 0. ✅ Setup & instrumentation (API key, plugin install, logging skeleton) — **done**
 1. 🚧 Read-only signal collection (no trading, logging only) — **implemented**:

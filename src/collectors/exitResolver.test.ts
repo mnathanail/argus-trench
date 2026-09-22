@@ -17,30 +17,53 @@ function candle(secondsAfterEntry: number, high: number, low: number, close?: nu
   };
 }
 
-test('resolveExit: closes at tp_tier_1 when high reaches +50%, ignoring later candles', () => {
+// ΑΛΛΑΓΗ 2026-09-22: EXIT_TIER_2_ACTIVATION_SCALE μετακόμισε από +100% στο +50% (ίδιο
+// σημείο με το tier1) — βλ. σχόλιο στο paperTradingConfig.ts. Με τη σειρά ελέγχου του
+// resolveExit (tier2-activation πριν το tier1-check), το tier1 ΠΑΥΕΙ να πυροδοτείται σε
+// ΚΑΘΕ candle που φτάνει +50%: το trailing παίρνει τον έλεγχο αντ' αυτού. Το παλιό test
+// "closes at tp_tier_1 when high reaches +50%" περιέγραφε ΑΚΡΙΒΩΣ το bug που φτιάξαμε
+// σήμερα (tier1 έκλεβε την έξοδο πριν προλάβει ποτέ να ενεργοποιηθεί trailing) — το
+// αντικαθιστούμε με ένα test που επιβεβαιώνει τη ΝΕΑ, σκόπιμη συμπεριφορά.
+test('resolveExit: reaching +50% now activates trailing instead of tp_tier_1 (tier1 no longer wins the exit race)', () => {
   const candles: Candle[] = [
     candle(60, 1.2, 1.1),
-    candle(120, 1.5, 1.4), // hits tier 1 exactly here
-    candle(180, 3.0, 2.9), // would also hit tier 2 — must not be reached
+    candle(120, 1.5, 1.4), // +50% — ενεργοποιεί trailing τώρα, ΟΧΙ tp_tier_1
+    candle(180, 3.0, 2.9), // νέο peak 3.0 → stop = 3.0*0.75 = 2.25
+    candle(240, 2.2, 2.1), // low 2.1 breaches stop (2.25) → trailing_stop
   ];
   const result = resolveExit({ entryPrice: ENTRY_PRICE, entryAt: ENTRY_AT, candles, walletSellAt: null, now: ENTRY_AT });
-  assert.equal(result?.exitReason, 'tp_tier_1');
-  assert.equal(result?.exitPrice, 1.5);
-  assert.equal(result?.exitAt.getTime(), candles[1]?.timestamp ?? NaN);
+  assert.equal(result?.exitReason, 'trailing_stop');
+  assert.equal(result?.exitPrice, 2.1);
 });
 
-test('resolveExit: activates trailing at +100%, then closes at -40% from the post-activation peak, at the OBSERVED candle.low (not the threshold)', () => {
+test('resolveExit: activates trailing at +50%, then closes at -25% from the post-activation peak, at the OBSERVED candle.low (not the threshold)', () => {
   const candles: Candle[] = [
-    candle(60, 2.0, 1.9), // activates trailing at peak=2.0 (skips tier 1 by jumping straight to +100%)
-    candle(120, 2.5, 2.4), // new peak 2.5 → stop now at 1.5
-    candle(180, 2.4, 1.4), // low 1.4 breaches stop (1.5) → trailing_stop
+    candle(60, 1.5, 1.4), // activates trailing at peak=1.5 (+50%)
+    candle(120, 2.0, 1.9), // new peak 2.0 → stop now at 2.0*0.75 = 1.5
+    candle(180, 1.9, 1.3), // low 1.3 breaches stop (1.5) → trailing_stop
   ];
   const result = resolveExit({ entryPrice: ENTRY_PRICE, entryAt: ENTRY_AT, candles, walletSellAt: null, now: ENTRY_AT });
   assert.equal(result?.exitReason, 'trailing_stop');
   // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #2, candle-based μισό): πριν καταγράφαμε πάντα το
-  // threshold (1.5) — τώρα Math.min(threshold, candle.low) = min(1.5, 1.4) = 1.4, η
+  // threshold — τώρα Math.min(threshold, candle.low) = min(1.5, 1.3) = 1.3, η
   // πραγματική, χειρότερη τιμή που "είδε" το candle.
-  assert.equal(result?.exitPrice, 1.4);
+  assert.equal(result?.exitPrice, 1.3);
+});
+
+// ΝΕΟ 2026-09-22 — PROFIT_FLOOR_SCALE: το peak είναι ελάχιστο δυνατό (ακριβώς +50%),
+// άρα το μαθηματικό stop (peak*0.75=1.125) είναι ήδη πάνω από το floor (entry*1.1=1.1) —
+// επιβεβαιώνει ότι με τις τρέχουσες τιμές το floor είναι αβλαβές/αδρανές, το κανονικό
+// trailing δουλεύει όπως υπολογίστηκε.
+test('resolveExit: profit floor is inactive at the current constants — minimum activated trailing stop is +12.5%, above the +10% floor', () => {
+  const candles: Candle[] = [
+    candle(60, 1.5, 1.5), // ακριβώς +50%, ελάχιστο δυνατό peak για ενεργοποίηση
+    candle(120, 1.126, 1.126), // ακόμα πάνω από το μαθηματικό stop (1.125) — ΔΕΝ κλείνει
+    candle(180, 1.125, 1.125), // ακριβώς στο μαθηματικό stop → trailing_stop (το floor 1.1 δεν
+    // προλαβαίνει καν να παίξει ρόλο — ο μαθηματικός υπολογισμός είναι ήδη πιο αυστηρός)
+  ];
+  const result = resolveExit({ entryPrice: ENTRY_PRICE, entryAt: ENTRY_AT, candles, walletSellAt: null, now: ENTRY_AT });
+  assert.equal(result?.exitReason, 'trailing_stop');
+  assert.equal(result?.exitPrice, 1.125);
 });
 
 test('resolveExit: trailing_stop records the threshold when candle.low lands exactly on it (min(threshold, observed) === threshold)', () => {
