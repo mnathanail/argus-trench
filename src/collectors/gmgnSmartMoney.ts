@@ -74,6 +74,19 @@ import { rethrowIfRateLimited } from '../gmgn/errors.js';
  * — ίδιο πνεύμα με το `rethrowIfRateLimited` guard, προσαρμοσμένο ώστε να μη σταματάει
  * ολόκληρο τον κύκλο (το `recordSignal` για τα υπόλοιπα trades πρέπει να συνεχίσει).
  *
+ * **Holder-risk ΦΙΛΤΡΟ εισόδου — ενεργοποιήθηκε 2026-09-22** (`HOLDER_RISK_MAX_PCT`):
+ * μετά από 2 μέρες πραγματικής καταγραφής (1136 κλειστά σήματα), το `holder_risk_pct`
+ * έδειξε καθαρή, μονότονη σχέση με το αποτέλεσμα: <10% risk → avg pnl +10.5% (35
+ * δείγματα), 10-30% → -53.4% (110), 30-50% → -86.2% (272), **≥50% → -92.9% με μόλις
+ * 1.7% win rate (460 δείγματα, το πιο συχνό bucket)**. Ρητή απόφαση χρήστη: αποκλεισμός
+ * σημάτων με `riskPct >= 0.50`, ΠΡΙΝ το `recordSignal` — δεν καταγράφονται καν στη βάση
+ * (differs από το `is_open_or_close`, που παραμένει ΜΟΝΟ καταγραφή, καμία αλλαγή εκεί).
+ * `null`/`not checked` (rate limit, σφάλμα, degenerate float, ~256/1136 = 23% του
+ * δείγματος) ΔΕΝ αποκλείεται — απουσία στοιχείων δεν είναι απόδειξη κινδύνου, και το
+ * φιλτράρισμα δεν πρέπει να εξαρτάται από το αν ένα rate-limit hit συνέβη νωρίτερα στον
+ * κύκλο. Θα ξαναδούμε το threshold (π.χ. αυστηρότερο <30%) μετά από μία ακόμα μέρα με
+ * το φίλτρο ενεργό, ίδιο μοτίβο συλλογής-πρώτα με τα υπόλοιπα σήματα αυτού του καναλιού.
+ *
  * Δεν υπάρχει τεκμηριωμένη σελιδοποίηση/cursor σε αυτό το route (μόνο `--limit` πάνω σε
  * πρόσφατα trades, βλ. gmgn-track skill) — το dedup γίνεται εδώ, in-memory, μέσω
  * `transactionHash`. Σκόπιμη απλοποίηση για ένα πρώτο, log-only πέρασμα: σε restart,
@@ -83,6 +96,18 @@ import { rethrowIfRateLimited } from '../gmgn/errors.js';
  * token+wallet) — ίδια ασφάλεια με το ήδη υπάρχον polling fallback path. Αν αυτό το
  * κανάλι προαχθεί πέρα από πείραμα, ένα persisted cursor (migration) θα άξιζε τον κόπο.
  */
+/** Βλ. σχόλιο "Holder-risk ΦΙΛΤΡΟ εισόδου" πιο πάνω. Σήματα με γνωστό (όχι null)
+ * `holder_risk_pct >= HOLDER_RISK_MAX_PCT` αποκλείονται πριν το `recordSignal`. */
+export const HOLDER_RISK_MAX_PCT = 0.5;
+
+/** Καθαρή απόφαση φιλτραρίσματος, χωριστά testable: `null` (δεν ελέγχθηκε ή
+ * unassessable/degenerate float) ΔΕΝ αποκλείει — μόνο ένα γνωστό, υψηλό ποσοστό. Απουσία
+ * στοιχείων δεν είναι απόδειξη κινδύνου, και το φίλτρο δεν πρέπει να εξαρτάται από το αν
+ * ένα rate-limit hit συνέβη νωρίτερα στον κύκλο (βλ. σχόλιο πάνω από τη function). */
+export function isHighHolderRisk(riskPct: number | null): boolean {
+  return riskPct !== null && riskPct >= HOLDER_RISK_MAX_PCT;
+}
+
 export interface GmgnSmartMoneyOptions {
   limit?: number;
   realtimeConnection?: PumpPortalConnection;
@@ -95,6 +120,9 @@ export interface GmgnSmartMoneyResult {
   tradesFetched: number;
   newTrades: number;
   signalsRecorded: number;
+  /** Πόσα φρέσκα, gate-passed σήματα κόπηκαν λόγω `holder_risk_pct >= HOLDER_RISK_MAX_PCT`
+   * σε αυτόν τον κύκλο — καθόλου καταγεγραμμένα στη βάση, μόνο εδώ για παρατηρησιμότητα. */
+  skippedHighRisk: number;
 }
 
 /** Module-level, επιζεί ανάμεσα σε κύκλους μέσα στο ίδιο process — βλ. σχόλιο πάνω από
@@ -111,7 +139,7 @@ export async function runGmgnSmartMoneyCycle(
 
   const openTrades = await countOpenTrades();
   if (openTrades >= WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE) {
-    return { version, tradesFetched: 0, newTrades: 0, signalsRecorded: 0 };
+    return { version, tradesFetched: 0, newTrades: 0, signalsRecorded: 0, skippedHighRisk: 0 };
   }
 
   const trades = await fetchSmartMoneyTrades({ side: 'buy' });
@@ -119,7 +147,7 @@ export async function runGmgnSmartMoneyCycle(
   rememberSeen(seen, trades);
 
   if (fresh.length === 0) {
-    return { version, tradesFetched: trades.length, newTrades: 0, signalsRecorded: 0 };
+    return { version, tradesFetched: trades.length, newTrades: 0, signalsRecorded: 0, skippedHighRisk: 0 };
   }
 
   const gated = await findPassedTokens(
@@ -128,6 +156,7 @@ export async function runGmgnSmartMoneyCycle(
   );
 
   let signalsRecorded = 0;
+  let skippedHighRisk = 0;
   // Βλ. σχόλιο πάνω από τη function: μόλις ΕΝΑ holders call πάρει 429 μέσα σε αυτόν τον
   // κύκλο, σταματάμε τελείως να δοκιμάζουμε άλλα — το ίδιο shared cooldown/ban ισχύει για
   // όλα, οπότε ξαναδοκιμή σε trade #2, #3... θα το επέκτεινε κατά 5s το καθένα χωρίς λόγο.
@@ -147,6 +176,11 @@ export async function runGmgnSmartMoneyCycle(
       const result = await tryComputeHolderRisk(trade.tokenAddress);
       holderRisk = result.snapshot;
       if (result.rateLimited) rateLimitedThisCycle = true;
+    }
+
+    if (isHighHolderRisk(holderRisk.riskPct)) {
+      skippedHighRisk += 1;
+      continue;
     }
 
     const recorded = await recordSignal(
@@ -211,7 +245,7 @@ export async function runGmgnSmartMoneyCycle(
     }
   }
 
-  return { version, tradesFetched: trades.length, newTrades: fresh.length, signalsRecorded };
+  return { version, tradesFetched: trades.length, newTrades: fresh.length, signalsRecorded, skippedHighRisk };
 }
 
 interface HolderRiskSnapshot {

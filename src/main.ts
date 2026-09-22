@@ -251,10 +251,10 @@ const loops: LoopDefinition[] = [
     retryBackoffMs: GMGN_SMARTMONEY_RETRY_BACKOFF_MS,
     run: async () => {
       const result = await runGmgnSmartMoneyCycle({ realtimeConnection });
-      if (result.newTrades === 0 && result.signalsRecorded === 0) return;
+      if (result.newTrades === 0 && result.signalsRecorded === 0 && result.skippedHighRisk === 0) return;
       console.log(
         `[gmgn-smartmoney] fetched=${result.tradesFetched} new=${result.newTrades} ` +
-          `signals=${result.signalsRecorded}`,
+          `signals=${result.signalsRecorded} skipped_high_risk=${result.skippedHighRisk}`,
       );
     },
   },

@@ -107,14 +107,27 @@ phase the rollout from log-only up to live auto-trading.
      full rating cascade — no dev-holding/airdrop/linked-funding checks). Stored on
      `triggerWalletSnapshot` as `holder_risk_pct` (`null` = unassessable/degenerate float
      or not checked, never treat as 0%) + `holder_risk_wallet_count` +
-     `holder_risk_checked`. **Logged only, NOT a filter yet** — same
-     collect-first-decide-later approach as `is_open_or_close`, explicit user choice.
-     Never blocks `recordSignal`: any failure (rate limit or otherwise) records `null`
-     and the signal proceeds. Because this runs inside the per-cycle loop over multiple
-     fresh trades, a rate-limit hit on the first holders call disables further holders
-     calls for the rest of that cycle (`rateLimitedThisCycle` in `gmgnSmartMoney.ts`) so
-     consecutive calls don't extend the shared ban — the signal-recording loop itself
-     keeps running regardless.
+     `holder_risk_checked`. Never blocks the holders-enrichment step itself on failure:
+     any error (rate limit or otherwise) records `null`. Because this runs inside the
+     per-cycle loop over multiple fresh trades, a rate-limit hit on the first holders
+     call disables further holders calls for the rest of that cycle
+     (`rateLimitedThisCycle` in `gmgnSmartMoney.ts`) so consecutive calls don't extend
+     the shared ban.
+     ⚠️ **Now an active entry FILTER, not just logging — turned on 2026-09-22**
+     (`HOLDER_RISK_MAX_PCT = 0.5` in `gmgnSmartMoney.ts`, `isHighHolderRisk()`). After 2
+     days of pure logging (1136 closed signals), `holder_risk_pct` showed a clean,
+     monotonic relationship with outcome: <10% risk → avg pnl **+10.5%** (n=35), 10–30%
+     → -53.4% (n=110), 30–50% → -86.2% (n=272), **≥50% → -92.9% with a 1.7% win rate**
+     (n=460, the single most common bucket). Signals with a KNOWN `riskPct >=
+     HOLDER_RISK_MAX_PCT` are now skipped entirely BEFORE `recordSignal` — never written
+     to `decision_log` at all, unlike `is_open_or_close` which remains logging-only.
+     `null`/not-checked (~23% of the sample — rate limit, error, or degenerate float)
+     does NOT exclude a signal: absence of data isn't evidence of risk, and the filter
+     must not depend on whether an earlier trade in the same cycle happened to trip a
+     rate limit. `runGmgnSmartMoneyCycle`'s result now includes `skippedHighRisk` for
+     observability. Threshold may be tightened (e.g. <30%) after another day of data
+     with the filter active — same collect-then-revisit pattern used throughout this
+     channel's rollout.
    - The **cluster signal** concept from the `gmgn-track` skill (multiple tracked
      wallets buying the same token in a short window = stronger conviction than one) is
      NOT implemented in decision logic yet — noted as a follow-up, not built.
