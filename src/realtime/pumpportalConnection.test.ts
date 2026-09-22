@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { PumpPortalConnection, type WebSocketLike } from './pumpportalConnection.js';
+import {
+  PumpPortalConnection,
+  type WebSocketLike,
+  type NodeHttpIncomingMessageLike,
+} from './pumpportalConnection.js';
 
 const REAL_BUY_EVENT = {
   signature: 'sig1',
@@ -36,6 +40,9 @@ class FakeSocket implements WebSocketLike {
   private messageListener: ((data: unknown) => void) | null = null;
   private closeListener: (() => void) | null = null;
   private errorListener: ((error: Error) => void) | null = null;
+  private unexpectedResponseListener:
+    | ((request: unknown, response: NodeHttpIncomingMessageLike) => void)
+    | null = null;
 
   send(data: string): void {
     if (this.readyState !== 1) {
@@ -52,6 +59,7 @@ class FakeSocket implements WebSocketLike {
     else if (event === 'message') this.messageListener = listener;
     else if (event === 'close') this.closeListener = listener;
     else if (event === 'error') this.errorListener = listener;
+    else if (event === 'unexpected-response') this.unexpectedResponseListener = listener;
   }
   triggerOpen(): void {
     this.readyState = 1;
@@ -67,16 +75,47 @@ class FakeSocket implements WebSocketLike {
   triggerError(error: Error): void {
     this.errorListener?.(error);
   }
+  triggerUnexpectedResponse(response: NodeHttpIncomingMessageLike): void {
+    this.unexpectedResponseListener?.(null, response);
+  }
+}
+
+/** Ελάχιστο fake `http.IncomingMessage` — μόνο ό,τι διαβάζει το `unexpected-response`
+ * handler (status/headers + ένα `data`/`end` event stream για το body). */
+function fakeResponse(
+  statusCode: number,
+  body: string,
+  headers: Record<string, string> = {},
+): NodeHttpIncomingMessageLike {
+  const dataListeners: ((chunk: Buffer) => void)[] = [];
+  const endListeners: (() => void)[] = [];
+  return {
+    statusCode,
+    statusMessage: 'Forbidden',
+    headers,
+    on(event: 'data' | 'end', listener: never): void {
+      if (event === 'data') dataListeners.push(listener);
+      else endListeners.push(listener);
+    },
+    // Test-only helper, ΟΧΙ μέρος του interface — καλείται χειροκίνητα από το test
+    // αφού συνδεθούν τα listeners, προσομοιώνοντας το πραγματικό stream timing.
+    emit(): void {
+      for (const l of dataListeners) l(Buffer.from(body, 'utf8'));
+      for (const l of endListeners) l();
+    },
+  } as NodeHttpIncomingMessageLike & { emit(): void };
 }
 
 function setup() {
   const sockets: FakeSocket[] = [];
   const reconnectCalls: { fn: () => void; delayMs: number }[] = [];
   const events: unknown[] = [];
+  const logs: string[] = [];
 
   const conn = new PumpPortalConnection({
     apiKey: 'test-key',
     onTradeEvent: (e) => events.push(e),
+    log: (message) => logs.push(message),
     createSocket: () => {
       const s = new FakeSocket();
       sockets.push(s);
@@ -86,7 +125,7 @@ function setup() {
     random: () => 0.5,
   });
 
-  return { conn, sockets, reconnectCalls, events };
+  return { conn, sockets, reconnectCalls, events, logs };
 }
 
 test('subscribeWallet before connect() sends nothing yet, but is remembered', () => {
@@ -246,4 +285,35 @@ test('an error event alone does not double-schedule a reconnect (close follows s
   assert.equal(reconnectCalls.length, 0, 'το error μόνο του δεν προγραμματίζει reconnect');
   at(sockets, 0).triggerClose();
   assert.equal(reconnectCalls.length, 1, 'το close μετά από error προγραμματίζει κανονικά');
+});
+
+// --- unexpected-response διαγνωστικό (2026-09-22, πραγματικό production incident:
+// 403 σε κάθε reconnect προσπάθεια για 4+ ώρες συνεχόμενα) --------------------------
+
+test('unexpected-response: καταγράφει status/headers/body από ένα απορριφθέν handshake (π.χ. 403)', () => {
+  const { conn, sockets, logs } = setup();
+  conn.connect();
+  const response = fakeResponse(403, '{"error":"invalid api key"}', {
+    'x-request-id': 'abc123',
+  });
+  at(sockets, 0).triggerUnexpectedResponse(response);
+  (response as unknown as { emit(): void }).emit();
+
+  const line = logs.find((l) => l.startsWith('[pumpportal] unexpected-response:'));
+  assert.ok(line, 'περίμενα ένα unexpected-response log');
+  assert.match(line!, /status=403/);
+  assert.match(line!, /invalid api key/);
+  assert.match(line!, /x-request-id/);
+});
+
+test('unexpected-response με κενό body δεν σκάει, καταγράφει "(empty)"', () => {
+  const { conn, sockets, logs } = setup();
+  conn.connect();
+  const response = fakeResponse(403, '');
+  at(sockets, 0).triggerUnexpectedResponse(response);
+  (response as unknown as { emit(): void }).emit();
+
+  const line = logs.find((l) => l.startsWith('[pumpportal] unexpected-response:'));
+  assert.ok(line, 'περίμενα ένα unexpected-response log');
+  assert.match(line!, /\(empty\)/);
 });

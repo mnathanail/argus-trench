@@ -15,6 +15,27 @@ export interface WebSocketLike {
   on(event: 'message', listener: (data: unknown) => void): void;
   on(event: 'close', listener: () => void): void;
   on(event: 'error', listener: (error: Error) => void): void;
+  /**
+   * 2026-09-22 — διαγνωστικό: το `ws` πυροδοτεί ΚΑΙ αυτό ΚΑΙ ένα γενικό 'error' όταν το
+   * handshake απορρίπτεται με ένα non-101 HTTP status (π.χ. το 403 που παρατηρήσαμε σε
+   * production 4+ ώρες συνεχόμενα). Το 'error' event μόνο του δίνει ένα λακωνικό
+   * "Unexpected server response: 403" — άχρηστο για να καταλάβουμε ΓΙΑΤΙ (invalid key;
+   * rate-limited; κάτι άλλο;). Το `response` εδώ είναι το πλήρες raw HTTP response από
+   * τον PumpPortal server (headers + status + body), η μόνη πηγή που θα μπορούσε να έχει
+   * το πραγματικό reason. Δεν μπορεί να είναι optional overload (TS2386 — όλα τα `on`
+   * overloads πρέπει να συμφωνούν) — το FakeSocket στα tests παίρνει ένα no-op.
+   */
+  on(event: 'unexpected-response', listener: (request: unknown, response: NodeHttpIncomingMessageLike) => void): void;
+}
+
+/** Ελάχιστο υποσύνολο του `http.IncomingMessage` που πραγματικά χρειαζόμαστε εδώ —
+ * αποφεύγει ένα άμεσο `@types/node` http dependency σε αυτό το αρχείο. */
+export interface NodeHttpIncomingMessageLike {
+  readonly statusCode?: number;
+  readonly statusMessage?: string;
+  readonly headers: Record<string, string | string[] | undefined>;
+  on(event: 'data', listener: (chunk: Buffer) => void): void;
+  on(event: 'end', listener: () => void): void;
 }
 
 /**
@@ -118,6 +139,25 @@ export class PumpPortalConnection {
       // Το 'close' ακολουθεί ούτως ή άλλως μετά από ένα error — το reconnect
       // προγραμματίζεται εκεί, όχι εδώ, ώστε να μην τρέξει διπλό reconnect.
       this.log(`[pumpportal] error: ${error.message}`);
+    });
+
+    // 2026-09-22 — διαγνωστικό για ένα πραγματικό incident: 403 σε ΚΑΘΕ reconnect
+    // προσπάθεια για 4+ ώρες συνεχόμενα, χωρίς καμία πρόσφατη αλλαγή στο δικό μας
+    // configuration. Το γενικό 'error' event πιο πάνω δίνει μόνο "Unexpected server
+    // response: 403" — αυτό εδώ διαβάζει το ΠΡΑΓΜΑΤΙΚΟ response body/headers από τον
+    // PumpPortal server, που μπορεί να λέει ρητά "invalid api key" vs "rate limited" vs
+    // κάτι άλλο.
+    socket.on('unexpected-response', (_request, response) => {
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8').slice(0, 500);
+        const headers = JSON.stringify(response.headers);
+        this.log(
+          `[pumpportal] unexpected-response: status=${response.statusCode} ${response.statusMessage ?? ''} ` +
+            `headers=${headers} body=${body || '(empty)'}`,
+        );
+      });
     });
   }
 
