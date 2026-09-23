@@ -539,6 +539,64 @@ existing loop must re-examine that loop's rate-limit budget from scratch — the
 original interval/weight comment was correct when written, but silently became wrong
 once new inline work was added without updating the pacing analysis alongside it.
 
+## The pacing fix above was necessary but not sufficient (2026-09-23, same day)
+About an hour after the pacing fix (`GMGN_SMARTMONEY_HOLDER_RISK_PACING_MS`) was
+deployed, fresh logs showed the SAME rate-limit crisis still happening — and now also
+hitting loops that were already fixed and working correctly on their own:
+`wallet-scoring` (capped at 40/cycle the day before, `scored=40 failures=0` visible in
+an earlier log) started getting banned repeatedly on `user/wallet_stats` with
+escalating consecutive-failure counts, and `discovery` started getting banned on
+`/v1/trenches` — neither of those routes is even touched by the holder-risk code the
+pacing fix targeted.
+
+**Root cause**: pacing spreads calls out over time but does not reduce the TOTAL
+weight a single cycle can demand. Cycles were still observed with `new=44-50` fresh
+trades even after pacing — meaning a single `gmgn-smartmoney` cycle could still queue
+up to 250 weight (50 × 5) into `limiter.acquire()`. The `TokenBucket` in
+`src/gmgn/exec.ts` is a SINGLE, process-wide, shared instance (capacity 20) used by
+EVERY route/loop — it is not partitioned per-loop. At 1 call/s pacing, a 50-item
+backlog takes ~50s to drain, which is longer than the 30s `GMGN_SMARTMONEY_INTERVAL_MS`
+itself, so the backlog from one cycle was still draining when the next cycle's fresh
+trades queued on top of it — the bucket stayed close to empty almost continuously.
+Crucially, `TokenBucket.block()` (called on every 429, see `gmgn/exec.ts`) doesn't just
+pause the route that got banned — it zeroes tokens and drops the refill rate to
+`RECOVERY_REFILL_PER_SECOND = 1` (instead of 20/s) for a full `RECOVERY_WINDOW_MS =
+60_000` **for the whole shared bucket, across all routes**. The bucket's internal queue
+is FIFO among equal-priority requests (nothing in this codebase passes an explicit
+`priority` to `runCli`/`limiter.acquire()` — checked via `grep -rn "priority"` across
+every collector; `walletActivity.ts` and `swap.ts` are the only callers that ever pass
+one, and neither is involved here), so there's no fair-share between loops: while
+gmgn-smartmoney's own large backlog sits in the queue, it competes on equal footing
+with wallet-scoring's and discovery's much smaller, well-behaved per-cycle requests for
+the same 1-token/s recovery-window trickle — starving them into their own 429s. This is
+why two ALREADY-FIXED, individually-reasonable loops started failing again: the actual
+fault was gmgn-smartmoney monopolizing the *shared* limiter's recovery window, not a
+regression in either fixed loop.
+
+**Fix**: pacing alone can't bound total per-cycle weight, so added a hard cap —
+`GMGN_SMARTMONEY_HOLDER_RISK_CHECKS_PER_CYCLE = 12` in `intervals.ts` (60 weight/cycle
+max, ~12-20s of pacing delay max, comfortably under the 30s cycle interval so cycles
+stop overlapping, and leaves real headroom in the shared 20/s bucket for other loops
+even during a recovery window). Only the first 12 fresh, gate-passed trades per cycle
+get holder-risk enrichment; the rest are recorded normally with
+`holder_risk_checked: false` — same "absence of data isn't evidence of risk" philosophy
+already established for this exact field (a rate-limit skip already produced the same
+`false` value). The new `holderRiskChecksUsed` count is now returned from
+`runGmgnSmartMoneyCycle` and logged (`holder_risk_checked=N` in the `[gmgn-smartmoney]`
+log line in `main.ts`) specifically so a future recurrence is visible from the logs
+immediately — if `holder_risk_checked` is pinned at 12 while `new` is consistently much
+higher, the cap itself may need revisiting.
+
+**Takeaway**: on a *shared* rate limiter, pacing (spacing calls out over time) and
+capping (bounding how much work one cycle can demand in total) solve different
+problems — pacing prevents an instantaneous burst from itself tripping the server-side
+leaky bucket, but only a cap prevents one loop's sustained backlog from monopolizing
+the limiter (and, worse, the post-ban recovery window) at every other loop's expense.
+A fix that only paces a loop whose total per-cycle volume is unbounded can look
+successful in isolation (that loop's own bursts stop) while the underlying shared-budget
+problem persists and resurfaces as failures in unrelated, already-fixed loops — which is
+exactly the reappearance pattern that exposed this gap.
+
 ## Live strategy order reconciliation incident (2026-09-19) — trade #1225
 A live trade (token `CjtxpmhGyHMhdN5MmS7vooYbDVi6utNz5DxJVjF8bjoZ`) closed on GMGN with a
 real, large profit via the native trailing-stop (`profit_stop_trace`, 40% drawdown) —

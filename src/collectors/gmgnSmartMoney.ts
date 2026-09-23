@@ -2,6 +2,7 @@ import { findPassedTokens } from '../db/repositories/decisionLog.js';
 import { recordSignal } from '../db/repositories/entries.js';
 import { countOpenTrades } from '../db/repositories/paperTrades.js';
 import {
+  GMGN_SMARTMONEY_HOLDER_RISK_CHECKS_PER_CYCLE,
   GMGN_SMARTMONEY_HOLDER_RISK_PACING_MS,
   WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE,
 } from './intervals.js';
@@ -35,7 +36,8 @@ import { rethrowIfRateLimited } from '../gmgn/errors.js';
  *
  * Weight 1 ΣΥΝΟΛΙΚΑ ανά κύκλο (όχι ανά wallet, βλ. routes.ts) — πολύ φθηνότερο από το
  * layer 3 (weight 3/wallet/κύκλο), γι' αυτό μπορεί να τρέχει συχνά χωρίς να πιέζει το
- * shared 20/s bucket.
+ * shared 20/s bucket. (Αυτό ίσχυε για το ΒΑΣΙΚΟ `track smartmoney` call — βλ. ΚΑΙ το
+ * holder-risk enrichment πιο κάτω, που έχει ΔΙΚΟ ΤΟΥ, πολύ μεγαλύτερο weight budget.)
  *
  * ΣΚΟΠΙΜΑ mode='log_only' ΠΑΝΤΑ σε αυτό το πρώτο πέρασμα, ΠΟΤΕ live — ίδια φιλοσοφία με
  * το "Phased rollout" του CLAUDE.md: μια ολοκαίνουρια, ανεπικύρωτη πηγή σήματος
@@ -77,6 +79,14 @@ import { rethrowIfRateLimited } from '../gmgn/errors.js';
  * μέσα στον ίδιο κύκλο μετά το πρώτο rate-limit hit (`rateLimitedThisCycle` flag πιο κάτω)
  * — ίδιο πνεύμα με το `rethrowIfRateLimited` guard, προσαρμοσμένο ώστε να μη σταματάει
  * ολόκληρο τον κύκλο (το `recordSignal` για τα υπόλοιπα trades πρέπει να συνεχίσει).
+ *
+ * **Cap ανά κύκλο (2026-09-23)** — βλ. `GMGN_SMARTMONEY_HOLDER_RISK_CHECKS_PER_CYCLE` στο
+ * intervals.ts για το πλήρες incident: pacing από μόνο του ΔΕΝ αρκούσε, γιατί δε μειώνει
+ * το ΣΥΝΟΛΙΚΟ weight που ζητάει ένας κύκλος από τον shared, process-wide `TokenBucket` —
+ * κύκλοι με 44-50 φρέσκα trades συνέχισαν να πυροδοτούν 429 σε ΠΟΛΛΑΠΛΑ, άσχετα routes
+ * ακόμα και μετά το pacing fix. Μόνο τα πρώτα `GMGN_SMARTMONEY_HOLDER_RISK_CHECKS_PER_CYCLE`
+ * φρέσκα, gate-passed trades παίρνουν holder-risk enrichment· τα υπόλοιπα καταγράφονται
+ * κανονικά με `holder_risk_checked: false` (`holderRiskChecksUsed` counter πιο κάτω).
  *
  * **Holder-risk ΦΙΛΤΡΟ εισόδου — ενεργοποιήθηκε 2026-09-22** (`HOLDER_RISK_MAX_PCT`):
  * μετά από 2 μέρες πραγματικής καταγραφής (1136 κλειστά σήματα), το `holder_risk_pct`
@@ -127,6 +137,11 @@ export interface GmgnSmartMoneyResult {
   /** Πόσα φρέσκα, gate-passed σήματα κόπηκαν λόγω `holder_risk_pct >= HOLDER_RISK_MAX_PCT`
    * σε αυτόν τον κύκλο — καθόλου καταγεγραμμένα στη βάση, μόνο εδώ για παρατηρησιμότητα. */
   skippedHighRisk: number;
+  /** Πόσα πραγματικά holder-risk (`token holders`) calls έγιναν αυτόν τον κύκλο — βλ.
+   * `GMGN_SMARTMONEY_HOLDER_RISK_CHECKS_PER_CYCLE` στο intervals.ts. Αν αυτό φτάνει
+   * σταθερά το cap ενώ `newTrades` είναι πολύ μεγαλύτερο, το cap ίσως χρειάζεται
+   * αναπροσαρμογή — γι' αυτό εκτίθεται εδώ αντί να μείνει εσωτερικό counter. */
+  holderRiskChecksUsed: number;
 }
 
 /** Module-level, επιζεί ανάμεσα σε κύκλους μέσα στο ίδιο process — βλ. σχόλιο πάνω από
@@ -143,7 +158,14 @@ export async function runGmgnSmartMoneyCycle(
 
   const openTrades = await countOpenTrades();
   if (openTrades >= WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE) {
-    return { version, tradesFetched: 0, newTrades: 0, signalsRecorded: 0, skippedHighRisk: 0 };
+    return {
+      version,
+      tradesFetched: 0,
+      newTrades: 0,
+      signalsRecorded: 0,
+      skippedHighRisk: 0,
+      holderRiskChecksUsed: 0,
+    };
   }
 
   const trades = await fetchSmartMoneyTrades({ side: 'buy' });
@@ -151,7 +173,14 @@ export async function runGmgnSmartMoneyCycle(
   rememberSeen(seen, trades);
 
   if (fresh.length === 0) {
-    return { version, tradesFetched: trades.length, newTrades: 0, signalsRecorded: 0, skippedHighRisk: 0 };
+    return {
+      version,
+      tradesFetched: trades.length,
+      newTrades: 0,
+      signalsRecorded: 0,
+      skippedHighRisk: 0,
+      holderRiskChecksUsed: 0,
+    };
   }
 
   const gated = await findPassedTokens(
@@ -166,6 +195,9 @@ export async function runGmgnSmartMoneyCycle(
   // όλα, οπότε ξαναδοκιμή σε trade #2, #3... θα το επέκτεινε κατά 5s το καθένα χωρίς λόγο.
   // Το `recordSignal` ΔΕΝ σταματάει γι' αυτό — μόνο το προαιρετικό holders-enrichment.
   let rateLimitedThisCycle = false;
+  // ΝΕΟ 2026-09-23 — βλ. σχόλιο "Cap ανά κύκλο" πάνω από τη function. Bound στο ΣΥΝΟΛΙΚΟ
+  // αριθμό πραγματικών holders calls, όχι μόνο στην παύση ανάμεσά τους.
+  let holderRiskChecksUsed = 0;
 
   for (const trade of fresh) {
     const gateSnapshot = gated.get(trade.tokenAddress);
@@ -176,7 +208,8 @@ export async function runGmgnSmartMoneyCycle(
     const simulatedEntryAmountSol = PAPER_BANKROLL_SOL * PAPER_POSITION_SIZE_PCT;
 
     let holderRisk: HolderRiskSnapshot = HOLDER_RISK_NOT_CHECKED;
-    if (!rateLimitedThisCycle) {
+    if (!rateLimitedThisCycle && holderRiskChecksUsed < GMGN_SMARTMONEY_HOLDER_RISK_CHECKS_PER_CYCLE) {
+      holderRiskChecksUsed += 1;
       const result = await tryComputeHolderRisk(trade.tokenAddress);
       holderRisk = result.snapshot;
       if (result.rateLimited) rateLimitedThisCycle = true;
@@ -257,7 +290,14 @@ export async function runGmgnSmartMoneyCycle(
     }
   }
 
-  return { version, tradesFetched: trades.length, newTrades: fresh.length, signalsRecorded, skippedHighRisk };
+  return {
+    version,
+    tradesFetched: trades.length,
+    newTrades: fresh.length,
+    signalsRecorded,
+    skippedHighRisk,
+    holderRiskChecksUsed,
+  };
 }
 
 interface HolderRiskSnapshot {

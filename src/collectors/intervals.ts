@@ -200,6 +200,32 @@ export const WALLET_DISCOVERY_RETRY_BACKOFF_MS = [
  * `user/smartmoney`, `user/info`) έπαιρναν `RATE_LIMIT_BANNED` σχεδόν ταυτόχρονα —
  * συνεπές με burst-πίεση σε αυτό το σημείο, όχι με υπέρβαση του μέσου weight budget.
  * Fix: `GMGN_SMARTMONEY_HOLDER_RISK_PACING_MS` πιο κάτω, ίδιο pattern με τα άλλα loops.
+ *
+ * ⚠️ ΣΥΝΕΧΕΙΑ 2026-09-23 — το pacing ΜΟΝΟ ΔΕΝ αρκούσε: logs ~1 ώρα ΜΕΤΑ το deploy του
+ * pacing fix έδειξαν το ΙΔΙΟ πρόβλημα να συνεχίζεται (`RATE_LIMIT_BANNED` σε
+ * wallet-scoring στο `user/wallet_stats`, discovery στο `/v1/trenches`, ΚΑΙ πάλι σε
+ * gmgn-smartmoney) — παρότι το wallet-scoring fix από την προηγούμενη μέρα (βλ.
+ * `WALLET_SCORING_WALLETS_PER_CYCLE`) δουλεύει σωστά μόνο του (`scored=40 failures=0`).
+ * Ρίζα: το pacing σκορπάει τα calls ΜΕΣΑ στον χρόνο αλλά ΔΕΝ μειώνει το ΣΥΝΟΛΙΚΟ weight
+ * που ζητάει ένας κύκλος — με `new=44-50` φρέσκα trades παρατηρημένα ΑΚΟΜΑ ΚΑΙ μετά το
+ * pacing fix, ένας μόνο κύκλος μπορεί να ζητήσει έως 250 weight (50×5) από τον
+ * **shared, process-wide** `TokenBucket` (βλ. `gmgn/exec.ts` — ΕΝΑ instance, capacity 20,
+ * για ΟΛΑ τα routes/loops μαζί), δηλαδή >12x τη χωρητικότητά του. Even paced στο 1
+ * call/s, αυτό είναι ένα ~50s backlog που καβαλάει το επόμενο 30s tick (νέα φρέσκα trades
+ * προστίθενται πάνω σε ήδη-εκκρεμές backlog) — ο bucket μένει σχεδόν άδειος σχεδόν
+ * μόνιμα. Το `TokenBucket.block()` (καλείται σε ΚΑΘΕ 429, `gmgn/exec.ts`) μηδενίζει τα
+ * tokens ΚΑΙ ενεργοποιεί `RECOVERY_REFILL_PER_SECOND=1` (αντί για 20/s) για 60s ΜΕΤΑ —
+ * ΚΑΘΟΛΙΚΑ, για ΟΛΑ τα routes, όχι μόνο για το route που έπιασε το 429. Όσο το
+ * gmgn-smartmoney backlog παραμένει μεγάλο, μονοπωλεί την trickle-ροή του recovery
+ * window (η ουρά του `TokenBucket` είναι FIFO με ίδιο priority=0 default — βλ.
+ * `rateLimiter.ts` — άρα δεν υπάρχει fair-share ανάμεσα σε loops), αφήνοντας
+ * wallet-scoring/discovery (πολύ πιο μικρό, ήδη λελογισμένο weight ανά κύκλο) να
+ * λιμοκτονούν και ΑΥΤΑ να πέφτουν σε 429 — εξηγεί γιατί ΗΔΗ διορθωμένα loops
+ * ξαναχτυπήθηκαν από ΕΝΑ πρόβλημα αλλού. Fix: `GMGN_SMARTMONEY_HOLDER_RISK_CHECKS_PER_CYCLE`
+ * πιο κάτω — bound στο ΣΥΝΟΛΙΚΟ αριθμό holder-risk κλήσεων ανά κύκλο, ίδιο pattern με
+ * `WALLET_SCORING_WALLETS_PER_CYCLE`. Τα trades πέρα από το cap καταγράφονται κανονικά
+ * (`recordSignal` ΔΕΝ σταματάει) με `holder_risk_checked: false` — ίδια φιλοσοφία
+ * "απουσία στοιχείων δεν είναι απόδειξη κινδύνου" με το ήδη υπάρχον rate-limit skip.
  */
 export const GMGN_SMARTMONEY_INTERVAL_MS = 30_000;
 export const GMGN_SMARTMONEY_INITIAL_DELAY_MS = 10_000;
@@ -212,6 +238,20 @@ export const GMGN_SMARTMONEY_RETRY_BACKOFF_MS = [
 /** Παύση ανάμεσα σε διαδοχικά holder-risk (`token holders`, weight 5) calls μέσα στο
  * ίδιο fresh-trades loop — βλ. σχόλιο πιο πάνω. Ίδια τιμή με τα υπόλοιπα per-item loops. */
 export const GMGN_SMARTMONEY_HOLDER_RISK_PACING_MS = 1_000;
+/**
+ * Μέγιστος αριθμός holder-risk (`token holders`, weight 5) ελέγχων ΑΝΑ κύκλο — βλ. σχόλιο
+ * "ΣΥΝΕΧΕΙΑ 2026-09-23" πιο πάνω. 12 × 5 = 60 weight/κύκλο μέγιστο, δηλαδή έως ~20s
+ * pacing-delay στη χειρότερη περίπτωση (12 × 1s + ίδιο το fetch round-trip) — μένει ΚΑΤΩ
+ * από το 30s `GMGN_SMARTMONEY_INTERVAL_MS` ώστε οι κύκλοι να ΜΗΝ αλληλεπικαλύπτονται, ΚΑΙ
+ * αφήνει αρκετό headroom στον shared 20/s bucket για τα υπόλοιπα loops (wallet-scoring,
+ * discovery, walletActivity) να μη λιμοκτονούν κατά τη διάρκεια ενός recovery window. Τα
+ * trades πέρα από το cap παίρνουν `holder_risk_checked: false` (ίδιο με ένα rate-limit
+ * skip) — ΔΕΝ αποκλείονται, απλά δεν εμπλουτίζονται· `recordSignal` προχωράει κανονικά.
+ * Rotation δεν χρειάζεται εδώ (σε αντίθεση με το wallet-scoring cap): δεν υπάρχει
+ * "σειρά προτεραιότητας" ανάμεσα σε φρέσκα trades μέσα στον ίδιο κύκλο — παίρνουμε τα
+ * πρώτα N με τη σειρά που έφτασαν, τα υπόλοιπα απλά καταγράφονται χωρίς εμπλουτισμό.
+ */
+export const GMGN_SMARTMONEY_HOLDER_RISK_CHECKS_PER_CYCLE = 12;
 
 /**
  * Ημερήσια αναφορά στο Telegram — μία φορά κάθε 24 ώρες. Η ΩΡΑ (00:05 τοπική ώρα

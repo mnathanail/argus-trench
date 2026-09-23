@@ -254,7 +254,8 @@ const loops: LoopDefinition[] = [
       if (result.newTrades === 0 && result.signalsRecorded === 0 && result.skippedHighRisk === 0) return;
       console.log(
         `[gmgn-smartmoney] fetched=${result.tradesFetched} new=${result.newTrades} ` +
-          `signals=${result.signalsRecorded} skipped_high_risk=${result.skippedHighRisk}`,
+          `signals=${result.signalsRecorded} skipped_high_risk=${result.skippedHighRisk} ` +
+          `holder_risk_checked=${result.holderRiskChecksUsed}`,
       );
     },
   },
