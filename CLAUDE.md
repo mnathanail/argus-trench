@@ -508,6 +508,37 @@ table that grows over time) MUST cap+rotate from the start, not just rely on a
 generous interval — an interval that's "safe today" silently stops being safe as the
 underlying table grows, with no code change and no warning until the ban actually hits.
 
+## gmgn-smartmoney holder-risk enrichment had no pacing (2026-09-23)
+Same day as the wallet-scoring fix above, a SECOND, independent rate-limit storm hit —
+this time `RATE_LIMIT_BANNED` on multiple unrelated routes (`token_top_holders`,
+`user/smartmoney`, `user/info`) nearly simultaneously, even though `wallet-scoring`
+itself was already working correctly under its new cap (`scored=40 failures=0` visible
+in the logs at the same time).
+
+**Root cause**: the holder-risk enrichment inside `runGmgnSmartMoneyCycle`
+(`src/collectors/gmgnSmartMoney.ts`, added 2026-09-22 — see "Holder-risk ΦΙΛΤΡΟ
+εισόδου" above) calls `token holders` (weight 5) for every fresh trade in the cycle,
+with NO `delay()` between consecutive calls — unlike `WALLET_SCORING_LOOP_PACING_MS`/
+`WALLET_ACTIVITY_LOOP_PACING_MS`, which already existed for exactly this reason on
+other loops. The original interval sizing comment for `GMGN_SMARTMONEY_INTERVAL_MS`
+only accounted for the cheap `track smartmoney` call itself ("weight 1 total per
+cycle") — written 2026-09-20, before the holder-risk enrichment existed. Real cycles
+were observed with `new=45` fresh trades, meaning up to 45 consecutive weight-5 calls
+(225 weight) fired back-to-back inside a single 30s tick with no pause, even though the
+existing `rateLimitedThisCycle` flag correctly stopped retrying AFTER the first 429 —
+the burst before that first 429 was already enough to trigger the ban.
+
+**Fix**: new `GMGN_SMARTMONEY_HOLDER_RISK_PACING_MS = 1_000` constant in
+`intervals.ts`, with a `delay()` call after each real (non-rate-limited) holder-risk
+lookup inside the fresh-trades loop — same pattern as the other two loops. All fresh
+trades still get checked, just spread out over more wall-clock time within the cycle
+instead of firing in an unthrottled burst.
+
+**Takeaway**: adding a new per-item side-effect (here: holder-risk enrichment) to an
+existing loop must re-examine that loop's rate-limit budget from scratch — the
+original interval/weight comment was correct when written, but silently became wrong
+once new inline work was added without updating the pacing analysis alongside it.
+
 ## Live strategy order reconciliation incident (2026-09-19) — trade #1225
 A live trade (token `CjtxpmhGyHMhdN5MmS7vooYbDVi6utNz5DxJVjF8bjoZ`) closed on GMGN with a
 real, large profit via the native trailing-stop (`profit_stop_trace`, 40% drawdown) —

@@ -1,7 +1,11 @@
 import { findPassedTokens } from '../db/repositories/decisionLog.js';
 import { recordSignal } from '../db/repositories/entries.js';
 import { countOpenTrades } from '../db/repositories/paperTrades.js';
-import { WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE } from './intervals.js';
+import {
+  GMGN_SMARTMONEY_HOLDER_RISK_PACING_MS,
+  WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE,
+} from './intervals.js';
+import { delay } from '../util/delay.js';
 import { PHASE1_THRESHOLDS, logicVersion } from '../decision/gateConfig.js';
 import { subscribeForNewTrade } from '../realtime/subscriptionManager.js';
 import type { PumpPortalConnection } from '../realtime/pumpportalConnection.js';
@@ -176,6 +180,14 @@ export async function runGmgnSmartMoneyCycle(
       const result = await tryComputeHolderRisk(trade.tokenAddress);
       holderRisk = result.snapshot;
       if (result.rateLimited) rateLimitedThisCycle = true;
+      // ΝΕΟ 2026-09-23 (real incident, βλ. GMGN_SMARTMONEY_HOLDER_RISK_PACING_MS στο
+      // intervals.ts): παύση ΜΕΤΑ από κάθε πραγματική κλήση — όχι όταν ήδη
+      // rateLimitedThisCycle (δε στέλνουμε τίποτα τότε, καμία ανάγκη καθυστέρησης) και
+      // όχι πριν την ΠΡΩΤΗ κλήση. Ίδιο pattern με WALLET_SCORING_LOOP_PACING_MS/
+      // WALLET_ACTIVITY_LOOP_PACING_MS — πολλά διαδοχικά weight-5 calls χωρίς παύση
+      // (παρατηρήθηκαν κύκλοι με 45 φρέσκα trades) προκαλούσαν RATE_LIMIT_BANNED σε
+      // πολλαπλά, άσχετα routes ταυτόχρονα.
+      await delay(GMGN_SMARTMONEY_HOLDER_RISK_PACING_MS);
     }
 
     if (isHighHolderRisk(holderRisk.riskPct)) {

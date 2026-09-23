@@ -184,12 +184,22 @@ export const WALLET_DISCOVERY_RETRY_BACKOFF_MS = [
  * `track smartmoney` collector (2026-09-20, `collectors/gmgnSmartMoney.ts`) — δεύτερο,
  * ανεξάρτητο trigger-κανάλι πλάι στο layer 3, βλ. σχόλιο εκεί για το πλήρες σκεπτικό.
  *
- * Weight 1 ΣΥΝΟΛΙΚΑ ανά κύκλο (όχι ανά wallet, σε αντίθεση με WALLET_ACTIVITY, weight
- * 3/wallet) — μπορεί να τρέχει πολύ πιο συχνά χωρίς να πιέζει το shared 20/s bucket.
- * 30s: αρκετά συχνό ώστε ένα φρέσκο smartmoney buy να μην περιμένει πολύ πριν
- * ελεγχθεί το gate, χωρίς να πλησιάζει καν το budget (1 weight / 30s ≈ 0.033/s,
- * αμελητέο πάνω σε 20/s shared budget — βλ. WALLET_DISCOVERY_INTERVAL_MS για το ίδιο
- * επιχείρημα σε άλλο collector).
+ * Weight 1 ΣΥΝΟΛΙΚΑ ανά κύκλο για το ίδιο το `track smartmoney` call (όχι ανά wallet,
+ * σε αντίθεση με WALLET_ACTIVITY, weight 3/wallet) — 30s: αρκετά συχνό ώστε ένα φρέσκο
+ * smartmoney buy να μην περιμένει πολύ πριν ελεγχθεί το gate.
+ *
+ * ⚠️ ΔΙΟΡΘΩΣΗ 2026-09-23 (real incident, ΙΔΙΑ ΜΕΡΑ με ένα ήδη διορθωμένο rate-limit
+ * incident στο wallet-scoring): το πιο πάνω "weight 1 ΣΥΝΟΛΙΚΑ" ΔΕΝ μετρούσε το
+ * holder-risk enrichment (`token holders`, weight 5/token) που προστέθηκε ΑΡΓΟΤΕΡΑ
+ * (2026-09-22, βλ. gmgnSmartMoney.ts) — ένα ξεχωριστό, πολύ πιο ακριβό call ΑΝΑ φρέσκο
+ * trade μέσα στον ΙΔΙΟ κύκλο, χωρίς κανένα `delay()` ανάμεσα σε διαδοχικά calls (σε
+ * αντίθεση με WALLET_SCORING_LOOP_PACING_MS/WALLET_ACTIVITY_LOOP_PACING_MS που ήδη
+ * υπήρχαν αλλού ακριβώς γι' αυτό το φαινόμενο). Παρατηρήθηκαν κύκλοι με `new=45`
+ * φρέσκα trades — δηλαδή έως 45 διαδοχικά weight-5 calls (225 weight) μέσα σε ένα μόνο
+ * 30s tick, χωρίς παύση. Πολλαπλά, άσχετα routes (`token_top_holders`,
+ * `user/smartmoney`, `user/info`) έπαιρναν `RATE_LIMIT_BANNED` σχεδόν ταυτόχρονα —
+ * συνεπές με burst-πίεση σε αυτό το σημείο, όχι με υπέρβαση του μέσου weight budget.
+ * Fix: `GMGN_SMARTMONEY_HOLDER_RISK_PACING_MS` πιο κάτω, ίδιο pattern με τα άλλα loops.
  */
 export const GMGN_SMARTMONEY_INTERVAL_MS = 30_000;
 export const GMGN_SMARTMONEY_INITIAL_DELAY_MS = 10_000;
@@ -199,6 +209,9 @@ export const GMGN_SMARTMONEY_RETRY_BACKOFF_MS = [
   5 * 60_000,
   10 * 60_000,
 ] as const;
+/** Παύση ανάμεσα σε διαδοχικά holder-risk (`token holders`, weight 5) calls μέσα στο
+ * ίδιο fresh-trades loop — βλ. σχόλιο πιο πάνω. Ίδια τιμή με τα υπόλοιπα per-item loops. */
+export const GMGN_SMARTMONEY_HOLDER_RISK_PACING_MS = 1_000;
 
 /**
  * Ημερήσια αναφορά στο Telegram — μία φορά κάθε 24 ώρες. Η ΩΡΑ (00:05 τοπική ώρα
