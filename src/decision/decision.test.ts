@@ -33,7 +33,14 @@ test('logicVersion changes automatically when any threshold changes', () => {
   // Σταθερό ανεξάρτητα από τη σειρά των κλειδιών — αλλιώς μια αθώα αναδιάταξη θα
   // δημιουργούσε ψεύτικη νέα έκδοση και θα έσπαγε τη σύγκριση της Φάσης 2.
   assert.equal(
-    logicVersion({ minSmartDegenCount: 1, maxRugRatio: 0.2, maxBundlerRate: 0.3, maxInsiderRatio: 0.3, maxTopHolderRate: 0.5 }),
+    logicVersion({
+      minSmartDegenCount: 1,
+      maxRugRatio: 0.2,
+      maxBundlerRate: 0.3,
+      maxInsiderRatio: 0.3,
+      maxTopHolderRate: 0.5,
+      maxEntrapmentRatio: 0.3,
+    }),
     baseline,
   );
 });

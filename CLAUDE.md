@@ -249,13 +249,30 @@ Railway deploy: if `https://ipv6.icanhazip.com` responds, outbound traffic is go
   collect-first-decide-later pattern as `is_open_or_close`/holder-risk-pct.
 
 **Fields that weren't in the original plan and are worth considering as gate v2** (also
-exist as `--min-*`/`--max-*` flags): `entrapment_ratio`, `top70_sniper_hold_rate`,
-`fresh_wallet_rate`, `bot_degen_rate`/`bot_count`, `dev_team_hold_rate`, `progress`
+exist as `--min-*`/`--max-*` flags): ~~`entrapment_ratio`~~ (now active, see below),
+`top70_sniper_hold_rate`, `fresh_wallet_rate`, `bot_degen_rate`/`bot_count`,
+`dev_team_hold_rate`, `progress`
 (bonding curve), `--min-created`/`--max-created` (token age, unit suffix mandatory:
 `30s`/`5m`). Copycat detection: `twitter_dup`, `website_dup`, `telegram_dup`, `image_dup`,
 `twitter_rename_count`, `twitter_del_post_token_count`. Dev reputation: `fund_from_address`
 (creator's funding source), `creator_token_status`, `is_wash_trading`, `cto_flag`.
 There's also `--filter-preset safe|smart-money|strict` — `strict` is close to our own gate.
+`bot_degen_rate`/`dev_team_hold_rate` are already parsed into `GateMetrics` (visible in
+`gate_snapshot_json` for analysis) but have NO `--max-*`/`--min-*` flag wired yet in
+`GateThresholds`/`THRESHOLD_FLAGS`/`GATE_FIELD_BY_FLAG` — using them as an actual gate
+filter needs that wiring added first, unlike `entrapment_ratio` which was already fully
+wired and just unused.
+
+**`maxEntrapmentRatio: 0.3` — activated 2026-09-23**, explicit user request based on real
+data (not a guess): across 2681 already-closed trades with a known `entrapment_ratio`
+(0% missing across 17369 candidates/7 days, confirmed before activating since the gate
+fails closed on null), the distribution was clearly bad in the [10-30%) range: [0-10%) →
+avg pnl +63.5% (n=2468, the vast majority), [10-20%) → -17.8% (n=83), [20-30%) → -66.4%
+(n=20), [30%+) → positive but far too small a sample (n=12 total, one bucket skewed by a
+single +2864% outlier) to draw any conclusion yet. The threshold was set at 0.3 —
+excluding only the clearly-bad [20-30%) bucket — leaving the ambiguous upper range
+untouched until more data accumulates there. Same conservative, data-first pattern as
+`HOLDER_RISK_MAX_PCT`.
 
 ## Decision philosophy (v1) — NOT a scoring/weighted model
 Explicitly decided NOT to use a weighted score (arbitrary weights). Instead:
