@@ -7,6 +7,9 @@ import {
   DISCOVERY_INTERVAL_MS,
   DISCOVERY_INITIAL_DELAY_MS,
   DISCOVERY_RETRY_BACKOFF_MS,
+  DISCOVERY_NEW_CREATION_INTERVAL_MS,
+  DISCOVERY_NEW_CREATION_INITIAL_DELAY_MS,
+  DISCOVERY_NEW_CREATION_RETRY_BACKOFF_MS,
   DAILY_DIGEST_INTERVAL_MS,
   EXIT_RESOLVER_INITIAL_DELAY_MS,
   EXIT_RESOLVER_INTERVAL_MS,
@@ -86,6 +89,7 @@ async function notify(text: string): Promise<void> {
 
 const cooldown = new SharedCooldown();
 let successfulDiscoveryCycles = 0;
+let successfulDiscoveryNewCreationCycles = 0;
 
 /**
  * Optional — undefined αν λείπει το PUMPPORTAL_API_KEY (π.χ. τοπικό dev, ή πριν να
@@ -206,6 +210,32 @@ const loops: LoopDefinition[] = [
           `[discovery] cycles=${successfulDiscoveryCycles} gated=${result.gatedCandidates} ` +
             `sampled=${result.sampledCandidates} (pass=${result.sampledPassed} ` +
             `fail=${result.sampledFailed}) rows=${result.rowsWritten}`,
+        );
+      }
+    },
+  },
+  {
+    // Σύσταση 1 (2026-09-23) — δεύτερος, ανεξάρτητος discovery κύκλος για
+    // category: 'new_creation', ίδιο σχήμα με το βασικό discovery loop πάνω. Βλ.
+    // DISCOVERY_NEW_CREATION_INTERVAL_MS στο intervals.ts για γιατί το interval είναι
+    // πιο αργό (5 λεπτά) από το near_completion discovery — ΕΠΙΠΛΕΟΝ load πάνω στο ήδη
+    // ευαίσθητο shared rate budget, προστέθηκε ΑΜΕΣΩΣ μετά τη σειρά rate-limit fixes
+    // αυτής της εβδομάδας. Αν το πρόβλημα επανεμφανιστεί, αυτό το loop είναι το πρώτο
+    // σημείο να ελεγχθεί/απενεργοποιηθεί — αφαίρεση αυτού του entry είναι μηδενικού
+    // ρίσκου για τα near_completion/gated_pool/sample_window δεδομένα (βλ. migration
+    // 0015: ξεχωριστή στήλη category, όχι ανάμεικτη με το candidate_source).
+    name: 'discovery-new-creation',
+    intervalMs: DISCOVERY_NEW_CREATION_INTERVAL_MS,
+    initialDelayMs: DISCOVERY_NEW_CREATION_INITIAL_DELAY_MS,
+    retryBackoffMs: DISCOVERY_NEW_CREATION_RETRY_BACKOFF_MS,
+    run: async () => {
+      const result = await runDiscoveryCycle({ category: 'new_creation' });
+      successfulDiscoveryNewCreationCycles += 1;
+      if (successfulDiscoveryNewCreationCycles % 10 === 0) {
+        console.log(
+          `[discovery-new-creation] cycles=${successfulDiscoveryNewCreationCycles} ` +
+            `gated=${result.gatedCandidates} sampled=${result.sampledCandidates} ` +
+            `(pass=${result.sampledPassed} fail=${result.sampledFailed}) rows=${result.rowsWritten}`,
         );
       }
     },

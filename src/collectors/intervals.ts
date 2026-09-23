@@ -1,12 +1,18 @@
 /**
  * Poll intervals, Φάση 1.
  *
- * Το budget είναι 20 weight/s κοινό. Με αυτά τα intervals ο σταθερός ρυθμός είναι:
- *   discovery  6 weight / 30s        = 0.2/s
- *   activity   3 × 4 wallets        / 60s (round-robin, όχι όλο το watchlist)
- *   scoring    3 × N active wallets  / 300s
- * Για N=20 active wallets: 1.0/s. Άφθονος χώρος κάτω από τα 20/s — ο περιορισμός θα
- * εμφανιστεί όταν μεγαλώσει η watchlist, γι' αυτό ο scheduler λογάρει το cooldown.
+ * Το budget είναι 20 weight/s κοινό, ΕΝΑΣ μοναδικός process-wide TokenBucket (βλ.
+ * gmgn/exec.ts) — ΟΧΙ ένα budget ανά loop. Με αυτά τα intervals ο σταθερός ρυθμός είναι:
+ *   discovery (near_completion)  6 weight / 120s   ≈ 0.05/s
+ *   discovery (new_creation)     6 weight / 300s   ≈ 0.02/s  (νέο 2026-09-23, βλ. πιο κάτω)
+ *   activity   3 × 2 wallets     / 60s (round-robin, όχι όλο το watchlist)
+ *   scoring    3 × έως 40 wallets / 900s (cap+rotation, βλ. WALLET_SCORING_WALLETS_PER_CYCLE)
+ *   gmgn-smartmoney  1 + έως 12×5 holder-risk / 30s (cap, βλ.
+ *     GMGN_SMARTMONEY_HOLDER_RISK_CHECKS_PER_CYCLE)
+ * Αυτό είναι ο ΣΤΑΘΕΡΟΣ, μέσο ρυθμός — το πραγματικό πρόβλημα (βλ. CLAUDE.md, σειρά
+ * incidents 2026-09-22/23) είναι ΠΟΤΕ burst μέσα σε ένα μόνο tick, όχι ο μέσος όρος. Ο
+ * scheduler λογάρει επιπλέον ένα shared cooldown (SharedCooldown, scheduler.ts) πάνω
+ * από αυτόν τον per-call limiter.
  */
 export const DISCOVERY_INTERVAL_MS = 120_000;
 export const DISCOVERY_REQUEST_PACING_MS = 1_000;
@@ -18,6 +24,21 @@ export const DISCOVERY_RETRY_BACKOFF_MS = [
   5 * 60_000,
   10 * 60_000,
 ] as const;
+
+/**
+ * Δεύτερος, ανεξάρτητος discovery κύκλος για `category: 'new_creation'` (Σύσταση 1,
+ * 2026-09-23 — βλ. migration 0015 για το schema). Ίδιο σχήμα με το βασικό discovery
+ * (gated+sample calls, weight 6/κύκλο), αλλά ΚΑΘΕ κύκλος εδώ είναι επιπλέον, καινούριο
+ * load πάνω στο shared 20/s budget — γι' αυτό ΣΚΟΠΙΜΑ πιο αργό interval (5 λεπτά αντί
+ * για 2) από το near_completion discovery, τουλάχιστον μέχρι να επιβεβαιωθεί ότι η
+ * σειρά διορθώσεων rate-limit αυτής της εβδομάδας (wallet-scoring cap, gmgn-smartmoney
+ * pacing+cap) πραγματικά σταθεροποίησε το production. Ξεχωριστό initial delay
+ * (`DISCOVERY_INITIAL_DELAY_MS` + μισό interval) ώστε οι δύο discovery κύκλοι να ΜΗΝ
+ * πέφτουν στο ίδιο tick και να διπλασιάζουν στιγμιαία το burst.
+ */
+export const DISCOVERY_NEW_CREATION_INTERVAL_MS = 300_000;
+export const DISCOVERY_NEW_CREATION_INITIAL_DELAY_MS = 60_000;
+export const DISCOVERY_NEW_CREATION_RETRY_BACKOFF_MS = DISCOVERY_RETRY_BACKOFF_MS;
 
 /**
  * Πιο αργό από το discovery επίτηδες: τα trades ενός wallet δεν εξαφανίζονται, ενώ ένα

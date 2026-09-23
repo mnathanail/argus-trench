@@ -1,6 +1,6 @@
 import { db, type Queryable } from '../tx.js';
 import { requireRow, toNum } from '../rows.js';
-import type { CandidateSource, Chain, Decision, TriggerType } from '../types.js';
+import type { CandidateSource, Chain, Decision, DiscoveryCategory, TriggerType } from '../types.js';
 
 /**
  * Κάθε candidate που αξιολογήθηκε γράφεται εδώ — trade ή όχι. Βλ. CLAUDE.md: αν γράφαμε
@@ -13,6 +13,10 @@ export interface NewDecisionLog {
   logicVersion: string;
   /** Υποχρεωτικό: χωρίς αυτό η ανάλυση αναμειγνύει δύο διαφορετικά sampling frames. */
   candidateSource: CandidateSource;
+  /** Προαιρετικό — default 'near_completion' στη βάση (migration 0015), ίδιο με το
+   * default του `runDiscoveryCycle`. Ξεχωριστή διάσταση από το candidateSource — βλ.
+   * σχόλιο στο DiscoveryCategory. */
+  category?: DiscoveryCategory;
   /** Το raw snapshot των gate fields ΤΗ ΣΤΙΓΜΗ της αξιολόγησης. */
   gateSnapshot: Record<string, unknown>;
   gatePassed: boolean;
@@ -31,8 +35,8 @@ const INSERT_SQL = `
     token_address, chain, logic_version, candidate_source,
     gate_snapshot_json, gate_passed, gate_fail_reason,
     trigger_type, trigger_wallet_address, trigger_wallet_snapshot_json,
-    decision, decision_reason_text
-  ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+    decision, decision_reason_text, category
+  ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,COALESCE($13, 'near_completion'))
   RETURNING id
 `;
 
@@ -53,6 +57,7 @@ export async function insertDecision(
     input.triggerWalletSnapshot ?? null,
     input.decision,
     input.decisionReasonText ?? null,
+    input.category ?? null,
   ]);
   return toNum(requireRow(rows, 'insertDecision').id);
 }
@@ -72,14 +77,21 @@ export async function insertDecisions(
       token_address, chain, logic_version, candidate_source,
       gate_snapshot_json, gate_passed, gate_fail_reason,
       trigger_type, trigger_wallet_address, trigger_wallet_snapshot_json,
-      decision, decision_reason_text
+      decision, decision_reason_text, category
     )
-    SELECT * FROM UNNEST(
+    SELECT t.token_address, t.chain, t.logic_version, t.candidate_source,
+           t.gate_snapshot_json, t.gate_passed, t.gate_fail_reason,
+           t.trigger_type, t.trigger_wallet_address, t.trigger_wallet_snapshot_json,
+           t.decision, t.decision_reason_text, COALESCE(t.category, 'near_completion')
+      FROM UNNEST(
       $1::text[], $2::text[], $3::text[], $4::text[],
       $5::jsonb[], $6::boolean[], $7::text[],
       $8::text[], $9::text[], $10::jsonb[],
-      $11::text[], $12::text[]
-    )
+      $11::text[], $12::text[], $13::text[]
+    ) AS t(token_address, chain, logic_version, candidate_source,
+           gate_snapshot_json, gate_passed, gate_fail_reason,
+           trigger_type, trigger_wallet_address, trigger_wallet_snapshot_json,
+           decision, decision_reason_text, category)
     RETURNING id
     `,
     [
@@ -95,6 +107,7 @@ export async function insertDecisions(
       inputs.map((i) => (i.triggerWalletSnapshot ? JSON.stringify(i.triggerWalletSnapshot) : null)),
       inputs.map((i) => i.decision),
       inputs.map((i) => i.decisionReasonText ?? null),
+      inputs.map((i) => i.category ?? null),
     ],
   );
   return rows.map((r) => toNum(r.id));
@@ -144,6 +157,14 @@ export interface UpsertedDecision {
  * recordTrigger (βλ. εκεί), που είναι το σημείο όπου ένα σήμα πραγματικά «κλειδώνει» ένα
  * row. Το conflict target εδώ (candidate_source μέσα στο κλειδί) παραμένει σκόπιμα ως
  * έχει — κάθε πηγή παρατήρησης κρατάει το δικό της, ανεξάρτητο ιστορικό αξιολόγησης.
+ *
+ * Σημείωση 2026-09-23 (migration 0015): το conflict target περιλαμβάνει ΚΑΙ category
+ * τώρα, ίδιο σκεπτικό — 'new_creation' και 'near_completion' είναι διαφορετικά lifecycle
+ * stages του ΙΔΙΟΥ token, όχι διπλότυπη παρατήρηση, άρα κρατάνε ξεχωριστό ιστορικό
+ * evaluation_count/last_evaluated_at το καθένα. Το recordTrigger παραμένει
+ * category-agnostic ΣΚΟΠΙΜΑ (ματσάρει μόνο σε token_address+logic_version) — μόλις
+ * πυροδοτηθεί πραγματικό trigger, δε μας νοιάζει πια ποιο lifecycle stage/πηγή το
+ * πρωτοείδε, μόνο ότι το token είναι τώρα actionable.
  */
 export async function upsertDecisions(
   inputs: readonly NewDecisionLog[],
@@ -160,15 +181,22 @@ export async function upsertDecisions(
       token_address, chain, logic_version, candidate_source,
       gate_snapshot_json, gate_passed, gate_fail_reason,
       trigger_type, trigger_wallet_address, trigger_wallet_snapshot_json,
-      decision, decision_reason_text
+      decision, decision_reason_text, category
     )
-    SELECT * FROM UNNEST(
+    SELECT t.token_address, t.chain, t.logic_version, t.candidate_source,
+           t.gate_snapshot_json, t.gate_passed, t.gate_fail_reason,
+           t.trigger_type, t.trigger_wallet_address, t.trigger_wallet_snapshot_json,
+           t.decision, t.decision_reason_text, COALESCE(t.category, 'near_completion')
+      FROM UNNEST(
       $1::text[], $2::text[], $3::text[], $4::text[],
       $5::jsonb[], $6::boolean[], $7::text[],
       $8::text[], $9::text[], $10::jsonb[],
-      $11::text[], $12::text[]
-    )
-    ON CONFLICT (token_address, logic_version, candidate_source) DO UPDATE SET
+      $11::text[], $12::text[], $13::text[]
+    ) AS t(token_address, chain, logic_version, candidate_source,
+           gate_snapshot_json, gate_passed, gate_fail_reason,
+           trigger_type, trigger_wallet_address, trigger_wallet_snapshot_json,
+           decision, decision_reason_text, category)
+    ON CONFLICT (token_address, logic_version, candidate_source, category) DO UPDATE SET
       gate_snapshot_json           = EXCLUDED.gate_snapshot_json,
       gate_passed                  = EXCLUDED.gate_passed,
       gate_fail_reason             = EXCLUDED.gate_fail_reason,
@@ -196,6 +224,7 @@ export async function upsertDecisions(
       inputs.map((i) => (i.triggerWalletSnapshot ? JSON.stringify(i.triggerWalletSnapshot) : null)),
       inputs.map((i) => i.decision),
       inputs.map((i) => i.decisionReasonText ?? null),
+      inputs.map((i) => i.category ?? null),
     ],
   );
   return rows.map((row) => ({
@@ -353,6 +382,25 @@ export async function gatePassRate(
     [logicVersion, candidateSource],
   );
   const row = requireRow(rows, 'gatePassRate');
+  return { evaluated: toNum(row.evaluated), passed: toNum(row.passed) };
+}
+
+/** Ίδιο με gatePassRate, αλλά ανά lifecycle stage (category) αντί για provenance — βλ.
+ * migration 0015. Ξεχωριστή function αντί για ένα κοινό optional param, ίδιο μοτίβο με
+ * τη γενικότερη αρχή «κάθε ανεξάρτητη διάσταση, δικό της, ρητό ερώτημα» που ήδη ισχύει
+ * για candidate_source vs category σε όλο αυτό το αρχείο. */
+export async function gatePassRateByCategory(
+  logicVersion: string,
+  category: DiscoveryCategory,
+  conn?: Queryable,
+): Promise<{ evaluated: number; passed: number }> {
+  const { rows } = await db(conn).query<{ evaluated: string; passed: string }>(
+    `SELECT count(*) AS evaluated, count(*) FILTER (WHERE gate_passed) AS passed
+       FROM decision_log
+      WHERE logic_version = $1 AND category = $2`,
+    [logicVersion, category],
+  );
+  const row = requireRow(rows, 'gatePassRateByCategory');
   return { evaluated: toNum(row.evaluated), passed: toNum(row.passed) };
 }
 

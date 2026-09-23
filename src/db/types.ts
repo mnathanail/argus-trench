@@ -13,6 +13,18 @@ export type WalletSource = 'smart_money' | 'kol' | 'manual';
  */
 export type CandidateSource = 'gated_pool' | 'sample_window';
 
+/**
+ * Το pump.fun bonding-curve lifecycle stage του candidate ΤΗ ΣΤΙΓΜΗ της αξιολόγησης —
+ * βλ. migration 0015. Επαναχρησιμοποιεί αυτούσιο το `gmgn/trenches.ts` `TrenchCategory`
+ * (ίδιες ακριβώς τιμές — GMGN's δικό του vocabulary) αντί για παράλληλο DB-only type,
+ * ώστε να μην μπορούν ποτέ να αποσυγχρονιστούν. ΑΝΕΞΑΡΤΗΤΗ διάσταση από το
+ * CandidateSource: ένα πραγματικό token μπορεί να περάσει από 'new_creation' σε
+ * 'near_completion' μέσα σε ώρες — δύο γνήσιες, διαφορετικές παρατηρήσεις στον χρόνο,
+ * όχι διπλότυπα. Μέχρι 2026-09-23 το discovery.ts καλούσε ΜΟΝΟ 'near_completion' — βλ.
+ * migration 0015 για το backfill.
+ */
+export type { TrenchCategory as DiscoveryCategory } from '../gmgn/trenches.js';
+
 export type Decision =
   | 'entered'
   | 'skipped_gate'

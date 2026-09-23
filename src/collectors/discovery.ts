@@ -52,14 +52,14 @@ export async function runDiscoveryCycle(options: DiscoveryOptions = {}): Promise
   // Το gated set έχει ήδη περάσει server-side. Δεν το ξανα-κρίνουμε: αν το client-side
   // διαφωνούσε, θα ήταν bug στο mapping και θέλουμε να φαίνεται, όχι να διορθώνεται σιωπηλά.
   for (const candidate of gated) {
-    rows.push(toRow(candidate, version, 'gated_pool', true, null));
+    rows.push(toRow(candidate, version, 'gated_pool', category, true, null));
   }
 
   let sampledPassed = 0;
   for (const candidate of sampled) {
     const evaluation = evaluateGate(candidate, thresholds);
     if (evaluation.passed) sampledPassed += 1;
-    rows.push(toRow(candidate, version, 'sample_window', evaluation.passed, evaluation.failReason));
+    rows.push(toRow(candidate, version, 'sample_window', category, evaluation.passed, evaluation.failReason));
   }
 
   const written = await upsertDecisions(rows);
@@ -78,6 +78,7 @@ function toRow(
   candidate: TrenchCandidate,
   logicVersionTag: string,
   candidateSource: 'gated_pool' | 'sample_window',
+  category: TrenchCategory,
   gatePassed: boolean,
   gateFailReason: string | null,
 ): NewDecisionLog {
@@ -85,6 +86,7 @@ function toRow(
     tokenAddress: candidate.tokenAddress,
     logicVersion: logicVersionTag,
     candidateSource,
+    category,
     // Το raw αυτούσιο: ο αριθμός των fields δεν είναι σταθερός (89 και 97 στο ίδιο
     // endpoint), άρα οποιαδήποτε επιλογή πεδίων θα έχανε δεδομένα που θα θέλαμε στη Φάση 2.
     gateSnapshot: candidate.raw,

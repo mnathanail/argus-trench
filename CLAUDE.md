@@ -373,6 +373,25 @@ but is a sample, not the full population. Without the column, Phase 2 would comp
 over mixed sampling frames and draw the wrong conclusion about how strict
 the gates are.
 
+**Migration 0015 added `category`** (`new_creation` / `near_completion` / `completed`, NOT
+NULL, DEFAULT `'near_completion'`, with a CHECK — see `gmgn/trenches.ts` `TrenchCategory`)
+— pump.fun's bonding-curve lifecycle stage, a THIRD, independent dimension alongside
+`candidate_source`. Until 2026-09-23 `discovery.ts` only ever called
+`category: 'near_completion'`, so every existing row genuinely is that category — the
+DEFAULT is a fact, not a guess, and (unlike `candidate_source`'s no-default choice) is kept
+permanently so a future caller that forgets to pass `category` explicitly gets "whatever we
+always did" rather than an error. `category` and `candidate_source` must NOT be conflated
+into one dimension (e.g. a single `new_creation_gated_pool` value) — a real token can move
+from `new_creation` to `near_completion` within hours, so seeing it under both is two
+genuine observations over time, not a duplicate of the same evaluation. The unique index
+(`idx_decision_log_candidate_identity`) and the `upsertDecisions` `ON CONFLICT` target both
+now include `category` for exactly this reason — without it, a `new_creation` evaluation of
+a token already sitting in `near_completion` under the same `candidate_source` would
+silently overwrite that other lifecycle-stage row. `recordTrigger` deliberately stays
+category-agnostic (matches on `token_address` + `logic_version` only, same as it already was
+for `candidate_source`) — once a real trigger fires, which lifecycle stage or source first
+spotted the token stops mattering.
+
 ## Manual wallet watching (user-provided, migration 0002)
 Beyond automatic discovery, the user can add wallets they want to
 watch directly:
@@ -596,6 +615,46 @@ A fix that only paces a loop whose total per-cycle volume is unbounded can look
 successful in isolation (that loop's own bursts stop) while the underlying shared-budget
 problem persists and resurfaces as failures in unrelated, already-fixed loops — which is
 exactly the reappearance pattern that exposed this gap.
+
+## Second `new_creation` discovery loop added (2026-09-23) — Suggestion 1
+Third-party analysis suggested widening discovery beyond `near_completion` to also poll
+`category: 'new_creation'` (freshly-created pump.fun tokens, before they approach bonding-
+curve completion), on the theory that entering earlier in a token's life could catch more
+of the winners the current gate already misses. User asked for this specifically, alongside
+the `maxEntrapmentRatio` gate activation above (Suggestion 4).
+
+**Why this needed a real migration, not just a new loop entry**: initially assumed this was
+small — just call `runDiscoveryCycle({ category: 'new_creation' })` on a schedule, since
+`DiscoveryOptions.category` already existed and was already plumbed through to
+`fetchTrenches`. Turned out `candidate_source` (migration 0003) had a CHECK constraint
+restricted to exactly `'gated_pool'`/`'sample_window'`, and a unique index
+`(token_address, logic_version, candidate_source)` (migration 0004) — there was nowhere to
+put "which lifecycle stage" without either abusing `candidate_source` for a second, unrelated
+purpose or adding a real column. Stopped mid-implementation to confirm scope with the user
+rather than pushing ahead with a wrong-shaped fix.
+
+**Decision**: new `category` column (migration 0015, see the Postgres schema section above)
+rather than extending `candidate_source`'s allowed values (e.g. `new_creation_gated_pool`).
+Weighed against the user's own two criteria — good data AND easy to disable — a combined
+value would conflate two genuinely independent dimensions (provenance vs. lifecycle stage)
+into one, forcing future analysis to string-parse a compound value apart. A separate column
+keeps both dimensions independently queryable and makes disabling the feature a zero-risk
+change (just remove the loop entry — the column and its rows are inert to every other query,
+which already filters/groups on `category`/`candidate_source` explicitly). The same
+independence is also why `category` had to join the unique key (see migration 0015 above)
+rather than get appended as a plain column: without it, a real token moving from
+`new_creation` to `near_completion` would collide on the existing key and silently overwrite
+one lifecycle-stage observation with the other.
+
+**Rollout is intentionally conservative**: the new `discovery-new-creation` loop
+(`main.ts`) runs every 5 minutes (`DISCOVERY_NEW_CREATION_INTERVAL_MS`), slower than the
+2-minute `near_completion` discovery loop, and started with a staggered initial delay so
+the two don't fire in the same tick. This is deliberate: it was wired up in the same session
+as the rate-limit crisis above (wallet-scoring cap, gmgn-smartmoney pacing+cap) — adding a
+brand-new GMGN-calling loop (6 weight/cycle) onto an already-stressed shared budget, before
+that crisis was confirmed resolved in production, would be reckless otherwise. If rate-limit
+problems recur, `discovery-new-creation` is the first thing to check/disable, and doing so
+touches zero rows belonging to the existing `near_completion` discovery loop.
 
 ## Live strategy order reconciliation incident (2026-09-19) — trade #1225
 A live trade (token `CjtxpmhGyHMhdN5MmS7vooYbDVi6utNz5DxJVjF8bjoZ`) closed on GMGN with a
