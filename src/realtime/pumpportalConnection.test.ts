@@ -5,6 +5,7 @@ import {
   PumpPortalConnection,
   type WebSocketLike,
   type NodeHttpIncomingMessageLike,
+  type NodeHttpClientRequestLike,
 } from './pumpportalConnection.js';
 
 const REAL_BUY_EVENT = {
@@ -41,8 +42,13 @@ class FakeSocket implements WebSocketLike {
   private closeListener: (() => void) | null = null;
   private errorListener: ((error: Error) => void) | null = null;
   private unexpectedResponseListener:
-    | ((request: unknown, response: NodeHttpIncomingMessageLike) => void)
+    | ((request: NodeHttpClientRequestLike, response: NodeHttpIncomingMessageLike) => void)
     | null = null;
+  /** Το fake request που περνάμε σε triggerUnexpectedResponse — εκτεθειμένο ώστε τα
+   * tests να επιβεβαιώνουν ότι το production code πραγματικά το destroy()άρει (βλ.
+   * σχόλιο 2026-09-24 στο pumpportalConnection.ts: χωρίς αυτό το reconnect δεν
+   * ξαναπρογραμματίζεται ΠΟΤΕ). */
+  lastUnexpectedResponseRequest: FakeClientRequest | null = null;
 
   send(data: string): void {
     if (this.readyState !== 1) {
@@ -76,7 +82,18 @@ class FakeSocket implements WebSocketLike {
     this.errorListener?.(error);
   }
   triggerUnexpectedResponse(response: NodeHttpIncomingMessageLike): void {
-    this.unexpectedResponseListener?.(null, response);
+    const request = new FakeClientRequest();
+    this.lastUnexpectedResponseRequest = request;
+    this.unexpectedResponseListener?.(request, response);
+  }
+}
+
+/** Fake `http.ClientRequest` — μόνο το `destroy()` που το production code πραγματικά
+ * καλεί, με ένα flag ώστε τα tests να επιβεβαιώνουν ότι καλέστηκε. */
+class FakeClientRequest implements NodeHttpClientRequestLike {
+  destroyed = false;
+  destroy(): void {
+    this.destroyed = true;
   }
 }
 
@@ -316,4 +333,81 @@ test('unexpected-response με κενό body δεν σκάει, καταγράφ
   const line = logs.find((l) => l.startsWith('[pumpportal] unexpected-response:'));
   assert.ok(line, 'περίμενα ένα unexpected-response log');
   assert.match(line!, /\(empty\)/);
+});
+
+// --- ΔΙΟΡΘΩΣΗ 2026-09-24 — το πραγματικό bug: η ΠΑΡΟΥΣΙΑ του listener πιο πάνω εμπόδιζε
+// το `ws` να κάνει το δικό του abortHandshake()/close(), άρα ΠΟΤΕ δεν προγραμματιζόταν
+// reconnect μετά από ένα απορριφθέν handshake (403/502/κλπ.) — η σύνδεση έμενε νεκρή για
+// πάντα. Real incident: μηδέν trades για ~27 ώρες, ενώ gate/discovery έδειχναν υγιή, γιατί
+// κανένα πραγματικό PumpPortal event δεν έφτανε ποτέ ξανά μετά το πρώτο σκάλωμα. -----
+
+test('unexpected-response πλέον προγραμματίζει reconnect μόνο του — η ρίζα του 2026-09-24 incident', () => {
+  const { conn, sockets, reconnectCalls } = setup();
+  conn.connect();
+  const response = fakeResponse(502, 'Bad Gateway');
+  at(sockets, 0).triggerUnexpectedResponse(response);
+  (response as unknown as { emit(): void }).emit();
+
+  assert.equal(
+    reconnectCalls.length,
+    1,
+    'πριν τη διόρθωση αυτό ήταν 0 — το socket έμενε σε limbo για πάντα, καμία επανασύνδεση',
+  );
+});
+
+test('unexpected-response καταστρέφει το pending request (ό,τι θα έκανε το ws abortHandshake)', () => {
+  const { conn, sockets } = setup();
+  conn.connect();
+  const response = fakeResponse(403, 'Forbidden');
+  at(sockets, 0).triggerUnexpectedResponse(response);
+  (response as unknown as { emit(): void }).emit();
+
+  assert.equal(at(sockets, 0).lastUnexpectedResponseRequest?.destroyed, true);
+});
+
+test('η σύνδεση ανακάμπτει πραγματικά: reconnect μετά από unexpected-response ξαναφέρνει events', () => {
+  const { conn, sockets, reconnectCalls, events } = setup();
+  conn.connect();
+  at(sockets, 0).triggerOpen();
+  conn.subscribeWallet('WalletA');
+
+  // Πρώτο handshake αποτυγχάνει (π.χ. το πραγματικό 502 της 2026-09-24 15:35 UTC).
+  const response = fakeResponse(502, 'Bad Gateway');
+  at(sockets, 0).triggerUnexpectedResponse(response);
+  (response as unknown as { emit(): void }).emit();
+  assert.equal(reconnectCalls.length, 1);
+
+  // Το scheduled reconnect τρέχει, η ΝΕΑ σύνδεση ανοίγει κανονικά, και ξαναδρομολογεί
+  // το ίδιο wallet (resubscribeAll) — πριν τη διόρθωση αυτό το δεύτερο socket δεν θα
+  // δημιουργούνταν ΠΟΤΕ, αφού κανένα reconnect δεν είχε προγραμματιστεί.
+  at(reconnectCalls, 0).fn();
+  at(sockets, 1).triggerOpen();
+  assert.equal(at(sockets, 1).sent.length, 1, 'το wallet ξαναδρομολογείται στη νέα σύνδεση');
+
+  at(sockets, 1).triggerMessage({
+    signature: 'sig-after-recovery',
+    mint: 'TokenMintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1',
+    traderPublicKey: 'WalletA',
+    txType: 'buy',
+    tokenAmount: 100,
+    solAmount: 1,
+    vTokensInBondingCurve: 500_000_000,
+    vSolInBondingCurve: 50,
+    marketCapSol: 100,
+    pool: 'pump',
+  });
+  assert.equal(events.length, 1, 'πραγματικά events φτάνουν ξανά μετά την ανάκαμψη');
+});
+
+test('unexpected-response μετά από σκόπιμο close() δεν προγραμματίζει reconnect — ίδιο guard με το close handler', () => {
+  const { conn, sockets, reconnectCalls } = setup();
+  conn.connect();
+  at(sockets, 0).triggerOpen();
+  conn.close();
+
+  const response = fakeResponse(403, 'Forbidden');
+  at(sockets, 0).triggerUnexpectedResponse(response);
+  (response as unknown as { emit(): void }).emit();
+
+  assert.equal(reconnectCalls.length, 0, 'όχι reconnect μετά από σκόπιμο close()');
 });

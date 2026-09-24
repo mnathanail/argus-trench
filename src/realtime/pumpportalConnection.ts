@@ -24,8 +24,29 @@ export interface WebSocketLike {
    * τον PumpPortal server (headers + status + body), η μόνη πηγή που θα μπορούσε να έχει
    * το πραγματικό reason. Δεν μπορεί να είναι optional overload (TS2386 — όλα τα `on`
    * overloads πρέπει να συμφωνούν) — το FakeSocket στα tests παίρνει ένα no-op.
+   *
+   * ⚠️ ΚΡΙΣΙΜΟ, βρέθηκε 2026-09-24 (πραγματικό production incident — καμία
+   * `smart_money_buy` trade για ~27 ώρες): η ίδια η ΠΑΡΟΥΣΙΑ ενός listener εδώ αλλάζει
+   * τη συμπεριφορά του `ws` ριζικά. Ο εσωτερικός κώδικας του `ws`
+   * (`lib/websocket.js`) κάνει `if (!websocket.emit('unexpected-response', req, res))
+   * { abortHandshake(...) }` — και το `EventEmitter.emit()` επιστρέφει `true` απλά και
+   * μόνο επειδή ΥΠΑΡΧΕΙ έστω ένας listener, ανεξάρτητα από το τι κάνει αυτός ο
+   * listener. Πριν από αυτό το diagnostic handler, ΚΑΘΕ απορριφθέν handshake (403,
+   * 502, κ.λπ.) καλούσε αυτόματα το δικό του `abortHandshake()`, που εκπέμπει
+   * `'error'` ΚΑΙ `'close'` στο socket — και το δικό μας `'close'` handler παρακάτω
+   * προγραμμάτιζε το reconnect. Μόλις προστέθηκε αυτός ο listener, το `abortHandshake`
+   * ΠΟΤΕ πια δεν καλείται από το `ws` — το socket μένει σε CLOSING/limbo ΓΙΑ ΠΑΝΤΑ,
+   * καμία επανασύνδεση, καμία ένδειξη πέρα από αυτή τη μία log γραμμή. Παρατηρήθηκε
+   * live δύο φορές: το πρωτότυπο 403 incident (2026-09-22, που το προκάλεσε αυτό το
+   * ίδιο το commit) ΚΑΙ ένα 502 στις 2026-09-24 15:35 UTC, μετά το οποίο η σύνδεση
+   * έμεινε νεκρή για τουλάχιστον 3.5+ ώρες ενώ όλα τα άλλα collectors (που δεν
+   * εξαρτώνται από websocket) συνέχιζαν κανονικά — ακριβώς το σύμπτωμα «το gate/
+   * discovery δείχνει υγιές, αλλά μηδέν πραγματικά trade events φτάνουν ποτέ».
+   * Ο handler παρακάτω τώρα κάνει ΡΗΤΑ ό,τι θα έκανε το `abortHandshake`: καταστρέφει
+   * το αίτημα και προγραμματίζει reconnect μόνος του, αντί να βασίζεται σε ένα `close`
+   * που πλέον δεν έρχεται ποτέ.
    */
-  on(event: 'unexpected-response', listener: (request: unknown, response: NodeHttpIncomingMessageLike) => void): void;
+  on(event: 'unexpected-response', listener: (request: NodeHttpClientRequestLike, response: NodeHttpIncomingMessageLike) => void): void;
 }
 
 /** Ελάχιστο υποσύνολο του `http.IncomingMessage` που πραγματικά χρειαζόμαστε εδώ —
@@ -36,6 +57,13 @@ export interface NodeHttpIncomingMessageLike {
   readonly headers: Record<string, string | string[] | undefined>;
   on(event: 'data', listener: (chunk: Buffer) => void): void;
   on(event: 'end', listener: () => void): void;
+}
+
+/** Ελάχιστο υποσύνολο του `http.ClientRequest` — μόνο το `destroy()` που χρειαζόμαστε
+ * για να κάνουμε εμείς ό,τι θα έκανε το `ws`'s δικό του `abortHandshake()` (βλ. σχόλιο
+ * στο `on('unexpected-response', ...)` πιο πάνω). */
+export interface NodeHttpClientRequestLike {
+  destroy(error?: Error): void;
 }
 
 /**
@@ -160,7 +188,18 @@ export class PumpPortalConnection {
     // response: 403" — αυτό εδώ διαβάζει το ΠΡΑΓΜΑΤΙΚΟ response body/headers από τον
     // PumpPortal server, που μπορεί να λέει ρητά "invalid api key" vs "rate limited" vs
     // κάτι άλλο.
-    socket.on('unexpected-response', (_request, response) => {
+    //
+    // ΔΙΟΡΘΩΣΗ 2026-09-24 (πραγματικό, root-caused incident — βλ. το εκτενές σχόλιο στο
+    // WebSocketLike interface πιο πάνω): η προσθήκη ΑΥΤΟΥ ΤΟΥ ΙΔΙΟΥ handler στις 2026-09-22
+    // ήταν το πραγματικό bug που σταμάτησε ΚΑΘΕ 'smart_money_buy' trade — όχι κάποια
+    // αλλαγή στο gate/discovery. Η `ws` βιβλιοθήκη ελέγχει `!websocket.emit(...)` πριν
+    // αποφασίσει αν θα κάνει η ίδια `abortHandshake()` (που κανονικά εκπέμπει 'close' και
+    // πυροδοτεί το reconnect παρακάτω) — και η ΑΠΛΗ ύπαρξη ενός listener εδώ κάνει το
+    // `emit()` να επιστρέψει `true`, μπλοκάροντας ΜΟΝΙΜΑ το abort/close/reconnect σε ΚΑΘΕ
+    // μελλοντικό απορριφθέν handshake. Τώρα κάνουμε ρητά ό,τι θα έκανε το `ws`: καταστροφή
+    // του pending request ΚΑΙ προγραμματισμός reconnect — χωρίς να περιμένουμε ένα 'close'
+    // που πλέον δεν έρχεται ποτέ μόνο του.
+    socket.on('unexpected-response', (request, response) => {
       const chunks: Buffer[] = [];
       response.on('data', (chunk) => chunks.push(chunk));
       response.on('end', () => {
@@ -171,6 +210,14 @@ export class PumpPortalConnection {
             `headers=${headers} body=${body || '(empty)'}`,
         );
       });
+
+      request.destroy();
+      // Ίδιο guard-σχήμα με το 'close' handler πιο πάνω: αν το χρήστης ζήτησε οριστικό
+      // close() εν τω μεταξύ, μην προγραμματίσεις reconnect πάνω από αυτό.
+      if (this.socket === socket) this.socket = null;
+      if (this.closedByUser) return;
+      this.log('[pumpportal] handshake απορρίφθηκε — προγραμματίζεται reconnect');
+      this.scheduleReconnectAttempt();
     });
   }
 
