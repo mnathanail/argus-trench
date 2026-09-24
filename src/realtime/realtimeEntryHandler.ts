@@ -91,11 +91,34 @@ export async function handleRealtimeEntryEvent(
 
   const wallet = await getWallet(event.traderPublicKey);
   const version = logicVersion(PHASE1_THRESHOLDS);
-  const gated = await findPassedTokens([event.mint], version);
+  const gateSnapshotExists = (await findPassedTokens([event.mint], version)).has(event.mint);
   const openTradesCount = await countOpenTrades();
 
-  const decision = decideEntry(event, wallet, gated.has(event.mint), openTradesCount);
-  if (decision.type === 'skip') return null;
+  const decision = decideEntry(event, wallet, gateSnapshotExists, openTradesCount);
+  if (decision.type === 'skip') {
+    // 2026-09-24 — διαγνωστικό: το decideEntry (σκόπιμα pure, βλ. tests) γυρνάει μόνο
+    // {type:'skip'}, χωρίς λόγο — καμία από τις 5 περιπτώσεις του δεν άφηνε ίχνος στα
+    // logs. Όταν το smart_money_buy trigger_type σταμάτησε τελείως (0 σε 20+ ώρες), δεν
+    // μπορούσαμε να ξεχωρίσουμε "τα events δεν φτάνουν" από "φτάνουν αλλά σκοντάφτουν
+    // εδώ" — π.χ. το πιο πιθανό ύποπτο, ένα token που ένα wallet μόλις αγόρασε αλλά το
+    // δικό μας discovery δεν το έχει (ακόμα) περάσει από το gate. Καθαρά παρατηρησιακό,
+    // ΔΕΝ αλλάζει τη decideEntry λογική/tests.
+    const reason =
+      wallet === null
+        ? 'wallet_unknown'
+        : !wallet.active
+          ? 'wallet_inactive'
+          : !gateSnapshotExists
+            ? 'gate_not_passed'
+            : openTradesCount >= WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE
+              ? 'open_trades_cap'
+              : 'no_realtime_price';
+    console.log(
+      `[realtime-entry-skip] reason=${reason} mint=${event.mint.slice(0, 8)} ` +
+        `wallet=${event.traderPublicKey.slice(0, 8)}`,
+    );
+    return null;
+  }
   // TS δε στενεύει το `wallet` μέσω του decideEntry (ξεχωριστή function) — αλλά
   // decision.type==='enter' εγγυάται ήδη ότι wallet!==null (βλ. decideEntry).
   if (wallet === null) return null;

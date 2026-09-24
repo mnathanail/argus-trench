@@ -125,7 +125,20 @@ export class PumpPortalConnection {
 
     socket.on('message', (raw) => {
       const event = this.tryParseMessage(raw);
-      if (event !== null) this.options.onTradeEvent(event);
+      if (event !== null) {
+        // 2026-09-24 — διαγνωστικό: πριν από αυτό δεν υπήρχε ΚΑΜΙΑ ορατότητα στο αν
+        // φτάνουν καθόλου trade events από τα subscribed wallets/tokens — μόνο
+        // connect/disconnect/error καταγράφονταν. Όταν οι πυροδοτήσεις σταμάτησαν
+        // (μηδέν 'smart_money_buy' triggers σε 20+ ώρες παρά 156 subscribed wallets),
+        // δεν μπορούσαμε να ξεχωρίσουμε "δεν έρχονται events" από "έρχονται αλλά
+        // απορρίπτονται σιωπηλά αλλού" (π.χ. decideEntry's gate check). Αυτή η γραμμή
+        // καταγράφει ΚΑΘΕ πραγματικό trade event πριν καν φτάσει στον handler.
+        this.log(
+          `[pumpportal-event] ${event.txType} mint=${event.mint.slice(0, 8)} ` +
+            `wallet=${event.traderPublicKey.slice(0, 8)} sol=${event.solAmount}`,
+        );
+        this.options.onTradeEvent(event);
+      }
     });
 
     socket.on('close', () => {
