@@ -147,12 +147,36 @@ export class PumpPortalConnection {
 
     socket.on('open', () => {
       this.reconnectAttempt = 0;
-      this.log('[pumpportal] συνδέθηκε');
+      // 2026-09-26 — διαγνωστικό: δεύτερο, ξεχωριστό incident από αυτό στις 2026-09-24 —
+      // η σύνδεση συνδέθηκε/επανασυνδέθηκε κανονικά (επιβεβαιωμένο 2 φορές στα logs),
+      // αλλά ΚΑΝΕΝΑ 'message' event δεν έφτασε ποτέ για 7+ ώρες μετά. Μέχρι τώρα δεν
+      // υπήρχε ΚΑΜΙΑ ορατότητα στο ΠΟΣΑ wallets/tokens πραγματικά ξαναζητήθηκαν σε ΚΑΘΕ
+      // 'open' (αρχικό connect() ΚΑΙ κάθε reconnect) — αν το subscribedWallets ήταν κενό
+      // ή λάθος τη στιγμή ενός reconnect, το resubscribeAll() θα έστελνε σιωπηλά μηδέν
+      // αιτήματα, και το PumpPortal θα έμενε σωστά σιωπηλό μετά — ΑΚΡΙΒΩΣ το ίδιο
+      // σύμπτωμα με "events δεν φτάνουν ποτέ". Αυτή η γραμμή κάνει τη διάκριση δυνατή.
+      this.log(
+        `[pumpportal] συνδέθηκε — resubscribing wallets=${this.subscribedWallets.size} ` +
+          `tokens=${this.subscribedTokens.size}`,
+      );
       this.resubscribeAll();
     });
 
     socket.on('message', (raw) => {
       const event = this.tryParseMessage(raw);
+      if (event === null) {
+        // 2026-09-26 — διαγνωστικό, ίδιο σκεπτικό με πιο πάνω: το parseTradeEvent
+        // επιστρέφει σιωπηλά null ΚΑΙ για πραγματικά trade events με λάθος σχήμα ΚΑΙ για
+        // τα δικά του PumpPortal confirmation/error μηνύματα (π.χ. "Successfully
+        // subscribed to keys.") — πριν από αυτό δεν υπήρχε ΚΑΜΙΑ καταγραφή σε καμία από
+        // τις δύο περιπτώσεις. Χωρίς αυτό δεν μπορούμε να ξεχωρίσουμε "το PumpPortal
+        // ποτέ δεν επιβεβαίωσε το subscribe μας" από "απλά δεν συνέβη κανένα trade στα
+        // wallets μας για ώρες" — και οι δύο παράγουν το ίδιο "0 events" σύμπτωμα.
+        // Κόβουμε στους πρώτους 300 χαρακτήρες — αρκετό για να αναγνωριστεί το μήνυμα,
+        // χωρίς να πλημμυρίσουμε τα logs αν το PumpPortal στείλει κάτι μεγάλο/απρόσμενο.
+        const text = typeof raw === 'string' ? raw : String(raw);
+        this.log(`[pumpportal-unrecognized] ${text.slice(0, 300)}`);
+      }
       if (event !== null) {
         // 2026-09-24 — διαγνωστικό: πριν από αυτό δεν υπήρχε ΚΑΜΙΑ ορατότητα στο αν
         // φτάνουν καθόλου trade events από τα subscribed wallets/tokens — μόνο

@@ -223,6 +223,52 @@ test('the subscription-ack message does not fire onTradeEvent (not a trade)', ()
   assert.equal(events.length, 0);
 });
 
+// 2026-09-26 — διαγνωστικό για ένα δεύτερο, ξεχωριστό production incident από αυτό της
+// unexpected-response (2026-09-24): η σύνδεση/reconnect δούλευε κανονικά, αλλά ΚΑΝΕΝΑ
+// 'message' event δεν έφτανε ποτέ για 7+ ώρες. Δεν υπήρχε τρόπος να ξεχωρίσουμε "κανένα
+// wallet δεν ξαναζητήθηκε μετά το reconnect" από "το PumpPortal απλά δεν έστειλε τίποτα".
+// Αυτά τα δύο tests κλειδώνουν τη νέα ορατότητα που λύνει ακριβώς αυτό.
+test('every open (αρχικό connect ΚΑΙ κάθε reconnect) καταγράφει πόσα wallets/tokens ξαναζητήθηκαν', () => {
+  const { conn, sockets, logs, reconnectCalls } = setup();
+  conn.subscribeWallet('WalletA');
+  conn.subscribeWallet('WalletB');
+  conn.subscribeToken('TokenA');
+  conn.connect();
+  at(sockets, 0).triggerOpen();
+  assert.ok(
+    logs.some((l) => l.includes('συνδέθηκε') && l.includes('wallets=2') && l.includes('tokens=1')),
+    `περίμενα ένα log με wallets=2 tokens=1, πήρα: ${JSON.stringify(logs)}`,
+  );
+
+  // Reconnect: το ΙΔΙΟ σύνολο πρέπει να αναφερθεί ξανά — αν ποτέ αδειάσει σιωπηλά ανάμεσα
+  // σε reconnects, αυτό το test θα το πιάσει.
+  at(sockets, 0).triggerClose();
+  at(reconnectCalls, 0).fn();
+  at(sockets, 1).triggerOpen();
+  assert.ok(
+    logs.some(
+      (l, i) => i > 0 && l.includes('συνδέθηκε') && l.includes('wallets=2') && l.includes('tokens=1'),
+    ),
+  );
+});
+
+test('ένα μη αναγνωρισμένο μήνυμα (π.χ. subscribe-ack ή σφάλμα από το PumpPortal) καταγράφεται, όχι σιωπηλή απόρριψη', () => {
+  const { conn, sockets, logs } = setup();
+  conn.connect();
+  at(sockets, 0).triggerMessage({ message: 'Successfully subscribed to keys.' });
+  assert.ok(
+    logs.some((l) => l.includes('[pumpportal-unrecognized]') && l.includes('Successfully subscribed')),
+    `περίμενα καταγραφή του unrecognized μηνύματος, πήρα: ${JSON.stringify(logs)}`,
+  );
+});
+
+test('ένα πραγματικό trade event ΔΕΝ καταγράφεται σαν unrecognized', () => {
+  const { conn, sockets, logs } = setup();
+  conn.connect();
+  at(sockets, 0).triggerMessage(REAL_BUY_EVENT);
+  assert.ok(!logs.some((l) => l.includes('[pumpportal-unrecognized]')));
+});
+
 test('on disconnect, a reconnect is scheduled with the first backoff step (jittered)', () => {
   const { conn, sockets, reconnectCalls } = setup();
   conn.connect();
