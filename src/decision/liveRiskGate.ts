@@ -54,7 +54,11 @@ export async function checkLiveRiskGate(now: Date = new Date()): Promise<RiskGat
     };
   }
 
-  const recentTrades = await getRecentClosedLiveTrades(LIVE_KILL_SWITCH_CONSEC_LOSSES);
+  // ΔΙΟΡΘΩΣΗ 2026-09-27: μετά από /resume_live, το σερί μετράει ΜΟΝΟ trades που έκλεισαν
+  // ΜΕΤΑ το resume — αλλιώς τα ίδια παλιά ζημιογόνα trades που ενεργοποίησαν το halt
+  // ξανακλειδώνουν αμέσως, πριν προλάβει να μπει κανένα νέο live trade. `resumedAt ===
+  // null` (ποτέ δεν έγινε resume) διατηρεί την παλιά συμπεριφορά αμετάβλητη.
+  const recentTrades = await getRecentClosedLiveTrades(LIVE_KILL_SWITCH_CONSEC_LOSSES, halt.resumedAt ?? undefined);
   const consecLosses = countConsecutiveLosses(recentTrades);
   if (consecLosses >= LIVE_KILL_SWITCH_CONSEC_LOSSES) {
     const reason = `${consecLosses} συνεχόμενες ζημιές`;

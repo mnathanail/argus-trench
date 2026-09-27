@@ -728,17 +728,27 @@ export async function markNeedsManualExit(id: number, conn?: Queryable): Promise
  * kill-switch (μέτρημα συνεχόμενων ζημιών, βλ. liveRiskGate.ts). ΜΟΝΟ `live`, ΟΧΙ
  * `paper`/`log_only` — μια κακή σειρά υποθετικών trades δεν πρέπει ποτέ να σταματήσει
  * πραγματικό trading, ούτε το αντίστροφο έχει νόημα.
+ *
+ * ΔΙΟΡΘΩΣΗ 2026-09-27, πραγματικό incident: μετά από `/resume_live`, το ΕΠΟΜΕΝΟ
+ * `checkLiveRiskGate` ξαναέβρισκε τα ΙΔΙΑ παλιά κλεισμένα trades που είχαν ήδη
+ * ενεργοποιήσει το πρώτο halt, και ξανακλείδωνε ΑΜΕΣΩΣ, χωρίς να έχει μεσολαβήσει κανένα
+ * νέο live trade — `/resume_live` γινόταν άχρηστο. `sinceExitAt`, όταν δίνεται, αγνοεί
+ * trades που έκλεισαν ΠΡΙΝ από αυτή τη στιγμή (το τελευταίο χειροκίνητο resume) — το
+ * σερί μετράει ΜΟΝΟ ό,τι έγινε μετά. `undefined`/χωρίς όρισμα = παλιά συμπεριφορά
+ * (μέτρα σε όλο το ιστορικό) — χρησιμοποιείται όταν δεν έχει γίνει ποτέ resume ακόμα.
  */
 export async function getRecentClosedLiveTrades(
   limit: number,
+  sinceExitAt?: Date,
   conn?: Queryable,
 ): Promise<{ pnlSol: number | null }[]> {
   const { rows } = await db(conn).query<{ pnl_sol: string | null }>(
     `SELECT pnl_sol FROM paper_trades
       WHERE mode = 'live' AND status = 'closed'
+        AND ($2::timestamptz IS NULL OR exit_at >= $2)
       ORDER BY exit_at DESC
       LIMIT $1`,
-    [limit],
+    [limit, sinceExitAt ?? null],
   );
   return rows.map((row) => ({ pnlSol: toNumOrNull(row.pnl_sol) }));
 }

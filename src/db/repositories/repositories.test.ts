@@ -15,6 +15,7 @@ import { recordEntry, recordSignal } from './entries.js';
 import {
   closeTrade,
   countOpenTrades,
+  getRecentClosedLiveTrades,
   getTrade,
   listAllOpenLiveTrades,
   listOpenTrades,
@@ -673,6 +674,73 @@ test('openTrade + closeTrade persist real actual_entry/exit_amount_sol for live 
 
     const closed = await getTrade(tradeId, tx);
     assert.equal(closed?.actualExitAmountSol, 0.062545);
+  });
+});
+
+// Πραγματικό incident 2026-09-27: μετά από /resume_live, το επόμενο checkLiveRiskGate
+// ξαναέβρισκε τα ΙΔΙΑ παλιά κλεισμένα trades που είχαν ήδη ενεργοποιήσει το πρώτο halt
+// και ξανακλείδωνε αμέσως. Το `sinceExitAt` πρέπει να αγνοεί ό,τι έκλεισε πριν το resume.
+test('getRecentClosedLiveTrades: sinceExitAt αγνοεί trades που έκλεισαν πριν από αυτή τη στιγμή', async () => {
+  await inRollback(async (tx) => {
+    const openOld = async (): Promise<number> => {
+      const decisionLogId = await insertDecision({ ...baseDecision, decision: 'entered' }, tx);
+      return openTrade(
+        {
+          decisionLogId,
+          tokenAddress: baseDecision.tokenAddress,
+          mode: 'live',
+          intendedSizePct: 0.05,
+          bankrollAtEntry: 1,
+          simulatedEntryPrice: 0.000123,
+          simulatedEntryAmountSol: 0.05,
+          assumedSlippagePct: 0.5,
+          assumedLatencyMs: 200,
+        },
+        tx,
+      );
+    };
+
+    // Δύο παλιά, ήδη-κλεισμένα ζημιογόνα live trades — προσομοιώνουν το ιστορικό που
+    // ενεργοποίησε το ΠΡΩΤΟ halt, πριν από οποιοδήποτε resume.
+    const oldTradeId1 = await openOld();
+    await closeTrade(
+      oldTradeId1,
+      { exitReason: 'exit_signal', simulatedExitPrice: 0.00001, pnlSol: -0.01, pnlPct: -80, assumedFeesPct: 0, pnlNetPct: -80 },
+      tx,
+    );
+    const oldTradeId2 = await openOld();
+    await closeTrade(
+      oldTradeId2,
+      { exitReason: 'exit_signal', simulatedExitPrice: 0.00001, pnlSol: -0.02, pnlPct: -80, assumedFeesPct: 0, pnlNetPct: -80 },
+      tx,
+    );
+    // Τα σπρώχνουμε τεχνητά στο παρελθόν (πριν από ένα υποθετικό resume timestamp) —
+    // closeTrade γράφει πάντα exit_at=now(), οπότε το μετατοπίζουμε ρητά εδώ.
+    await tx.query(`UPDATE paper_trades SET exit_at = now() - interval '1 hour' WHERE id IN ($1, $2)`, [
+      oldTradeId1,
+      oldTradeId2,
+    ]);
+
+    const resumedAt = new Date();
+
+    // Χωρίς cutoff (resumedAt=undefined, π.χ. ποτέ δεν έγινε resume): βλέπει τα παλιά trades.
+    const withoutCutoff = await getRecentClosedLiveTrades(10, undefined, tx);
+    assert.ok(withoutCutoff.some((t) => t.pnlSol === -0.01));
+
+    // Με cutoff = resumedAt: τα παλιά trades (πριν το resume) αγνοούνται εντελώς.
+    const afterResume = await getRecentClosedLiveTrades(10, resumedAt, tx);
+    assert.equal(afterResume.length, 0);
+
+    // Ένα ΝΕΟ live trade που κλείνει ΜΕΤΑ το resume πρέπει να μετράει κανονικά.
+    const newTradeId = await openOld();
+    await closeTrade(
+      newTradeId,
+      { exitReason: 'exit_signal', simulatedExitPrice: 0.0002, pnlSol: 0.01, pnlPct: 60, assumedFeesPct: 0, pnlNetPct: 60 },
+      tx,
+    );
+    const afterResumeWithNewTrade = await getRecentClosedLiveTrades(10, resumedAt, tx);
+    assert.equal(afterResumeWithNewTrade.length, 1);
+    assert.equal(afterResumeWithNewTrade[0]?.pnlSol, 0.01);
   });
 });
 

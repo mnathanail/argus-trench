@@ -3,15 +3,24 @@ import { db, type Queryable } from '../tx.js';
 export interface LiveTradingHaltState {
   haltedAt: Date | null;
   haltedReason: string | null;
+  /** Πότε έγινε το τελευταίο χειροκίνητο `/resume_live` (βλ. migration 0016). `null` =
+   * δεν έχει γίνει ποτέ resume σε αυτό το process/deployment ακόμα. */
+  resumedAt: Date | null;
 }
 
-/** Τρέχον halt state — single-row πίνακας, βλ. migration 0010. */
+/** Τρέχον halt state — single-row πίνακας, βλ. migration 0010 (+0016 για resumedAt). */
 export async function getLiveHaltState(conn?: Queryable): Promise<LiveTradingHaltState> {
-  const { rows } = await db(conn).query<{ halted_at: Date | null; halted_reason: string | null }>(
-    `SELECT halted_at, halted_reason FROM live_trading_state WHERE id = 1`,
-  );
+  const { rows } = await db(conn).query<{
+    halted_at: Date | null;
+    halted_reason: string | null;
+    resumed_at: Date | null;
+  }>(`SELECT halted_at, halted_reason, resumed_at FROM live_trading_state WHERE id = 1`);
   const row = rows[0];
-  return { haltedAt: row?.halted_at ?? null, haltedReason: row?.halted_reason ?? null };
+  return {
+    haltedAt: row?.halted_at ?? null,
+    haltedReason: row?.halted_reason ?? null,
+    resumedAt: row?.resumed_at ?? null,
+  };
 }
 
 /**
@@ -38,9 +47,18 @@ export async function setLiveHalted(reason: string, conn?: Queryable): Promise<b
   return (result.rowCount ?? 0) > 0;
 }
 
-/** Χειροκίνητο reset — καλείται ΜΟΝΟ από ρητή ενέργεια χρήστη (π.χ. Telegram εντολή). */
+/**
+ * Χειροκίνητο reset — καλείται ΜΟΝΟ από ρητή ενέργεια χρήστη (π.χ. Telegram εντολή).
+ *
+ * ΔΙΟΡΘΩΣΗ 2026-09-27: γράφει επίσης `resumed_at = now()` — χωρίς αυτό, το ΕΠΟΜΕΝΟ
+ * `checkLiveRiskGate` ξαναμετράει το σερί πάνω στα ΙΔΙΑ παλιά κλεισμένα trades που
+ * ενεργοποίησαν το halt αρχικά, και ξανακλειδώνει πριν προλάβει να μπει ΚΑΝΕΝΑ νέο live
+ * trade (πραγματικό incident, βλ. migration 0016 / liveRiskGate.ts).
+ */
 export async function clearLiveHalt(conn?: Queryable): Promise<void> {
-  await db(conn).query(`UPDATE live_trading_state SET halted_at = NULL, halted_reason = NULL WHERE id = 1`);
+  await db(conn).query(
+    `UPDATE live_trading_state SET halted_at = NULL, halted_reason = NULL, resumed_at = now() WHERE id = 1`,
+  );
 }
 
 /**
