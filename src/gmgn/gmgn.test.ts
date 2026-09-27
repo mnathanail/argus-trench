@@ -317,6 +317,55 @@ test('a plain CLI failure becomes GmgnCliError with the exit code', async () => 
   );
 });
 
+// ΔΙΟΡΘΩΣΗ 2026-09-27, πραγματικό incident: 6 live sells απέτυχαν με το ίδιο, άχρηστο
+// μήνυμα "gmgn-cli failed: ⚠️  Swap — confirmation required" στο trade_execution_errors —
+// αυτό είναι μόνο ο τίτλος που τυπώνει το confirm.js του gmgn-cli, ΠΡΙΝ τον πραγματικό
+// λόγο μερικές γραμμές πιο κάτω. Τα δύο fake CLI scripts εδώ αναπαράγουν ΑΚΡΙΒΩΣ το
+// πραγματικό, πολύγραμμο output του confirm.js (βλ. node_modules/gmgn-cli/dist/confirm.js).
+test('confirmation-required failure (missing GMGN_ALLOW_AUTOMATED_TRADES) surfaces the REAL reason, not just the banner', async () => {
+  await withFakeCli(
+    [
+      'console.error("");',
+      'console.error("⚠️  Swap — confirmation required");',
+      'console.error("-".repeat(40));',
+      'console.error("  Chain:        sol");',
+      'console.error("  Wallet:       Abc123");',
+      'console.error("[gmgn-cli] --yes was supplied but GMGN_ALLOW_AUTOMATED_TRADES=1 is not set in the environment. Non-interactive trade execution is disabled by default. If you truly intend to allow automated trades, set GMGN_ALLOW_AUTOMATED_TRADES=1 in your own shell first.");',
+      'process.exit(1);',
+    ].join('\n'),
+    async () => {
+      await assert.rejects(runCli('swap', ['swap', '--yes']), (error: unknown) => {
+        assert.ok(error instanceof GmgnCliError);
+        assert.match(error.message, /GMGN_ALLOW_AUTOMATED_TRADES=1 is not set/);
+        assert.doesNotMatch(error.message, /^gmgn-cli failed: ⚠️ {2}Swap — confirmation required$/);
+        // Το πλήρες, ακατέργαστο output ΠΑΡΑΜΕΝΕΙ διαθέσιμο στο .output, ό,τι κι αν δείχνει το μήνυμα.
+        assert.match(error.output, /confirmation required/);
+        return true;
+      });
+    },
+  );
+});
+
+test('confirmation-required failure (no TTY) surfaces the REAL reason, not just the banner', async () => {
+  await withFakeCli(
+    [
+      'console.error("");',
+      'console.error("⚠️  Swap — confirmation required");',
+      'console.error("-".repeat(40));',
+      'console.error("  Chain:        sol");',
+      'console.error("[gmgn-cli] No interactive terminal available to confirm this swap. Refusing to execute a financial transaction without human confirmation. For intentional automation, set GMGN_ALLOW_AUTOMATED_TRADES=1 and pass --yes.");',
+      'process.exit(1);',
+    ].join('\n'),
+    async () => {
+      await assert.rejects(runCli('swap', ['swap']), (error: unknown) => {
+        assert.ok(error instanceof GmgnCliError);
+        assert.match(error.message, /No interactive terminal available/);
+        return true;
+      });
+    },
+  );
+});
+
 test('non-JSON output becomes GmgnResponseError, not a crash', async () => {
   await withFakeCli("console.log('not json at all');", async () => {
     await assert.rejects(

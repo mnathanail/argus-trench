@@ -122,7 +122,36 @@ function toGmgnError(error: unknown, argv: readonly string[]): Error {
   const exitCode = typeof err.code === 'number' ? err.code : null;
   const timedOut = err.killed === true && err.signal === 'SIGTERM';
   const prefix = timedOut ? 'gmgn-cli timed out' : 'gmgn-cli failed';
-  return new GmgnCliError(`${prefix}: ${firstLine(output)}`, exitCode, output, argv);
+  return new GmgnCliError(`${prefix}: ${summarize(output)}`, exitCode, output, argv);
+}
+
+/**
+ * ΔΙΟΡΘΩΣΗ 2026-09-27, πραγματικό incident: 6 live sells απέτυχαν με μήνυμα
+ * "gmgn-cli failed: ⚠️  Swap — confirmation required" — αυτό είναι απλά ο ΤΙΤΛΟΣ που
+ * τυπώνει το confirm.js του gmgn-cli (βλ. node_modules/gmgn-cli/dist/confirm.js,
+ * printSummary()) ΠΡΙΝ τυπώσει τον πραγματικό λόγο αποτυχίας 2-3 γραμμές πιο κάτω (είτε
+ * "--yes was supplied but GMGN_ALLOW_AUTOMATED_TRADES=1 is not set..." είτε "No
+ * interactive terminal available..."). Το παλιό firstLine(output) έπαιρνε ΜΟΝΟ τη
+ * δεύτερη γραμμή του output (η πρώτη είναι κενή — `\n${header}`), δηλαδή ΜΟΝΟ τον τίτλο
+ * — ο πραγματικός λόγος χανόταν εντελώς από το δικό μας trade_execution_errors.error_message,
+ * καθιστώντας αδύνατη τη διάγνωση χωρίς να ξαναδιαβάσουμε το raw CLI output (που δεν
+ * κρατάμε πουθενά αλλού). `output` στο GmgnCliError ΠΑΡΑΜΕΝΕΙ το πλήρες κείμενο —
+ * αυτό εδώ αλλάζει μόνο ποια γραμμή(ες) καταλήγουν στο μήνυμα που βλέπουμε.
+ */
+function summarize(output: string): string {
+  if (/confirmation required/i.test(output)) {
+    // Η πρώτη γραμμή που μοιάζει με πραγματικό λόγο (ξεκινάει με "[gmgn-cli]", ή περιέχει
+    // "GMGN_ALLOW_AUTOMATED_TRADES"/"interactive terminal"/"Confirmation not received") —
+    // ΟΧΙ απλά η πρώτη μη-κενή γραμμή, που θα ήταν ξανά ο τίτλος.
+    const lines = output.split('\n').map((l) => l.trim());
+    const reasonLine = lines.find(
+      (l) =>
+        l.startsWith('[gmgn-cli]') ||
+        /GMGN_ALLOW_AUTOMATED_TRADES|interactive terminal|Confirmation not received/i.test(l),
+    );
+    if (reasonLine) return reasonLine;
+  }
+  return firstLine(output);
 }
 
 /**
