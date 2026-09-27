@@ -1,5 +1,5 @@
 import { findPassedTokens, recordTrigger, linkTrade } from '../db/repositories/decisionLog.js';
-import { openTrade, countOpenTrades, setNativeOrderState } from '../db/repositories/paperTrades.js';
+import { openTrade, countOpenLiveOrPaperTrades, setNativeOrderState } from '../db/repositories/paperTrades.js';
 import { getWallet, type WatchlistWallet } from '../db/repositories/watchlistWallets.js';
 import { logicVersion, PHASE1_THRESHOLDS } from '../decision/gateConfig.js';
 import { applyEntrySlippage } from '../decision/pnl.js';
@@ -92,7 +92,8 @@ export async function handleRealtimeEntryEvent(
   const wallet = await getWallet(event.traderPublicKey);
   const version = logicVersion(PHASE1_THRESHOLDS);
   const gateSnapshotExists = (await findPassedTokens([event.mint], version)).has(event.mint);
-  const openTradesCount = await countOpenTrades();
+  // ΜΟΝΟ live/paper — τα παλιά log_only δεν πρέπει να κόβουν live entries (βλ. countOpenLiveOrPaperTrades).
+  const openTradesCount = await countOpenLiveOrPaperTrades();
 
   const decision = decideEntry(event, wallet, gateSnapshotExists, openTradesCount);
   if (decision.type === 'skip') {

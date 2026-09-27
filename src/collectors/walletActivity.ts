@@ -1,6 +1,5 @@
-import { findPassedTokens } from '../db/repositories/decisionLog.js';
-import { recordSignal } from '../db/repositories/entries.js';
-import { countOpenTrades } from '../db/repositories/paperTrades.js';
+import { findPassedTokens, recordTrigger } from '../db/repositories/decisionLog.js';
+import { countOpenLiveOrPaperTrades } from '../db/repositories/paperTrades.js';
 import {
   markActivityChecked,
   selectWalletsForActivityCheck,
@@ -13,19 +12,8 @@ import {
   WALLET_ACTIVITY_WALLETS_PER_CYCLE,
 } from './intervals.js';
 import { PHASE1_THRESHOLDS, logicVersion } from '../decision/gateConfig.js';
-import { subscribeForNewTrade } from '../realtime/subscriptionManager.js';
-import type { PumpPortalConnection } from '../realtime/pumpportalConnection.js';
-import { applyEntrySlippage } from '../decision/pnl.js';
-import {
-  PAPER_ASSUMED_LATENCY_MS,
-  PAPER_ASSUMED_SLIPPAGE_PCT,
-  PAPER_BANKROLL_SOL,
-  PAPER_POSITION_SIZE_PCT,
-  conditionOrdersJson,
-} from '../decision/paperTradingConfig.js';
 import { fetchWalletBuys, type WalletActivity } from '../gmgn/activity.js';
 import type { GateThresholds } from '../gmgn/trenches.js';
-import { toNumberOrNull } from '../gmgn/validate.js';
 import { delay } from '../util/delay.js';
 
 /**
@@ -36,7 +24,9 @@ import { delay } from '../util/delay.js';
  * (αυτό resolve-άρει τη λίστα από τα follows του GMGN account, δηλαδή εξαρτάται από το UI
  * — βλ. CLAUDE.md layer 3). Κόστος: weight 3 **ανά wallet**.
  *
- * Φάση 1: το signal καταγράφεται ως `signal_logged`, καμία συναλλαγή.
+ * Το signal καταγράφεται ως `signal_logged` στο decision_log, ΚΑΝΕΝΑ trade (2026-09-27:
+ * trades ανοίγει μόνο το realtime/live path). Σημ.: αυτό το loop δεν είναι πια wired στο
+ * main.ts — το ίδιο σήμα έρχεται realtime μέσω PumpPortal websocket.
  */
 export interface WalletActivityOptions {
   thresholds?: GateThresholds;
@@ -44,10 +34,6 @@ export interface WalletActivityOptions {
   pageSize?: number;
   /** Μέγιστος αριθμός wallets ανά κύκλο· το default εφαρμόζει round-robin polling. */
   walletsPerCycle?: number;
-  /** Optional — αν δοθεί, κάθε νέο trade κάνει αμέσως subscribe στο realtime feed
-   * (token + trigger wallet). Χωρίς αυτό, το loop δουλεύει ακριβώς όπως πριν
-   * (καθαρά polling, καμία αλλαγή συμπεριφοράς) — βλ. main.ts για το πώς περνάει. */
-  realtimeConnection?: PumpPortalConnection;
 }
 
 export interface WalletActivityResult {
@@ -62,7 +48,7 @@ export async function runWalletActivityCycle(
 ): Promise<WalletActivityResult> {
   const version = logicVersion(options.thresholds ?? PHASE1_THRESHOLDS);
 
-  const openTrades = await countOpenTrades();
+  const openTrades = await countOpenLiveOrPaperTrades();
   if (openTrades >= WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE) {
     return { version, walletsPolled: 0, newBuys: 0, signalsRecorded: 0 };
   }
@@ -95,17 +81,7 @@ export async function runWalletActivityCycle(
       const gateSnapshot = gated.get(buy.tokenAddress);
       if (gateSnapshot === undefined) continue;
 
-      // 'price' έρχεται από το ήδη-fetched gate_snapshot_json — ΟΧΙ φρέσκο call, ακριβώς
-      // όπως ορίστηκε: δε ρισκάρουμε επιπλέον GMGN weight μόνο για ένα simulated entry.
-      const rawEntryPrice = toNumberOrNull(gateSnapshot['price'], 'gate_snapshot.price');
-      // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #3, βλ. applyEntrySlippage στο pnl.ts) — μόνο
-      // όταν υπάρχει πραγματική τιμή· 0 (κράτημα θέσης για λείπον gate_snapshot.price)
-      // παραμένει 0, δε γίνεται ψευδώς "χειρότερο".
-      const entryPrice = rawEntryPrice === null ? null : applyEntrySlippage(rawEntryPrice, PAPER_ASSUMED_SLIPPAGE_PCT);
-      const simulatedEntryAmountSol = PAPER_BANKROLL_SOL * PAPER_POSITION_SIZE_PCT;
-
-      const recorded = await recordSignal(
-        {
+      const recorded = await recordTrigger({
           tokenAddress: buy.tokenAddress,
           logicVersion: version,
           triggerType: 'smart_money_buy',
@@ -124,37 +100,9 @@ export async function runWalletActivityCycle(
           },
           decision: 'signal_logged',
           decisionReasonText: `${wallet.source} wallet ${short(wallet.address)} αγόρασε ${buy.tokenSymbol ?? short(buy.tokenAddress)} — gate είχε περάσει`,
-        },
-        {
-          tokenAddress: buy.tokenAddress,
-          // Το αργό, periodic (GMGN-based) μονοπάτι — ΠΟΤΕ live, μόνο catch-up/backfill
-          // καταγραφή. Ρητό εδώ τώρα που το mode δεν είναι πια κλειδωμένο στο
-          // recordSignal (βλ. entries.ts) — το realtime μονοπάτι είναι το μόνο που
-          // μπορεί ποτέ να ανοίξει mode='live' trade.
-          mode: 'log_only',
-          intendedSizePct: PAPER_POSITION_SIZE_PCT,
-          bankrollAtEntry: PAPER_BANKROLL_SOL,
-          // entryPrice==null σε ελάχιστα, ασυνήθιστα gate_snapshots χωρίς 'price' — 0 αντί
-          // για null ώστε το column (NUMERIC NOT NULL-ish χρήση) να μη σκάσει· το
-          // exit-resolver ήδη πρέπει να αγνοεί trades με μη-ρεαλιστική τιμή.
-          simulatedEntryPrice: entryPrice ?? 0,
-          simulatedEntryAmountSol: simulatedEntryAmountSol,
-          assumedSlippagePct: PAPER_ASSUMED_SLIPPAGE_PCT,
-          assumedLatencyMs: PAPER_ASSUMED_LATENCY_MS,
-          conditionOrders: conditionOrdersJson(),
-          // Η ΠΡΑΓΜΑΤΙΚΗ στιγμή της on-chain αγοράς — ΟΧΙ now(). Κρίσιμο σε catch-up
-          // batches (πολλά signals από ένα backlogged wallet γραμμένα μέσα σε
-          // δευτερόλεπτα): χωρίς αυτό, όλα θα έπαιρναν το ίδιο πλασματικό entry_at,
-          // καθυστερώντας λάθος το 24ωρο timeout τους. Επιβεβαιωμένο 2026-09-05.
-          entryAt: new Date(buy.timestamp * 1000),
-        },
-      );
-      if (recorded !== null) {
-        signalsRecorded += 1;
-        if (options.realtimeConnection) {
-          subscribeForNewTrade(options.realtimeConnection, buy.tokenAddress, wallet.address);
-        }
-      }
+        });
+      // 2026-09-27: μόνο decision_log, κανένα log_only trade/subscription — βλ. docstring.
+      if (recorded !== null) signalsRecorded += 1;
     }
 
     // Ο cursor προχωράει ΑΦΟΥ επεξεργαστούμε τη σελίδα: αν σκάσει κάτι στη μέση, ο

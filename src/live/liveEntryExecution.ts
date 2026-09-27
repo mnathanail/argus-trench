@@ -10,13 +10,9 @@ import type { TradeMode } from '../db/types.js';
 
 export interface LiveEntryOutcome {
   /**
-   * 'live' ΜΟΝΟ σε πραγματική, επιβεβαιωμένη επιτυχία. 'paper' ΜΟΝΟ όταν δεν επαρκούσε
-   * το διαθέσιμο live κεφάλαιο (decideTradeMode) — ποτέ δεν προσπαθήσαμε καν risk
-   * gate/reservation/swap. 'log_only' για ΚΑΘΕ άλλη αποτυχία (kill-switch/daily cap,
-   * χαμένη κράτηση κεφαλαίου σε race, ή το ίδιο το swap απέτυχε) — εκεί το κεφάλαιο
-   * υπήρχε, κάτι λειτουργικό εμπόδισε το live trade. Διόρθωση 2026-09-17: πριν αυτή τη
-   * διόρθωση ΚΑΘΕ μη-live περίπτωση κατέληγε 'log_only', και το 'paper' δεν
-   * χρησιμοποιούνταν ΠΟΤΕ στην πράξη — βλ. σχόλιο στο PAPER_OUTCOME παρακάτω.
+   * 'live' ΜΟΝΟ σε πραγματική, επιβεβαιωμένη επιτυχία. 'paper' σε ΚΑΘΕ άλλη περίπτωση —
+   * ανεπαρκές κεφάλαιο, kill-switch/daily cap, χαμένη κράτηση κεφαλαίου, αποτυχημένο swap
+   * ή αδύνατη ανάγνωση του wallet (αλλαγή 2026-09-27, βλ. PAPER_OUTCOME).
    */
   mode: TradeMode;
   /** Πραγματικό SOL που ξοδεύτηκε (balance-diff) — μόνο όταν mode==='live'. */
@@ -42,31 +38,16 @@ export interface LiveEntryOutcome {
   killSwitchJustTriggered: boolean;
 }
 
-const LOG_ONLY_OUTCOME: LiveEntryOutcome = {
-  mode: 'log_only',
-  actualEntryAmountSol: null,
-  entryPrice: null,
-  liveStrategyOrderId: null,
-  nativeOrderVerified: false,
-  killSwitchJustTriggered: false,
-};
-
 /**
- * ΔΙΟΡΘΩΣΗ 2026-09-17 (πραγματικό εύρημα, μετά το incident #1193's watchdog work):
- * μέχρι σήμερα, η `decideTradeMode()` υπολόγιζε σωστά `'paper'` όταν δεν επαρκούσε το
- * διαθέσιμο live κεφάλαιο (βλ. tradeMode.ts — ρητή, ήδη τεκμηριωμένη πρόθεση: "συνεχίζουμε
- * να μαζεύουμε δεδομένα ακόμα κι όταν το πραγματικό κεφάλαιο έχει εξαντληθεί"), αλλά ο
- * caller εδώ πέταγε ΕΝΤΕΛΩΣ αυτή την τιμή — ο μόνος έλεγχος ήταν `!== 'live'`, και ΚΑΘΕ
- * τέτοια περίπτωση επέστρεφε το ίδιο, hardcoded `LOG_ONLY_OUTCOME`. Αποτέλεσμα: ΚΑΝΕΝΑ
- * trade δεν έπαιρνε ποτέ `mode='paper'` στην πράξη — όλα τα trades που δεν έγιναν live
- * καταλήγανε `'log_only'`, ασχέτως αν ο λόγος ήταν "ανεπαρκές κεφάλαιο" (που έπρεπε να
- * είναι paper) ή κάτι άλλο.
- *
- * Ξεχωριστό outcome ΜΟΝΟ για αυτή τη συγκεκριμένη περίπτωση — ανεπαρκές κεφάλαιο,
- * ελεγμένο ΠΡΙΝ καν προσπαθήσουμε risk gate/reservation/swap. Οι υπόλοιπες αποτυχίες
- * (kill-switch/daily cap, χαμένη κράτηση σε race, ή το ίδιο το swap να αποτύχει) ΠΑΡΑΜΕΝΟΥΝ
- * `'log_only'` — εκεί το κεφάλαιο υπήρχε, απλά κάτι λειτουργικό εμπόδισε το live trade,
- * ενώ το `'paper'` ΕΙΔΙΚΑ σημαίνει "ποτέ δεν είχαμε καν αρκετό κεφάλαιο να προσπαθήσουμε".
+ * ΑΛΛΑΓΗ 2026-09-27 (ρητή απόφαση χρήστη): `'paper'` σημαίνει πλέον "θέλαμε live, αλλά
+ * για ΟΠΟΙΟΝΔΗΠΟΤΕ λόγο δεν έγινε" — ανεπαρκές κεφάλαιο, kill-switch/daily cap, χαμένη
+ * κράτηση κεφαλαίου σε race, αποτυχημένο swap, ή αδυναμία ανάγνωσης του wallet. Πριν,
+ * μόνο το ανεπαρκές κεφάλαιο έδινε `'paper'` και όλα τα υπόλοιπα `'log_only'`. Το
+ * `'log_only'` δεν παράγεται πια από αυτό το path (και τα GMGN smartmoney / wallet
+ * polling κανάλια σταμάτησαν να ανοίγουν trades την ίδια μέρα) — έτσι τα paper trades
+ * είναι ακριβώς "τα live που δεν έγιναν", άμεσα συγκρίσιμα με τα πραγματικά.
+ * Ο λόγος αποτυχίας (πέρα από το κεφάλαιο) καταγράφεται ήδη στο trade_execution_errors
+ * ή στο kill-switch state, οπότε δεν χάνεται πληροφορία με το ενιαίο mode.
  */
 const PAPER_OUTCOME: LiveEntryOutcome = {
   mode: 'paper',
@@ -85,21 +66,24 @@ const PAPER_OUTCOME: LiveEntryOutcome = {
  * `if (...) return LOG_ONLY_OUTCOME`, χωρίς κανένα test να την κλειδώνει, και το bug
  * ήταν αόρατο μέχρι να το δει ο χρήστης στην παραγωγή.
  *
- * `killSwitchJustTriggered` περνάει ξεχωριστά (ΟΧΙ σαν επιπλέον reason) γιατί αλλάζει
- * ΜΟΝΟ ένα πεδίο πάνω στο ίδιο, καθορισμένο LOG_ONLY_OUTCOME — μόνο το `risk_gate_blocked`
- * μπορεί ποτέ να το θέσει true, οι υπόλοιποι λόγοι το αγνοούν ρητά.
+ * Από 2026-09-27 ΚΑΘΕ reason δίνει `'paper'` (βλ. PAPER_OUTCOME). Το `reason` παραμένει
+ * ως παράμετρος για το `killSwitchJustTriggered`: μόνο το `risk_gate_blocked` μπορεί ποτέ
+ * να το θέσει true, οι υπόλοιποι λόγοι το αγνοούν ρητά.
  */
-export function fallbackOutcomeFor(
-  reason: 'insufficient_capital' | 'risk_gate_blocked' | 'reservation_lost' | 'swap_failed',
-  killSwitchJustTriggered = false,
-): LiveEntryOutcome {
-  if (reason === 'insufficient_capital') return PAPER_OUTCOME;
+export type LiveFallbackReason =
+  | 'wallet_unavailable'
+  | 'insufficient_capital'
+  | 'risk_gate_blocked'
+  | 'reservation_lost'
+  | 'swap_failed';
+
+export function fallbackOutcomeFor(reason: LiveFallbackReason, killSwitchJustTriggered = false): LiveEntryOutcome {
   // ΜΟΝΟ το risk_gate_blocked περνάει ποτέ killSwitchJustTriggered=true στην πράξη (μόνο
   // εκεί καλείται το checkLiveRiskGate) — αλλά ελέγχουμε ρητά το reason εδώ, όχι μόνο το
   // flag, ώστε ένα μελλοντικό λάθος στον caller να μην μπορεί ποτέ να στείλει το alert
   // κάτω από λάθος λόγο αποτυχίας (π.χ. reservation_lost/swap_failed).
   const shouldFlag = reason === 'risk_gate_blocked' && killSwitchJustTriggered;
-  return shouldFlag ? { ...LOG_ONLY_OUTCOME, killSwitchJustTriggered: true } : LOG_ONLY_OUTCOME;
+  return shouldFlag ? { ...PAPER_OUTCOME, killSwitchJustTriggered: true } : PAPER_OUTCOME;
 }
 
 /** Πόσο περιμένουμε πριν το πρώτο verify poll — το strategy order χρειάζεται λίγο χρόνο
@@ -132,7 +116,7 @@ async function verifyNativeOrder(
 }
 
 /**
- * Αποφασίζει live-ή-paper ΚΑΙ εκτελεί, με πλήρη πτώση σε 'log_only' σε ΚΑΘΕ αποτυχία —
+ * Αποφασίζει live-ή-paper ΚΑΙ εκτελεί, με πλήρη πτώση σε 'paper' σε ΚΑΘΕ αποτυχία —
  * ανεπαρκές κεφάλαιο, μπλοκαρισμένο risk gate (kill-switch/daily cap), κράτηση
  * κεφαλαίου που απέτυχε (βλ. παρακάτω), ή το ίδιο το swap να αποτύχει. Καμία εξαίρεση
  * διαφεύγει ποτέ από εδώ προς τον caller.
@@ -152,7 +136,7 @@ async function verifyNativeOrder(
  *
  * Καταγράφει κάθε αποτυχία του ΙΔΙΟΥ του swap στο trade_execution_errors (`paperTradeId:
  * null` — η αποτυχία συνέβη πριν υπάρξει καν trade row, ο caller θα δημιουργήσει ένα
- * log_only row αμέσως μετά, γι' αυτό η αποτυχία δεν συνδέεται άμεσα με trade id εδώ).
+ * paper row αμέσως μετά, γι' αυτό η αποτυχία δεν συνδέεται άμεσα με trade id εδώ).
  */
 export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryOutcome> {
   let wallet;
@@ -162,12 +146,12 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
     // ΔΙΟΡΘΩΣΗ 2026-09-18 (πραγματικό εύρημα): πριν, αυτό το catch ήταν ΕΝΤΕΛΩΣ σιωπηλό —
     // ούτε log, ούτε trade_execution_errors row, τίποτα. Αν το `portfolio info` αρχίσει
     // να αποτυγχάνει (429 παρατεταμένο, ληγμένο API key/session, αλλαγή στο wallet
-    // binding, ό,τι δήποτε), ΚΑΘΕ σήμα καταλήγει σιωπηλά log_only επ' αόριστον — καμία
+    // binding, ό,τι δήποτε), ΚΑΘΕ σήμα καταλήγει σιωπηλά μη-live επ' αόριστον — καμία
     // ένδειξη στο kill-switch (ποτέ δεν φτάνει ως εκεί), καμία στο trade_execution_errors
     // (αυτό το catch είναι ΠΡΙΝ φτάσει εκεί). Ο χρήστης το ανακάλυψε μόνο επειδή παρατήρησε
     // ότι δεν έβλεπε πια νέα trades στο ίδιο το GMGN UI, ώρες αργότερα — ΧΩΡΙΣ αυτή τη
     // διόρθωση δεν υπάρχει κανένα ερώτημα στη βάση που να το αποκαλύπτει άμεσα.
-    console.error(`[live-entry] fetchLiveSolWallet απέτυχε — fallback σε log_only: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`[live-entry] fetchLiveSolWallet απέτυχε — fallback σε paper: ${error instanceof Error ? error.message : String(error)}`);
     await recordExecutionError({
       paperTradeId: null,
       tokenAddress,
@@ -176,7 +160,7 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
       errorMessage: `δεν διαβάστηκε το live SOL wallet (portfolio info) — ${error instanceof Error ? error.message : String(error)}`,
       errorDetail: error,
     });
-    return LOG_ONLY_OUTCOME; // δεν μπορέσαμε καν να διαβάσουμε το υπόλοιπο — ασφαλές fallback
+    return fallbackOutcomeFor('wallet_unavailable'); // δεν διαβάστηκε καν το υπόλοιπο — ασφαλές fallback
   }
 
   const balance = wallet.balances.find((b) => b.symbol === 'SOL')?.balance ?? 0;

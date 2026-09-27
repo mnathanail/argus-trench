@@ -103,6 +103,10 @@ const pumpportalApiKey = config.pumpportalApiKey();
 // ίδια του τη δήλωση. Δουλεύει σωστά χάρη σε closure: το callback καλείται ΜΟΝΟ αργότερα
 // (όταν έρθει πραγματικό event), μέχρι τότε η ανάθεση θα έχει ήδη ολοκληρωθεί.
 let realtimeConnection: PumpPortalConnection | undefined;
+// Rate limit για το PumpPortal low-balance alert — το connection ξαναδοκιμάζει κάθε 5
+// λεπτά, δεν θέλουμε Telegram μήνυμα σε κάθε προσπάθεια.
+const PUMPPORTAL_BALANCE_ALERT_INTERVAL_MS = 60 * 60_000;
+let lastPumpportalBalanceAlertAt = 0;
 realtimeConnection = pumpportalApiKey
   ? new PumpPortalConnection({
       apiKey: pumpportalApiKey,
@@ -176,6 +180,19 @@ realtimeConnection = pumpportalApiKey
           });
       },
       log: (message) => console.log(message),
+      onInsufficientBalance: () => {
+        const now = Date.now();
+        if (now - lastPumpportalBalanceAlertAt < PUMPPORTAL_BALANCE_ALERT_INTERVAL_MS) return;
+        lastPumpportalBalanceAlertAt = now;
+        notify(
+          `🚨 PumpPortal: οι συνδρομές απορρίφθηκαν — το wallet του PUMPPORTAL_API_KEY έχει κάτω από 0.02 SOL.\n` +
+            `Χωρίς αυτό ΔΕΝ γίνονται live entries ούτε γρήγορα exits (stop-loss/trailing).\n` +
+            `Το PumpPortal χρεώνει 0.01 SOL ανά 10.000 trades — φόρτωσε το wallet (π.χ. 0.1 SOL). ` +
+            `Νέα προσπάθεια αυτόματα κάθε 5 λεπτά, δεν χρειάζεται restart.`,
+        ).catch((error) => {
+          console.error(`[realtime] αποτυχία αποστολής PumpPortal balance alert: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      },
     })
   : undefined;
 
@@ -280,7 +297,7 @@ const loops: LoopDefinition[] = [
     initialDelayMs: GMGN_SMARTMONEY_INITIAL_DELAY_MS,
     retryBackoffMs: GMGN_SMARTMONEY_RETRY_BACKOFF_MS,
     run: async () => {
-      const result = await runGmgnSmartMoneyCycle({ realtimeConnection });
+      const result = await runGmgnSmartMoneyCycle();
       if (result.newTrades === 0 && result.signalsRecorded === 0 && result.skippedHighRisk === 0) return;
       console.log(
         `[gmgn-smartmoney] fetched=${result.tradesFetched} new=${result.newTrades} ` +

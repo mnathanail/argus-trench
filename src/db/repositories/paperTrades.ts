@@ -380,6 +380,22 @@ export async function countOpenTrades(conn?: Queryable): Promise<number> {
 }
 
 /**
+ * Ανοιχτά trades ΜΟΝΟ `live`/`paper` — για το open-trades cap των entry paths.
+ *
+ * 2026-09-27: τα `log_only` trades (GMGN smartmoney, ~30-60/ώρα, 24ωρο timeout) μετρούσαν
+ * στο ίδιο cap (WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE) με το realtime/live entry
+ * path — ένας όγκος log_only trades μπορούσε να κόψει ΠΡΑΓΜΑΤΙΚΑ live entries με
+ * `open_trades_cap`. Από την ίδια μέρα κανένα κανάλι δεν ανοίγει πια log_only, αλλά τα ήδη
+ * ανοιχτά κλείνουν σταδιακά (έως 24h) — δεν πρέπει να μπλοκάρουν το live στο μεταξύ.
+ */
+export async function countOpenLiveOrPaperTrades(conn?: Queryable): Promise<number> {
+  const { rows } = await db(conn).query<{ count: string }>(
+    `SELECT count(*) AS count FROM paper_trades WHERE status = 'open' AND mode IN ('live', 'paper')`,
+  );
+  return toNum(requireRow(rows, 'countOpenLiveOrPaperTrades').count);
+}
+
+/**
  * Πόσα ΑΛΛΑ ανοιχτά trades χρειάζονται ακόμα αυτό το token — για το realtime websocket
  * να ξέρει αν είναι ασφαλές να κάνει unsubscribe μετά το κλείσιμο ΕΝΟΣ trade (μπορεί να
  * υπάρχει κι άλλο, ξεχωριστό, ακόμα ανοιχτό στο ίδιο token).

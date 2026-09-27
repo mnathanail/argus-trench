@@ -88,6 +88,23 @@ export type CreateSocket = (url: string) => WebSocketLike;
  */
 const RECONNECT_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000] as const;
 
+/**
+ * 2026-09-27 — πραγματικό incident: το PumpPortal χρεώνει 0.01 SOL ανά 10.000 streamed
+ * trades στο wallet του API key (https://pumpportal.fun/fees/) και, όταν αυτό πέσει κάτω
+ * από 0.02 SOL, απορρίπτει ΚΑΘΕ subscribeAccountTrade/subscribeTokenTrade με ένα μήνυμα
+ * αυτού του τύπου. Το socket μένει ανοιχτό και κανένα trade event δεν έρχεται — ΚΑΙ το
+ * live entry path (μόνο από το websocket) ΚΑΙ τα γρήγορα realtime exits σταματούν
+ * σιωπηλά. Παρατηρήθηκε 2 μέρες στη σειρά πριν γίνει κατανοητό.
+ */
+export const INSUFFICIENT_BALANCE_PATTERN = /funded with at least/i;
+
+/**
+ * Πόσο περιμένουμε πριν ξαναδοκιμάσουμε (κλείσιμο socket → κανονικό reconnect →
+ * resubscribeAll). Χωρίς αυτό, ένα top-up του wallet δεν αρκούσε — οι συνδρομές
+ * ξαναστέλνονται ΜΟΝΟ σε 'open', άρα χρειαζόταν χειροκίνητο restart του service.
+ */
+export const INSUFFICIENT_BALANCE_RETRY_MS = 5 * 60_000;
+
 export interface PumpPortalConnectionOptions {
   apiKey: string;
   onTradeEvent: (event: PumpPortalTradeEvent) => void;
@@ -98,6 +115,10 @@ export interface PumpPortalConnectionOptions {
   scheduleReconnect?: (fn: () => void, delayMs: number) => void;
   /** Injectable για tests — default: Math.random. */
   random?: () => number;
+  /** Καλείται ΜΙΑ φορά ανά σύνδεση όταν το PumpPortal απορρίψει τις συνδρομές λόγω
+   * ανεπαρκούς υπολοίπου (βλ. INSUFFICIENT_BALANCE_PATTERN). Ο caller (main.ts) κάνει
+   * δικό του rate limiting για το Telegram alert. */
+  onInsufficientBalance?: (message: string) => void;
 }
 
 /**
@@ -113,6 +134,10 @@ export class PumpPortalConnection {
   private readonly subscribedTokens = new Set<string>();
   private reconnectAttempt = 0;
   private closedByUser = false;
+  /** Το PumpPortal στέλνει ΕΝΑ μήνυμα απόρριψης ανά subscribe (~150+ ανά σύνδεση) — αυτό
+   * κρατάει το log/alert/retry σε ένα ανά σύνδεση. Reset σε κάθε 'open'. */
+  private insufficientBalanceSeenThisConnection = false;
+  private balanceRetryScheduled = false;
 
   private readonly createSocket: CreateSocket;
   private readonly scheduleReconnectFn: (fn: () => void, delayMs: number) => void;
@@ -147,6 +172,7 @@ export class PumpPortalConnection {
 
     socket.on('open', () => {
       this.reconnectAttempt = 0;
+      this.insufficientBalanceSeenThisConnection = false;
       // 2026-09-26 — διαγνωστικό: δεύτερο, ξεχωριστό incident από αυτό στις 2026-09-24 —
       // η σύνδεση συνδέθηκε/επανασυνδέθηκε κανονικά (επιβεβαιωμένο 2 φορές στα logs),
       // αλλά ΚΑΝΕΝΑ 'message' event δεν έφτασε ποτέ για 7+ ώρες μετά. Μέχρι τώρα δεν
@@ -175,6 +201,10 @@ export class PumpPortalConnection {
         // Κόβουμε στους πρώτους 300 χαρακτήρες — αρκετό για να αναγνωριστεί το μήνυμα,
         // χωρίς να πλημμυρίσουμε τα logs αν το PumpPortal στείλει κάτι μεγάλο/απρόσμενο.
         const text = typeof raw === 'string' ? raw : String(raw);
+        if (INSUFFICIENT_BALANCE_PATTERN.test(text)) {
+          this.handleInsufficientBalance(socket, text);
+          return;
+        }
         this.log(`[pumpportal-unrecognized] ${text.slice(0, 300)}`);
       }
       if (event !== null) {
@@ -305,6 +335,32 @@ export class PumpPortalConnection {
       return null;
     }
     return parseTradeEvent(json);
+  }
+
+  /**
+   * Βλ. INSUFFICIENT_BALANCE_PATTERN. Ένα log + ένα callback ανά σύνδεση, και ΕΝΑ
+   * προγραμματισμένο retry: κλείνει το socket, το υπάρχον 'close' handler κάνει κανονικό
+   * reconnect, και το 'open' ξαναστέλνει όλες τις συνδρομές — αν στο μεταξύ το wallet
+   * φορτώθηκε, δουλεύουν χωρίς restart· αν όχι, ο κύκλος επαναλαμβάνεται.
+   */
+  private handleInsufficientBalance(socket: WebSocketLike, text: string): void {
+    if (this.insufficientBalanceSeenThisConnection) return;
+    this.insufficientBalanceSeenThisConnection = true;
+    this.log(
+      `[pumpportal] ⚠️ συνδρομές ΑΠΟΡΡΙΦΘΗΚΑΝ — ανεπαρκές υπόλοιπο στο wallet του PUMPPORTAL_API_KEY ` +
+        `(<0.02 SOL). Κανένα realtime event (live entries/γρήγορα exits) μέχρι top-up. ` +
+        `Νέα προσπάθεια σε ${INSUFFICIENT_BALANCE_RETRY_MS / 60_000} λεπτά. PumpPortal: ${text.slice(0, 200)}`,
+    );
+    this.options.onInsufficientBalance?.(text);
+
+    if (this.balanceRetryScheduled) return;
+    this.balanceRetryScheduled = true;
+    this.scheduleReconnectFn(() => {
+      this.balanceRetryScheduled = false;
+      // Αν στο μεταξύ έγινε ήδη reconnect (άλλο socket) ή οριστικό close(), μην αγγίξεις τίποτα.
+      if (this.closedByUser || this.socket !== socket) return;
+      socket.close(); // → 'close' handler → scheduleReconnectAttempt → connect → resubscribeAll
+    }, INSUFFICIENT_BALANCE_RETRY_MS);
   }
 
   private scheduleReconnectAttempt(): void {

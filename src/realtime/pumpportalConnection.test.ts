@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  INSUFFICIENT_BALANCE_RETRY_MS,
   PumpPortalConnection,
   type WebSocketLike,
   type NodeHttpIncomingMessageLike,
@@ -456,4 +457,103 @@ test('unexpected-response μετά από σκόπιμο close() δεν προγ
   (response as unknown as { emit(): void }).emit();
 
   assert.equal(reconnectCalls.length, 0, 'όχι reconnect μετά από σκόπιμο close()');
+});
+
+// --- 2026-09-27: PumpPortal low-balance rejection -------------------------------------
+// Πραγματικό μήνυμα από τα production logs, αυτούσιο.
+const INSUFFICIENT_BALANCE_MESSAGE = {
+  message:
+    "'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL.",
+};
+
+function setupWithBalanceAlert() {
+  const sockets: FakeSocket[] = [];
+  const timers: { fn: () => void; delayMs: number }[] = [];
+  const logs: string[] = [];
+  const alerts: string[] = [];
+  const conn = new PumpPortalConnection({
+    apiKey: 'test-key',
+    onTradeEvent: () => {},
+    log: (message) => logs.push(message),
+    createSocket: () => {
+      const s = new FakeSocket();
+      sockets.push(s);
+      return s;
+    },
+    scheduleReconnect: (fn, delayMs) => timers.push({ fn, delayMs }),
+    random: () => 0.5,
+    onInsufficientBalance: (message) => alerts.push(message),
+  });
+  return { conn, sockets, timers, logs, alerts };
+}
+
+test('low-balance rejection: one log + one alert per connection, even though PumpPortal sends one rejection PER subscribe', () => {
+  const { conn, sockets, logs, alerts } = setupWithBalanceAlert();
+  conn.subscribeWallet('WalletA');
+  conn.subscribeWallet('WalletB');
+  conn.subscribeToken('TokenA');
+  conn.connect();
+  at(sockets, 0).triggerOpen();
+  for (let i = 0; i < 3; i += 1) at(sockets, 0).triggerMessage(INSUFFICIENT_BALANCE_MESSAGE);
+
+  assert.equal(alerts.length, 1);
+  assert.match(at(alerts, 0), /funded with at least 0\.02 SOL/);
+  assert.equal(logs.filter((l) => l.includes('ανεπαρκές υπόλοιπο')).length, 1);
+  assert.equal(logs.filter((l) => l.includes('[pumpportal-unrecognized]')).length, 0, 'δεν πρέπει να πλημμυρίζει το log σαν unrecognized');
+});
+
+test('low-balance rejection: schedules ONE retry that closes the socket, and the normal reconnect then resubscribes everything — a top-up recovers without a restart', () => {
+  const { conn, sockets, timers, alerts } = setupWithBalanceAlert();
+  conn.subscribeWallet('WalletA');
+  conn.connect();
+  at(sockets, 0).triggerOpen();
+  at(sockets, 0).triggerMessage(INSUFFICIENT_BALANCE_MESSAGE);
+  at(sockets, 0).triggerMessage(INSUFFICIENT_BALANCE_MESSAGE);
+
+  assert.equal(timers.length, 1, 'ένα μόνο retry, όχι ένα ανά μήνυμα');
+  assert.equal(at(timers, 0).delayMs, INSUFFICIENT_BALANCE_RETRY_MS);
+
+  at(timers, 0).fn();
+  assert.equal(at(sockets, 0).closed, true, 'το retry κλείνει το socket');
+
+  // Το πραγματικό ws εκπέμπει 'close' μετά το close() — το fake το χρειάζεται χειροκίνητα.
+  at(sockets, 0).triggerClose();
+  assert.equal(timers.length, 2, 'το κανονικό close handler προγραμμάτισε reconnect');
+  at(timers, 1).fn();
+  at(sockets, 1).triggerOpen();
+  assert.deepEqual(at(sockets, 1).sent.map((m) => JSON.parse(m)), [{ method: 'subscribeAccountTrade', keys: ['WalletA'] }]);
+
+  // Ακόμα χωρίς top-up: νέα σύνδεση → νέο alert (ο caller κάνει rate limit) + νέο retry.
+  at(sockets, 1).triggerMessage(INSUFFICIENT_BALANCE_MESSAGE);
+  assert.equal(alerts.length, 2);
+  assert.equal(timers.length, 3);
+  assert.equal(at(timers, 2).delayMs, INSUFFICIENT_BALANCE_RETRY_MS);
+});
+
+test('low-balance retry is a no-op if the socket was already replaced (network reconnect happened in the meantime)', () => {
+  const { conn, sockets, timers } = setupWithBalanceAlert();
+  conn.subscribeWallet('WalletA');
+  conn.connect();
+  at(sockets, 0).triggerOpen();
+  at(sockets, 0).triggerMessage(INSUFFICIENT_BALANCE_MESSAGE);
+  const balanceRetry = at(timers, 0);
+
+  at(sockets, 0).triggerClose(); // άσχετη αποσύνδεση
+  at(timers, 1).fn(); // κανονικό reconnect
+  at(sockets, 1).triggerOpen();
+
+  balanceRetry.fn();
+  assert.equal(at(sockets, 1).closed, false, 'δεν πρέπει να κλείσει το ΝΕΟ, υγιές socket');
+});
+
+test('low-balance retry is a no-op after an explicit close()', () => {
+  const { conn, sockets, timers } = setupWithBalanceAlert();
+  conn.connect();
+  at(sockets, 0).triggerOpen();
+  at(sockets, 0).triggerMessage(INSUFFICIENT_BALANCE_MESSAGE);
+  conn.close();
+  const closedBefore = at(sockets, 0).closed;
+  at(timers, 0).fn();
+  assert.equal(closedBefore, true);
+  assert.equal(sockets.length, 1, 'καμία νέα σύνδεση μετά από οριστικό close()');
 });

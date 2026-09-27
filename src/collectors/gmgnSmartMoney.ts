@@ -1,25 +1,11 @@
-import { findPassedTokens } from '../db/repositories/decisionLog.js';
-import { recordSignal } from '../db/repositories/entries.js';
-import { countOpenTrades } from '../db/repositories/paperTrades.js';
+import { findPassedTokens, recordTrigger } from '../db/repositories/decisionLog.js';
 import {
   GMGN_SMARTMONEY_HOLDER_RISK_CHECKS_PER_CYCLE,
   GMGN_SMARTMONEY_HOLDER_RISK_PACING_MS,
-  WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE,
 } from './intervals.js';
 import { delay } from '../util/delay.js';
 import { PHASE1_THRESHOLDS, logicVersion } from '../decision/gateConfig.js';
-import { subscribeForNewTrade } from '../realtime/subscriptionManager.js';
-import type { PumpPortalConnection } from '../realtime/pumpportalConnection.js';
-import { applyEntrySlippage } from '../decision/pnl.js';
-import {
-  PAPER_ASSUMED_LATENCY_MS,
-  PAPER_ASSUMED_SLIPPAGE_PCT,
-  PAPER_BANKROLL_SOL,
-  PAPER_POSITION_SIZE_PCT,
-  conditionOrdersJson,
-} from '../decision/paperTradingConfig.js';
 import { fetchSmartMoneyTrades, type SmartMoneyTrade } from '../gmgn/trackSmartmoney.js';
-import { toNumberOrNull } from '../gmgn/validate.js';
 import {
   computeFloatShare,
   computeRiskWalletPct,
@@ -39,17 +25,11 @@ import { rethrowIfRateLimited } from '../gmgn/errors.js';
  * shared 20/s bucket. (Αυτό ίσχυε για το ΒΑΣΙΚΟ `track smartmoney` call — βλ. ΚΑΙ το
  * holder-risk enrichment πιο κάτω, που έχει ΔΙΚΟ ΤΟΥ, πολύ μεγαλύτερο weight budget.)
  *
- * ΣΚΟΠΙΜΑ mode='log_only' ΠΑΝΤΑ σε αυτό το πρώτο πέρασμα, ΠΟΤΕ live — ίδια φιλοσοφία με
- * το "Phased rollout" του CLAUDE.md: μια ολοκαίνουρια, ανεπικύρωτη πηγή σήματος
- * καταγράφεται πρώτα (δικό της trigger_type: 'gmgn_smartmoney', διαφορετικό από το δικό
- * μας 'smart_money_buy') ώστε να μετρηθεί ξεχωριστά το hit-rate της πριν εμπιστευτεί
- * πραγματικό κεφάλαιο ή ακόμα και paper trading. Καμία αλλαγή στο recordSignal/entries.ts
- * χρειάστηκε — το mode ήταν ήδη ρητή παράμετρος του caller, όχι κλειδωμένο.
- *
- * ΔΕΝ κάνει δικό του GMGN call για την τιμή εισόδου — χρησιμοποιεί το ήδη υπάρχον
- * `gate_snapshot_json.price` από το πέρασμα του gate (discovery.ts), ΑΚΡΙΒΩΣ το ίδιο
- * μοτίβο με το walletActivity.ts — καμία επιπλέον GMGN weight μόνο για ένα simulated
- * entry.
+ * ΜΟΝΟ decision_log, ΚΑΝΕΝΑ trade (αλλαγή 2026-09-27, ρητή απόφαση χρήστη — πριν άνοιγε
+ * mode='log_only' paper trade ανά σήμα). Δικό του trigger_type: 'gmgn_smartmoney',
+ * διαφορετικό από το δικό μας 'smart_money_buy', ώστε τα σήματα να μετριούνται ξεχωριστά.
+ * Trades ανοίγει πλέον ΜΟΝΟ το realtime/live path (handleRealtimeEntryEvent), με paper
+ * fallback όταν δεν γίνεται live.
  *
  * ΠΡΩΤΟ ΠΡΑΓΜΑΤΙΚΟ ΔΕΙΓΜΑ (2026-09-20, 44 σήματα, ~36 κλειστά): 81% (29/36) έκλεισαν με
  * stop_loss, σχεδόν πάντα στο -99% — το gate μας ΔΕΝ φιλτράρει το βασικό ~98.6%
@@ -70,15 +50,15 @@ import { rethrowIfRateLimited } from '../gmgn/errors.js';
  * χρήστη: καταγραφή πρώτα, ΟΧΙ φίλτρο ακόμα — ίδια φιλοσοφία με το `is_open_or_close`
  * πιο πάνω, ώστε να ελεγχθεί ποιο threshold (αν κάποιο) πράγματι διαχωρίζει winners/losers
  * πριν μπλοκάρουμε σήματα με βάση αυτό. Weight 5 ΑΝΑ σήμα — πολύ πιο ακριβό από το weight-1
- * -ανά-κύκλο του ίδιου του καναλιού, γι' αυτό ΔΕΝ μπλοκάρει ποτέ το `recordSignal`: μια
+ * -ανά-κύκλο του ίδιου του καναλιού, γι' αυτό ΔΕΝ μπλοκάρει ποτέ το `recordTrigger`: μια
  * αποτυχία εδώ (rate limit, ή οποιοδήποτε άλλο σφάλμα) καταγράφεται ως `null` στο snapshot
  * και το σήμα προχωράει κανονικά — το holders-check είναι καθαρά προαιρετική εμπλουτισμένη
- * καταγραφή, όχι κρίσιμο μονοπάτι για το `recordSignal`. ΠΑΡΟΛΑ ΑΥΤΑ αυτό ΕΙΝΑΙ loop πάνω σε
+ * καταγραφή, όχι κρίσιμο μονοπάτι για το `recordTrigger`. ΠΑΡΟΛΑ ΑΥΤΑ αυτό ΕΙΝΑΙ loop πάνω σε
  * πολλά (fresh) trades στον ίδιο κύκλο — αν το πρώτο holders call πάρει 429, το ίδιο
  * `SharedCooldown`/ban ισχύει και για τα επόμενα, οπότε ΔΕΝ ξαναδοκιμάζουμε holders calls
  * μέσα στον ίδιο κύκλο μετά το πρώτο rate-limit hit (`rateLimitedThisCycle` flag πιο κάτω)
  * — ίδιο πνεύμα με το `rethrowIfRateLimited` guard, προσαρμοσμένο ώστε να μη σταματάει
- * ολόκληρο τον κύκλο (το `recordSignal` για τα υπόλοιπα trades πρέπει να συνεχίσει).
+ * ολόκληρο τον κύκλο (το `recordTrigger` για τα υπόλοιπα trades πρέπει να συνεχίσει).
  *
  * **Cap ανά κύκλο (2026-09-23)** — βλ. `GMGN_SMARTMONEY_HOLDER_RISK_CHECKS_PER_CYCLE` στο
  * intervals.ts για το πλήρες incident: pacing από μόνο του ΔΕΝ αρκούσε, γιατί δε μειώνει
@@ -93,7 +73,7 @@ import { rethrowIfRateLimited } from '../gmgn/errors.js';
  * έδειξε καθαρή, μονότονη σχέση με το αποτέλεσμα: <10% risk → avg pnl +10.5% (35
  * δείγματα), 10-30% → -53.4% (110), 30-50% → -86.2% (272), **≥50% → -92.9% με μόλις
  * 1.7% win rate (460 δείγματα, το πιο συχνό bucket)**. Ρητή απόφαση χρήστη: αποκλεισμός
- * σημάτων με `riskPct >= 0.50`, ΠΡΙΝ το `recordSignal` — δεν καταγράφονται καν στη βάση
+ * σημάτων με `riskPct >= 0.50`, ΠΡΙΝ το `recordTrigger` — δεν καταγράφονται καν στη βάση
  * (differs από το `is_open_or_close`, που παραμένει ΜΟΝΟ καταγραφή, καμία αλλαγή εκεί).
  * `null`/`not checked` (rate limit, σφάλμα, degenerate float, ~256/1136 = 23% του
  * δείγματος) ΔΕΝ αποκλείεται — απουσία στοιχείων δεν είναι απόδειξη κινδύνου, και το
@@ -111,7 +91,7 @@ import { rethrowIfRateLimited } from '../gmgn/errors.js';
  * κανάλι προαχθεί πέρα από πείραμα, ένα persisted cursor (migration) θα άξιζε τον κόπο.
  */
 /** Βλ. σχόλιο "Holder-risk ΦΙΛΤΡΟ εισόδου" πιο πάνω. Σήματα με γνωστό (όχι null)
- * `holder_risk_pct >= HOLDER_RISK_MAX_PCT` αποκλείονται πριν το `recordSignal`. */
+ * `holder_risk_pct >= HOLDER_RISK_MAX_PCT` αποκλείονται πριν το `recordTrigger`. */
 export const HOLDER_RISK_MAX_PCT = 0.5;
 
 /** Καθαρή απόφαση φιλτραρίσματος, χωριστά testable: `null` (δεν ελέγχθηκε ή
@@ -124,7 +104,6 @@ export function isHighHolderRisk(riskPct: number | null): boolean {
 
 export interface GmgnSmartMoneyOptions {
   limit?: number;
-  realtimeConnection?: PumpPortalConnection;
   /** Test-only override· production παίρνει πάντα φρέσκο module-level Set. */
   seenTxHashes?: Set<string>;
 }
@@ -156,18 +135,6 @@ export async function runGmgnSmartMoneyCycle(
   const version = logicVersion(PHASE1_THRESHOLDS);
   const seen = options.seenTxHashes ?? defaultSeenTxHashes;
 
-  const openTrades = await countOpenTrades();
-  if (openTrades >= WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE) {
-    return {
-      version,
-      tradesFetched: 0,
-      newTrades: 0,
-      signalsRecorded: 0,
-      skippedHighRisk: 0,
-      holderRiskChecksUsed: 0,
-    };
-  }
-
   const trades = await fetchSmartMoneyTrades({ side: 'buy' });
   const fresh = filterNewSmartMoneyTrades(trades, seen);
   rememberSeen(seen, trades);
@@ -193,7 +160,7 @@ export async function runGmgnSmartMoneyCycle(
   // Βλ. σχόλιο πάνω από τη function: μόλις ΕΝΑ holders call πάρει 429 μέσα σε αυτόν τον
   // κύκλο, σταματάμε τελείως να δοκιμάζουμε άλλα — το ίδιο shared cooldown/ban ισχύει για
   // όλα, οπότε ξαναδοκιμή σε trade #2, #3... θα το επέκτεινε κατά 5s το καθένα χωρίς λόγο.
-  // Το `recordSignal` ΔΕΝ σταματάει γι' αυτό — μόνο το προαιρετικό holders-enrichment.
+  // Το `recordTrigger` ΔΕΝ σταματάει γι' αυτό — μόνο το προαιρετικό holders-enrichment.
   let rateLimitedThisCycle = false;
   // ΝΕΟ 2026-09-23 — βλ. σχόλιο "Cap ανά κύκλο" πάνω από τη function. Bound στο ΣΥΝΟΛΙΚΟ
   // αριθμό πραγματικών holders calls, όχι μόνο στην παύση ανάμεσά τους.
@@ -202,10 +169,6 @@ export async function runGmgnSmartMoneyCycle(
   for (const trade of fresh) {
     const gateSnapshot = gated.get(trade.tokenAddress);
     if (gateSnapshot === undefined) continue; // δεν έχει (ακόμα) περάσει το gate
-
-    const rawEntryPrice = toNumberOrNull(gateSnapshot['price'], 'gate_snapshot.price');
-    const entryPrice = rawEntryPrice === null ? null : applyEntrySlippage(rawEntryPrice, PAPER_ASSUMED_SLIPPAGE_PCT);
-    const simulatedEntryAmountSol = PAPER_BANKROLL_SOL * PAPER_POSITION_SIZE_PCT;
 
     let holderRisk: HolderRiskSnapshot = HOLDER_RISK_NOT_CHECKED;
     if (!rateLimitedThisCycle && holderRiskChecksUsed < GMGN_SMARTMONEY_HOLDER_RISK_CHECKS_PER_CYCLE) {
@@ -228,8 +191,7 @@ export async function runGmgnSmartMoneyCycle(
       continue;
     }
 
-    const recorded = await recordSignal(
-      {
+    const recorded = await recordTrigger({
         tokenAddress: trade.tokenAddress,
         logicVersion: version,
         // Ξεχωριστό trigger_type από το δικό μας 'smart_money_buy' — επίτηδες, ώστε το
@@ -265,29 +227,13 @@ export async function runGmgnSmartMoneyCycle(
         },
         decision: 'signal_logged',
         decisionReasonText: `GMGN smartmoney wallet ${short(trade.makerAddress)} αγόρασε ${trade.tokenSymbol ?? short(trade.tokenAddress)} — gate είχε περάσει`,
-      },
-      {
-        tokenAddress: trade.tokenAddress,
-        // ΠΑΝΤΑ log_only σε αυτό το πρώτο πέρασμα — βλ. σχόλιο πάνω από τη function.
-        mode: 'log_only',
-        intendedSizePct: PAPER_POSITION_SIZE_PCT,
-        bankrollAtEntry: PAPER_BANKROLL_SOL,
-        simulatedEntryPrice: entryPrice ?? 0,
-        simulatedEntryAmountSol,
-        assumedSlippagePct: PAPER_ASSUMED_SLIPPAGE_PCT,
-        assumedLatencyMs: PAPER_ASSUMED_LATENCY_MS,
-        conditionOrders: conditionOrdersJson(),
-        // Η πραγματική on-chain στιγμή του smartmoney trade, ΟΧΙ now() — ίδιο σκεπτικό
-        // με walletActivity.ts (σωστό 24ωρο timeout ακόμα και σε catch-up batches).
-        entryAt: new Date(trade.timestamp * 1000),
-      },
-    );
-    if (recorded !== null) {
-      signalsRecorded += 1;
-      if (options.realtimeConnection) {
-        subscribeForNewTrade(options.realtimeConnection, trade.tokenAddress, trade.makerAddress);
-      }
-    }
+      });
+    // ΑΛΛΑΓΗ 2026-09-27 (ρητή απόφαση χρήστη): ΜΟΝΟ decision_log, ΚΑΝΕΝΑ paper_trades row
+    // (πριν: log_only trade + websocket subscribe ανά σήμα). Το row μένει με
+    // linked_trade_id NULL, άρα αν το ίδιο token το αγοράσει wallet της δικής μας
+    // watchlist, το realtime/live path (recordTrigger στο handleRealtimeEntryEvent) μπορεί
+    // ακόμα να το κάνει claim — πριν, ένα log_only trade εδώ "έκλεβε" το token από το live.
+    if (recorded !== null) signalsRecorded += 1;
   }
 
   return {
@@ -320,7 +266,7 @@ const HOLDER_RISK_NOT_CHECKED: HolderRiskSnapshot = {
  * Best-effort holders-risk enrichment για proposal #5 — βλ. το μεγάλο σχόλιο πάνω από
  * `runGmgnSmartMoneyCycle`. ΠΟΤΕ δεν κάνει throw: κάθε σφάλμα (rate limit, malformed
  * response, οτιδήποτε) καταλήγει σε `HOLDER_RISK_NOT_CHECKED`, ώστε το καλούν `for` loop
- * να συνεχίσει κανονικά στο `recordSignal`. Το `rateLimited: true` λέει στο caller να μη
+ * να συνεχίσει κανονικά στο `recordTrigger`. Το `rateLimited: true` λέει στο caller να μη
  * ξαναδοκιμάσει holders calls για το υπόλοιπο του κύκλου.
  */
 async function tryComputeHolderRisk(
