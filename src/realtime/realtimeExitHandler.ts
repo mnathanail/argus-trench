@@ -291,7 +291,7 @@ async function handleOneTrade(
         tokenAddress: event.mint,
         action: 'sell',
         amountSol: trade.actualEntryAmountSol,
-        errorMessage: `Το token φαίνεται να «αποφοίτησε» από το pump.fun bonding curve (pool=${event.pool}) — το realtime σύστημα δεν μπορεί πλέον να υπολογίσει τιμή αυτόματα, καμία αυτόματη προστασία (stop-loss/trailing) δεν ισχύει πλέον.`,
+        errorMessage: `Το token φαίνεται να «αποφοίτησε» από το pump.fun bonding curve (pool=${event.pool ?? 'άγνωστο, πεδία bonding-curve απόντα'}) — το realtime σύστημα δεν μπορεί πλέον να υπολογίσει τιμή αυτόματα, καμία αυτόματη προστασία (stop-loss/trailing) δεν ισχύει πλέον.`,
       });
       return {
         kind: 'closed',
@@ -299,7 +299,7 @@ async function handleOneTrade(
           type: 'manual_exit_needed',
           tokenAddress: event.mint,
           tradeId: trade.id,
-          errorMessage: `Το token «αποφοίτησε» (pool=${event.pool}) — χρειάζεται χειροκίνητος έλεγχος, καμία αυτόματη προστασία δεν ισχύει πλέον.`,
+          errorMessage: `Το token «αποφοίτησε» (pool=${event.pool ?? 'άγνωστο, πεδία bonding-curve απόντα'}) — χρειάζεται χειροκίνητος έλεγχος, καμία αυτόματη προστασία δεν ισχύει πλέον.`,
         },
       };
     }

@@ -251,3 +251,13 @@ test('isUnpriceableNonSellEvent: false για exit_signal (wallet sell) ΑΚΟΜ
   const migratedSell = eventAtPrice(1.5, { pool: 'pump-amm', txType: 'sell', traderPublicKey: WALLET });
   assert.equal(isUnpriceableNonSellEvent(migratedSell), false);
 });
+
+test('ΔΙΟΡΘΩΣΗ 2026-09-27: isUnpriceableNonSellEvent: true όταν τα bonding-curve πεδία λείπουν ΕΝΤΕΛΩΣ (πραγματικό post-graduation σχήμα), όχι μόνο όταν pool άλλαξε τιμή', () => {
+  const graduated = buyEvent({
+    vTokensInBondingCurve: undefined,
+    vSolInBondingCurve: undefined,
+    marketCapSol: undefined,
+    pool: undefined,
+  });
+  assert.equal(isUnpriceableNonSellEvent(graduated), true);
+});

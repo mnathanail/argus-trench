@@ -52,6 +52,7 @@ test('priceFromTradeEvent: matches the independently-derived marketCapSol (real 
   assert.ok(parsed !== null);
   const price = priceFromTradeEvent(parsed);
   assert.ok(price !== null);
+  assert.ok(parsed.marketCapSol !== undefined);
   const impliedByMarketCap = parsed.marketCapSol / 1_000_000_000;
   assert.ok(
     Math.abs(price - impliedByMarketCap) / impliedByMarketCap < 0.01,
@@ -71,4 +72,45 @@ test('priceFromTradeEvent: returns null instead of dividing by zero on a degener
   const parsed = parseTradeEvent(degenerate);
   assert.ok(parsed !== null);
   assert.equal(priceFromTradeEvent(parsed), null);
+});
+
+// ΔΙΟΡΘΩΣΗ 2026-09-27 — πραγματικό σχήμα event για ήδη-αποφοιτημένο token (Railway log,
+// token BPHarSVwpav5SpxMoqb9cePBnCM1PAznBS1Srqohpump, 2026-09-27T07:34:21Z): το PumpPortal
+// παραλείπει ΕΝΤΕΛΩΣ vTokensInBondingCurve/vSolInBondingCurve/marketCapSol/pool αντί να
+// στέλνει άλλες/null τιμές — πριν τη διόρθωση, parseTradeEvent το απέρριπτε σιωπηλά (null).
+const GRADUATED_TOKEN_EVENT = {
+  signature:
+    '3vN1nUYnfXbxWvz9BEXQeqpvGSHU9wUiC2E1oPCBRShnv6bp8eXAJyi3fFV3q88NBnvhwEojkC1KqfN46xLNTBmM',
+  mint: 'BPHarSVwpav5SpxMoqb9cePBnCM1PAznBS1Srqohpump',
+  traderPublicKey: '9pQVwXk2G6y4B5Wn7hM1XyzRJ4Dq3rF8LmN0oT6sVbUe',
+  txType: 'buy',
+  tokenAmount: 12345.6789,
+  solAmount: 0.05,
+};
+
+test('parseTradeEvent: no longer discards a real post-graduation event missing all 4 bonding-curve fields', () => {
+  const parsed = parseTradeEvent(GRADUATED_TOKEN_EVENT);
+  assert.ok(parsed !== null, 'ένα πραγματικό, καλοσχηματισμένο event δεν πρέπει να απορρίπτεται');
+  assert.equal(parsed.mint, 'BPHarSVwpav5SpxMoqb9cePBnCM1PAznBS1Srqohpump');
+  assert.equal(parsed.txType, 'buy');
+  assert.equal(parsed.vTokensInBondingCurve, undefined);
+  assert.equal(parsed.vSolInBondingCurve, undefined);
+  assert.equal(parsed.marketCapSol, undefined);
+  assert.equal(parsed.pool, undefined);
+});
+
+test('priceFromTradeEvent: returns null (not a throw) when the bonding-curve fields are entirely absent', () => {
+  const parsed = parseTradeEvent(GRADUATED_TOKEN_EVENT);
+  assert.ok(parsed !== null);
+  assert.equal(priceFromTradeEvent(parsed), null);
+});
+
+test('parseTradeEvent: still rejects an event missing a REQUIRED core field, even without the bonding-curve fields', () => {
+  const { mint: _mint, ...missingMint } = GRADUATED_TOKEN_EVENT;
+  assert.equal(parseTradeEvent(missingMint), null);
+});
+
+test('parseTradeEvent: rejects a present-but-wrong-typed optional bonding-curve field (defensive, not just absence)', () => {
+  const wrongType = { ...GRADUATED_TOKEN_EVENT, pool: 12345 };
+  assert.equal(parseTradeEvent(wrongType), null);
 });

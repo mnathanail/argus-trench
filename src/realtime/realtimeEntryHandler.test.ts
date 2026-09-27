@@ -72,6 +72,21 @@ test('skips when no real-time price is available (e.g. already migrated off the 
   assert.deepEqual(decision, { type: 'skip' });
 });
 
+test('ΔΙΟΡΘΩΣΗ 2026-09-27: skips (not silently dropped earlier at parsing) when the bonding-curve fields are entirely absent — the real post-graduation PumpPortal shape', () => {
+  const decision = decideEntry(
+    buyEvent({
+      vTokensInBondingCurve: undefined,
+      vSolInBondingCurve: undefined,
+      marketCapSol: undefined,
+      pool: undefined,
+    }),
+    activeWallet(),
+    true,
+    5,
+  );
+  assert.deepEqual(decision, { type: 'skip' });
+});
+
 test('uses the real event price (vSol/vTokens), not any placeholder', () => {
   const decision = decideEntry(
     buyEvent({ vSolInBondingCurve: 53.93797509913754, vTokensInBondingCurve: 596796597.218102 }),
