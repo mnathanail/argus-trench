@@ -17,7 +17,7 @@ import { fetchLiveSolWallet, getLiveSolBalance } from '../gmgn/portfolio.js';
 import { executeLiveSell, INSUFFICIENT_TOKEN_BALANCE_ERROR_CODE, SwapFailedError } from '../gmgn/swap.js';
 import { cancelStrategyOrderBestEffort, estimateExitAmountSol, getStrategyOrder, inferExitReason } from '../gmgn/strategyOrders.js';
 import { checkTick } from './tickExit.js';
-import { priceFromTradeEvent, type PumpPortalTradeEvent } from './pumpportalEvents.js';
+import { isDustGraduatedTrade, priceFromTradeEvent, type PumpPortalTradeEvent } from './pumpportalEvents.js';
 import { unsubscribeIfNoLongerNeeded } from './subscriptionManager.js';
 import type { PumpPortalConnection } from './pumpportalConnection.js';
 
@@ -124,7 +124,9 @@ export function decideForTick(trade: TickDecisionInput, event: PumpPortalTradeEv
   }
 
   const price = priceFromTradeEvent(event);
-  if (price === null) return { type: 'ignore' }; // π.χ. το token μετακόμισε εκτός bonding curve
+  // null: dust trade σε graduated token, ή degenerate/malformed event — από 2026-09-27 τα
+  // graduated tokens έχουν κανονικά τιμή (solAmount/tokenAmount), βλ. priceFromTradeEvent.
+  if (price === null) return { type: 'ignore' };
 
   const result = checkTick({
     entryPrice: trade.simulatedEntryPrice,
@@ -227,12 +229,17 @@ export function isPastLiveTimeout(entryAt: Date, now: Date): boolean {
   return now.getTime() - entryAt.getTime() >= EXIT_TIMEOUT_MS;
 }
 
-/** Το token «αποφοίτησε» από το pump.fun bonding curve (priceFromTradeEvent()===null,
- * βλ. εκεί) — δεν έχουμε πια φόρμουλα να υπολογίσουμε τιμή από αυτό το feed. Ένα
- * exit_signal (wallet sell) δεν χρειάζεται τιμή για να αναγνωριστεί — ελέγχεται ΗΔΗ
- * πρώτο μέσα στο decideForTick, άρα ΔΕΝ το θεωρούμε «migration» εδώ. */
+/** Δεν μπορούμε να βγάλουμε τιμή από αυτό το event ΚΑΙ δεν είναι απλό dust trade.
+ *
+ * ΑΛΛΑΓΗ 2026-09-27: πριν, ΚΑΘΕ event σε graduated token ήταν «μη τιμολογήσιμο» και
+ * πάγωνε live trades σε needs_manual_exit χωρίς αυτόματη προστασία. Τώρα τα graduated
+ * tokens έχουν τιμή από το ίδιο το trade (βλ. priceFromTradeEvent), οπότε το stop-loss/
+ * trailing συνεχίζει κανονικά. Εδώ μένουν μόνο τα πραγματικά μη τιμολογήσιμα (degenerate
+ * reserves, tokenAmount<=0). Ένα dust graduated trade ΔΕΝ παγώνει τίποτα — απλά
+ * αγνοείται (decideForTick → ignore). Ένα exit_signal (wallet sell) δεν χρειάζεται τιμή,
+ * ελέγχεται ΗΔΗ πρώτο μέσα στο decideForTick. */
 export function isUnpriceableNonSellEvent(event: PumpPortalTradeEvent): boolean {
-  return event.txType !== 'sell' && priceFromTradeEvent(event) === null;
+  return event.txType !== 'sell' && priceFromTradeEvent(event) === null && !isDustGraduatedTrade(event);
 }
 
 async function handleOneTrade(
@@ -278,6 +285,11 @@ async function handleOneTrade(
     // δεν χρειάζεται τιμή για να αναγνωριστεί — ελέγχεται ήδη ΠΡΩΤΟ μέσα στο
     // decideForTick, άρα δεν το αγγίζουμε εδώ.
     //
+    // ΑΛΛΑΓΗ 2026-09-27: τα graduated tokens έχουν πλέον τιμή από το ίδιο το trade
+    // (solAmount/tokenAmount, βλ. priceFromTradeEvent), οπότε ΔΕΝ φτάνουν πια εδώ — το
+    // stop-loss/trailing συνεχίζει κανονικά. Αυτό το μονοπάτι μένει μόνο για πραγματικά
+    // μη τιμολογήσιμα events (βλ. isUnpriceableNonSellEvent).
+    //
     // ΕΞΑΙΡΕΣΗ 2026-09-17 (native order): αν trade.nativeOrderActive===true, ΔΕΝ
     // παγώνουμε σε needs_manual_exit — το native GMGN strategy order δεν εξαρτάται από
     // το δικό μας PumpPortal feed, πολύ πιθανό να συνεχίζει κανονικά πάνω στο
@@ -291,7 +303,7 @@ async function handleOneTrade(
         tokenAddress: event.mint,
         action: 'sell',
         amountSol: trade.actualEntryAmountSol,
-        errorMessage: `Το token φαίνεται να «αποφοίτησε» από το pump.fun bonding curve (pool=${event.pool ?? 'άγνωστο, πεδία bonding-curve απόντα'}) — το realtime σύστημα δεν μπορεί πλέον να υπολογίσει τιμή αυτόματα, καμία αυτόματη προστασία (stop-loss/trailing) δεν ισχύει πλέον.`,
+        errorMessage: `Δεν υπολογίζεται τιμή από το PumpPortal event (pool=${event.pool ?? 'άγνωστο'}, solAmount=${event.solAmount}, tokenAmount=${event.tokenAmount}) — καμία αυτόματη προστασία (stop-loss/trailing) δεν ισχύει πλέον για αυτό το trade.`,
       });
       return {
         kind: 'closed',

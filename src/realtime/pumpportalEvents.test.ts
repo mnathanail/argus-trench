@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { parseTradeEvent, priceFromTradeEvent } from './pumpportalEvents.js';
+import {
+  MIN_SOL_FOR_TRADE_PRICE,
+  isDustGraduatedTrade,
+  isGraduatedEvent,
+  parseTradeEvent,
+  priceFromTradeEvent,
+} from './pumpportalEvents.js';
 
 const REAL_BUY_EVENT = {
   signature:
@@ -60,11 +66,24 @@ test('priceFromTradeEvent: matches the independently-derived marketCapSol (real 
   );
 });
 
-test('priceFromTradeEvent: returns null once a token has migrated off the bonding curve (pool !== "pump")', () => {
+test('ΑΛΛΑΓΗ 2026-09-27: once a token migrated off the bonding curve (pool !== "pump"), price comes from the trade itself (solAmount/tokenAmount), not the stale reserves', () => {
   const migrated = { ...REAL_BUY_EVENT, pool: 'raydium' };
   const parsed = parseTradeEvent(migrated);
   assert.ok(parsed !== null);
-  assert.equal(priceFromTradeEvent(parsed), null);
+  assert.equal(isGraduatedEvent(parsed), true);
+  assert.equal(priceFromTradeEvent(parsed), REAL_BUY_EVENT.solAmount / REAL_BUY_EVENT.tokenAmount);
+});
+
+test('trade-derived price is in the SAME units as the bonding-curve price (SOL per token) — same real event, both formulas within a few %', () => {
+  // Ίδιο πραγματικό event: η μέση τιμή εκτέλεσης (solAmount/tokenAmount) και η spot τιμή
+  // μετά το trade (vSol/vTokens) πρέπει να είναι της ίδιας τάξης — αλλιώς οι μονάδες
+  // διαφέρουν και stop-loss/trailing θα έβγαιναν τελείως λάθος σε graduated tokens.
+  const parsed = parseTradeEvent(REAL_BUY_EVENT);
+  assert.ok(parsed !== null);
+  const spot = priceFromTradeEvent(parsed);
+  assert.ok(spot !== null);
+  const tradePrice = REAL_BUY_EVENT.solAmount / REAL_BUY_EVENT.tokenAmount;
+  assert.ok(Math.abs(tradePrice - spot) / spot < 0.05, `trade=${tradePrice} spot=${spot}`);
 });
 
 test('priceFromTradeEvent: returns null instead of dividing by zero on a degenerate vTokensInBondingCurve', () => {
@@ -99,10 +118,34 @@ test('parseTradeEvent: no longer discards a real post-graduation event missing a
   assert.equal(parsed.pool, undefined);
 });
 
-test('priceFromTradeEvent: returns null (not a throw) when the bonding-curve fields are entirely absent', () => {
+test('ΑΛΛΑΓΗ 2026-09-27: real post-graduation shape (bonding-curve fields absent) gets a trade-derived price', () => {
   const parsed = parseTradeEvent(GRADUATED_TOKEN_EVENT);
   assert.ok(parsed !== null);
+  assert.equal(isGraduatedEvent(parsed), true);
+  assert.equal(priceFromTradeEvent(parsed), GRADUATED_TOKEN_EVENT.solAmount / GRADUATED_TOKEN_EVENT.tokenAmount);
+});
+
+test('graduated dust trade (below MIN_SOL_FOR_TRADE_PRICE, e.g. the real 0.000987 SOL one) gives NO price — never a garbage stop-loss trigger', () => {
+  const parsed = parseTradeEvent({ ...GRADUATED_TOKEN_EVENT, solAmount: 0.000987653 });
+  assert.ok(parsed !== null);
+  assert.ok(0.000987653 < MIN_SOL_FOR_TRADE_PRICE);
   assert.equal(priceFromTradeEvent(parsed), null);
+  assert.equal(isDustGraduatedTrade(parsed), true);
+});
+
+test('graduated trade with non-positive tokenAmount gives no price (no divide-by-zero), and is NOT dust', () => {
+  const parsed = parseTradeEvent({ ...GRADUATED_TOKEN_EVENT, tokenAmount: 0 });
+  assert.ok(parsed !== null);
+  assert.equal(priceFromTradeEvent(parsed), null);
+  assert.equal(isDustGraduatedTrade(parsed), false);
+});
+
+test('bonding-curve events are never "graduated" and a tiny bonding-curve trade still gets its reserve price', () => {
+  const parsed = parseTradeEvent({ ...REAL_BUY_EVENT, solAmount: 0.0001 });
+  assert.ok(parsed !== null);
+  assert.equal(isGraduatedEvent(parsed), false);
+  assert.equal(isDustGraduatedTrade(parsed), false);
+  assert.notEqual(priceFromTradeEvent(parsed), null);
 });
 
 test('parseTradeEvent: still rejects an event missing a REQUIRED core field, even without the bonding-curve fields', () => {

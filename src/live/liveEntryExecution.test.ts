@@ -11,6 +11,7 @@ import { fallbackOutcomeFor, type LiveFallbackReason } from './liveEntryExecutio
  */
 
 const ALL_REASONS: readonly LiveFallbackReason[] = [
+  'graduated_paper_only',
   'wallet_unavailable',
   'insufficient_capital',
   'risk_gate_blocked',
@@ -62,4 +63,10 @@ test('fallbackOutcomeFor: killSwitchJustTriggered=true is ignored for every reas
 test('fallbackOutcomeFor: the shared paper outcome is never mutated by the killSwitch flag', () => {
   fallbackOutcomeFor('risk_gate_blocked', true);
   assert.equal(fallbackOutcomeFor('swap_failed').killSwitchJustTriggered, false);
+});
+
+test('fallbackOutcomeFor: graduated_paper_only (LIVE_ON_GRADUATED_TOKENS=false) gives paper, never flags the kill-switch', () => {
+  const outcome = fallbackOutcomeFor('graduated_paper_only', true);
+  assert.equal(outcome.mode, 'paper');
+  assert.equal(outcome.killSwitchJustTriggered, false);
 });

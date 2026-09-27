@@ -11,14 +11,16 @@ import {
   LIVE_BANKROLL_SOL,
   LIVE_POSITION_SIZE_PCT,
   LIVE_POSITION_SIZE_SOL,
+  LIVE_ON_GRADUATED_TOKENS,
   conditionOrdersJson,
   liveExitConditionOrders,
 } from '../decision/paperTradingConfig.js';
 import { WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE } from '../collectors/intervals.js';
-import { attemptLiveEntry } from '../live/liveEntryExecution.js';
-import { priceFromTradeEvent, type PumpPortalTradeEvent } from './pumpportalEvents.js';
+import { attemptLiveEntry, fallbackOutcomeFor } from '../live/liveEntryExecution.js';
+import { isGraduatedEvent, priceFromTradeEvent, type PumpPortalTradeEvent } from './pumpportalEvents.js';
 import { subscribeForNewTrade } from './subscriptionManager.js';
 import type { PumpPortalConnection } from './pumpportalConnection.js';
+import type { TradeMode } from '../db/types.js';
 
 export interface RealtimeEntryResult {
   tokenAddress: string;
@@ -30,6 +32,10 @@ export interface RealtimeEntryResult {
    * χρησιμοποιεί για proactive Telegram alert, αντί ο χρήστης να το μαθαίνει μόνο από το
    * επόμενο daily digest. */
   killSwitchJustTriggered: boolean;
+  /** 'live' ή 'paper' — για να φαίνεται αμέσως στο Telegram τι πραγματικά μπήκε. */
+  mode: TradeMode;
+  /** Graduated token (paper-only δοκιμή όσο LIVE_ON_GRADUATED_TOKENS=false). */
+  graduated: boolean;
 }
 
 export type EntryWalletInput = Pick<
@@ -37,7 +43,15 @@ export type EntryWalletInput = Pick<
   'address' | 'active' | 'winRate' | 'pnlMultiplier' | 'tradeCount' | 'source' | 'name'
 > | null;
 
-export type EntryDecision = { type: 'skip' } | { type: 'enter'; entryPrice: number };
+export type EntryDecision =
+  | { type: 'skip' }
+  | {
+      type: 'enter';
+      entryPrice: number;
+      /** Το token έχει ήδη φύγει από τη bonding curve — τιμή από solAmount/tokenAmount,
+       * και (όσο LIVE_ON_GRADUATED_TOKENS=false) μόνο paper. Βλ. handleRealtimeEntryEvent. */
+      graduated: boolean;
+    };
 
 /**
  * Καθαρή απόφαση — τεσταρίζεται πλήρως χωρίς DB, ίδιο σκεπτικό με το decideForTick στο
@@ -59,9 +73,11 @@ export function decideEntry(
   if (openTradesCount >= WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE) return { type: 'skip' };
 
   const entryPrice = priceFromTradeEvent(event);
-  if (entryPrice === null) return { type: 'skip' }; // π.χ. ήδη εκτός bonding curve
+  // null: dust trade σε graduated token ή degenerate event — από 2026-09-27 τα graduated
+  // tokens έχουν κανονικά τιμή (βλ. priceFromTradeEvent).
+  if (entryPrice === null) return { type: 'skip' };
 
-  return { type: 'enter', entryPrice };
+  return { type: 'enter', entryPrice, graduated: isGraduatedEvent(event) };
 }
 
 /**
@@ -140,13 +156,24 @@ export async function handleRealtimeEntryEvent(
       buy_tx_hash: event.signature,
       buy_timestamp: Math.floor(Date.now() / 1000),
       source_channel: 'pumpportal_websocket',
+      // 2026-09-27 — για το `npm run graduated-report`: ξεχωρίζει τα σήματα σε ήδη
+      // αποφοιτημένα tokens (paper-only δοκιμή) από τα κανονικά bonding-curve σήματα.
+      token_stage: decision.graduated ? 'graduated' : 'bonding_curve',
+      entry_price_source: decision.graduated ? 'trade_sol_over_tokens' : 'bonding_curve_reserves',
     },
     decision: 'signal_logged',
-    decisionReasonText: `${wallet.source} wallet ${wallet.address} αγόρασε (realtime) — gate είχε περάσει`,
+    decisionReasonText:
+      `${wallet.source} wallet ${wallet.address} αγόρασε (realtime) — gate είχε περάσει` +
+      (decision.graduated ? ' — graduated token' : ''),
   });
   if (decisionLogId === null) return null; // π.χ. race με ήδη υπάρχον ανοιχτό trade στο ίδιο ζευγάρι
 
-  const live = await attemptLiveEntry(event.mint);
+  // 2026-09-27: σε graduated token, live ΜΟΝΟ αν LIVE_ON_GRADUATED_TOKENS — αλλιώς
+  // κατευθείαν paper, χωρίς καν να αγγίξουμε κεφάλαιο/risk gate/swap.
+  const live =
+    decision.graduated && !LIVE_ON_GRADUATED_TOKENS
+      ? fallbackOutcomeFor('graduated_paper_only')
+      : await attemptLiveEntry(event.mint);
   // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #3): το live.entryPrice είναι ΗΔΗ η πραγματική,
   // εκτελεσμένη τιμή — καμία προσομοίωση δε χρειάζεται ή πρέπει να εφαρμοστεί εκεί. Η
   // ωμή, παρατηρημένη τιμή του σήματος (decision.entryPrice) εφαρμόζεται ΜΟΝΟ όταν η
@@ -189,5 +216,7 @@ export async function handleRealtimeEntryEvent(
     walletName: wallet.name,
     entryPrice: finalEntryPrice,
     killSwitchJustTriggered: live.killSwitchJustTriggered,
+    mode: live.mode,
+    graduated: decision.graduated,
   };
 }

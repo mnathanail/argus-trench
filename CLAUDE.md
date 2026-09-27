@@ -86,10 +86,9 @@ phase the rollout from log-only up to live auto-trading.
      Signals from this channel get their own `decision_log.trigger_type =
      'gmgn_smartmoney'`, kept deliberately distinct from `'smart_money_buy'` (our own
      watchlist) so the two channels' hit-rates can be measured independently before
-     either is trusted more than the other. **Always `mode='log_only'` for now** — a
-     brand-new, unvalidated signal source starts at the same read-only logging stage
-     the whole system started at (see "Phased rollout"), not wired to paper or live
-     trading yet.
+     either is trusted more than the other. **Since 2026-09-27 it writes ONLY to
+     `decision_log` — no trade at all** (it used to open `mode='log_only'` trades; see
+     "Trade modes since 2026-09-27" below).
      ⚠️ **`decision_log.trigger_wallet_address` lost its FK to `watchlist_wallets`**
      (migration 0014) to allow this — a GMGN smartmoney wallet is never one of ours, so
      the FK would reject every such trigger row outright. Existing display code already
@@ -764,6 +763,29 @@ Tests updated in `tickExit.test.ts`, `exitResolver.test.ts`, and
 tick reaching +50%/+60% were testing exactly the bug being fixed, not incidental
 breakage; replaced with tests asserting the new trailing-activation behavior, plus new
 tests specifically covering the profit floor.
+
+## Trade modes since 2026-09-27 (explicit user decisions)
+- **Trades are opened ONLY by the realtime path** (`handleRealtimeEntryEvent`, PumpPortal
+  websocket, our watchlist wallets). GMGN smartmoney and the (unwired) wallet-activity
+  poller write the signal to `decision_log` only. Their old log_only trades linked the
+  token's decision_log row, which blocked the live path from claiming the same token.
+- **`paper` = "wanted live, couldn't"**: every non-live outcome of `attemptLiveEntry`
+  (capital, kill-switch, lost reservation, failed swap, unreadable wallet) opens `paper`.
+  `log_only` is no longer produced anywhere. The open-trades cap counts only live/paper.
+- **Graduated tokens** (off the bonding curve): priced from the trade itself
+  (`solAmount/tokenAmount`, dust < 0.01 SOL ignored) in `priceFromTradeEvent` — this also
+  keeps stop-loss/trailing working for any open trade whose token graduates (previously
+  it froze live trades as `needs_manual_exit`). Entries on graduated tokens open **paper
+  only** while `LIVE_ON_GRADUATED_TOKENS = false` (`paperTradingConfig.ts`), tagged
+  `token_stage='graduated'` in `trigger_wallet_snapshot_json`. Evaluate with
+  `railway run npm run graduated-report`; flip to `true` only if positive.
+- **PumpPortal bills 0.01 SOL per 10k streamed trades** to the API-key wallet and rejects
+  all subscriptions below 0.02 SOL — the live entry path and fast exits then go silent.
+  `PumpPortalConnection` detects this, alerts via Telegram (≤1/hour) and retries every
+  5 min so a top-up recovers without a restart. The "SWITCH TO PUMPAPI.IO" token that
+  appears in that wallet is a competitor's ad airdrop, not what drains it.
+- `/resume_live` records `resumed_at` (migration 0016); the consecutive-loss streak only
+  counts live trades closed after it.
 
 ## Phased rollout
 0. ✅ Setup & instrumentation (API key, plugin install, logging skeleton) — **done**

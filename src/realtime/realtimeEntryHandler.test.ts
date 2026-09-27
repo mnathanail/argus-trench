@@ -67,12 +67,23 @@ test('skips when the open-trades cap has been reached', () => {
   assert.deepEqual(decision, { type: 'skip' });
 });
 
-test('skips when no real-time price is available (e.g. already migrated off the bonding curve)', () => {
+test('ΑΛΛΑΓΗ 2026-09-27: a token already migrated off the bonding curve now ENTERS, flagged graduated, priced from the trade (solAmount/tokenAmount)', () => {
   const decision = decideEntry(buyEvent({ pool: 'raydium' }), activeWallet(), true, 5);
+  assert.deepEqual(decision, { type: 'enter', entryPrice: 1 / 100, graduated: true });
+});
+
+test('a bonding-curve entry is flagged graduated=false', () => {
+  const decision = decideEntry(buyEvent(), activeWallet(), true, 5);
+  assert.equal(decision.type, 'enter');
+  if (decision.type === 'enter') assert.equal(decision.graduated, false);
+});
+
+test('skips a graduated DUST buy — no trustworthy price', () => {
+  const decision = decideEntry(buyEvent({ pool: 'raydium', solAmount: 0.0009 }), activeWallet(), true, 5);
   assert.deepEqual(decision, { type: 'skip' });
 });
 
-test('ΔΙΟΡΘΩΣΗ 2026-09-27: skips (not silently dropped earlier at parsing) when the bonding-curve fields are entirely absent — the real post-graduation PumpPortal shape', () => {
+test('ΑΛΛΑΓΗ 2026-09-27: ENTERS (graduated) when the bonding-curve fields are entirely absent — the real post-graduation PumpPortal shape', () => {
   const decision = decideEntry(
     buyEvent({
       vTokensInBondingCurve: undefined,
@@ -84,7 +95,7 @@ test('ΔΙΟΡΘΩΣΗ 2026-09-27: skips (not silently dropped earlier at parsin
     true,
     5,
   );
-  assert.deepEqual(decision, { type: 'skip' });
+  assert.deepEqual(decision, { type: 'enter', entryPrice: 1 / 100, graduated: true });
 });
 
 test('uses the real event price (vSol/vTokens), not any placeholder', () => {

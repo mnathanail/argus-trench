@@ -93,10 +93,35 @@ test('a buy event (not a sell) from the trigger wallet does not trigger exit_sig
   assert.notEqual(decision.type === 'close' && decision.exitReason, 'exit_signal');
 });
 
-test('a token that migrated off the bonding curve (pool !== "pump") is ignored, not treated as a price of 0', () => {
-  const migratedEvent = eventAtPrice(1.6, { pool: 'raydium' });
-  const decision = decideForTick(trade(), migratedEvent, ENTRY_AT);
-  assert.deepEqual(decision, { type: 'ignore' });
+/** Graduated event (χωρίς bonding-curve πεδία) με τιμή εκτέλεσης = price ακριβώς. */
+function graduatedEventAtPrice(price: number, overrides: Partial<PumpPortalTradeEvent> = {}): PumpPortalTradeEvent {
+  return buyEvent({
+    vTokensInBondingCurve: undefined,
+    vSolInBondingCurve: undefined,
+    marketCapSol: undefined,
+    pool: undefined,
+    solAmount: price * 10,
+    tokenAmount: 10,
+    ...overrides,
+  });
+}
+
+test('ΑΛΛΑΓΗ 2026-09-27: a graduated token keeps getting normal tick decisions from the trade price — same result as the bonding-curve equivalent', () => {
+  const onCurve = decideForTick(trade(), eventAtPrice(1.6), ENTRY_AT);
+  const graduated = decideForTick(trade(), graduatedEventAtPrice(1.6), ENTRY_AT);
+  assert.deepEqual(graduated, onCurve);
+  assert.notEqual(graduated.type, 'ignore');
+});
+
+test('ΑΛΛΑΓΗ 2026-09-27: stop-loss still fires on a graduated token (price from the trade)', () => {
+  const decision = decideForTick(trade(), graduatedEventAtPrice(0.4), ENTRY_AT); // -60%
+  assert.equal(decision.type, 'close');
+  if (decision.type === 'close') assert.equal(decision.exitReason, 'stop_loss');
+});
+
+test('a graduated DUST trade is ignored — it must never move peak/trailing or trigger a stop', () => {
+  const dust = graduatedEventAtPrice(0.01, { solAmount: 0.0009, tokenAmount: 1 });
+  assert.deepEqual(decideForTick(trade(), dust, ENTRY_AT), { type: 'ignore' });
 });
 
 test('a tick that raises the peak without triggering any exit returns an update decision', () => {
@@ -238,9 +263,19 @@ test('isPastLiveTimeout: true ακριβώς στο και μετά το 24ωρ�
   assert.equal(isPastLiveTimeout(ENTRY_AT, justAfter), true);
 });
 
-test('isUnpriceableNonSellEvent: true όταν το token έχει «αποφοιτήσει» (pool !== "pump")', () => {
+test('ΑΛΛΑΓΗ 2026-09-27: isUnpriceableNonSellEvent: false για graduated token (pool !== "pump") — έχει πλέον τιμή από το trade, δεν παγώνει σε needs_manual_exit', () => {
   const migrated = eventAtPrice(1.5, { pool: 'pump-amm' });
-  assert.equal(isUnpriceableNonSellEvent(migrated), true);
+  assert.equal(isUnpriceableNonSellEvent(migrated), false);
+});
+
+test('isUnpriceableNonSellEvent: false για graduated DUST trade — απλά αγνοείται, δεν παγώνει το trade', () => {
+  const dust = eventAtPrice(1.5, { pool: 'pump-amm', solAmount: 0.0009 });
+  assert.equal(isUnpriceableNonSellEvent(dust), false);
+});
+
+test('isUnpriceableNonSellEvent: true ΜΟΝΟ για πραγματικά μη τιμολογήσιμο event (graduated, tokenAmount=0)', () => {
+  const broken = eventAtPrice(1.5, { pool: 'pump-amm', tokenAmount: 0 });
+  assert.equal(isUnpriceableNonSellEvent(broken), true);
 });
 
 test('isUnpriceableNonSellEvent: false για κανονικό, ακόμα-στο-bonding-curve event', () => {
@@ -252,12 +287,12 @@ test('isUnpriceableNonSellEvent: false για exit_signal (wallet sell) ΑΚΟΜ
   assert.equal(isUnpriceableNonSellEvent(migratedSell), false);
 });
 
-test('ΔΙΟΡΘΩΣΗ 2026-09-27: isUnpriceableNonSellEvent: true όταν τα bonding-curve πεδία λείπουν ΕΝΤΕΛΩΣ (πραγματικό post-graduation σχήμα), όχι μόνο όταν pool άλλαξε τιμή', () => {
+test('ΑΛΛΑΓΗ 2026-09-27: isUnpriceableNonSellEvent: false για το πραγματικό post-graduation σχήμα (πεδία bonding-curve απόντα) — τιμή από το trade', () => {
   const graduated = buyEvent({
     vTokensInBondingCurve: undefined,
     vSolInBondingCurve: undefined,
     marketCapSol: undefined,
     pool: undefined,
   });
-  assert.equal(isUnpriceableNonSellEvent(graduated), true);
+  assert.equal(isUnpriceableNonSellEvent(graduated), false);
 });

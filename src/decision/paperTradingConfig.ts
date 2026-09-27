@@ -168,6 +168,17 @@ export const LIVE_POSITION_SIZE_SOL = LIVE_BANKROLL_SOL * LIVE_POSITION_SIZE_PCT
  * cap, που πάντα ξεκίναγε ξανά μόνο του την επόμενη Athens ημέρα.
  */
 export const LIVE_KILL_SWITCH_CONSEC_LOSSES = 10;
+
+/**
+ * Live entries σε ήδη «αποφοιτημένα» tokens (εκτός bonding curve, PumpSwap/AMM).
+ *
+ * 2026-09-27, ρητή απόφαση χρήστη: μέχρι τότε αυτά τα σήματα απορρίπτονταν εντελώς
+ * (`no_realtime_price`). Από εκείνη τη μέρα έχουν τιμή (solAmount/tokenAmount, βλ.
+ * priceFromTradeEvent) και ανοίγουν ΜΟΝΟ paper, για 1-2 μέρες δοκιμής. Μετά τρέχουμε
+ * `npm run graduated-report` — αν τα αποτελέσματα είναι θετικά, γίνεται true (live, με
+ * paper fallback όπως κάθε άλλο σήμα), αλλιώς μένει false.
+ */
+export const LIVE_ON_GRADUATED_TOKENS = false;
 export const LIVE_DAILY_LOSS_CAP_SOL = 0.5;
 
 export function conditionOrdersJson(): Record<string, unknown>[] {

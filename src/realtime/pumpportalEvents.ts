@@ -6,8 +6,8 @@
  * ώρα λήψης (το feed είναι σχεδόν στιγμιαίο, ~500-800ms πίσω από το on-chain block).
  *
  * ΔΕΝ υπάρχει έτοιμο πεδίο τιμής — υπολογίζεται από το bonding-curve state
- * (vSolInBondingCurve/vTokensInBondingCurve). Αυτό ισχύει ΜΟΝΟ όσο pool==='pump' (το
- * token είναι ακόμα στη bonding curve, δεν έχει "αποφοιτήσει" σε πραγματικό DEX).
+ * (vSolInBondingCurve/vTokensInBondingCurve) όσο pool==='pump', αλλιώς από το ίδιο το
+ * trade (solAmount/tokenAmount) — βλ. priceFromTradeEvent.
  *
  * ΔΙΟΡΘΩΣΗ 2026-09-27, πραγματικό incident: επιβεβαιώθηκε (Railway log, 657/693
  * "unrecognized" μηνύματα σε ένα μόνο παράθυρο 13 ωρών) ότι μετά το "αποφοίτημα" ενός
@@ -22,11 +22,8 @@
  * realtimeExitHandler — δηλαδή ΚΑΝΕΝΑ trade σε ήδη αποφοιτημένο token δεν έφτανε ποτέ
  * στο pipeline μας, ό,τι κι αν έδειχνε (π.χ. ένα πραγματικό smart_money_buy). Τα 4
  * πεδία γίνονται προαιρετικά εδώ ακριβώς γι' αυτό — η απουσία τους είναι πλέον ένα
- * ΑΝΑΓΝΩΡΙΣΜΕΝΟ, όχι απορριπτέο, σχήμα. priceFromTradeEvent παρακάτω τα αντιμετωπίζει
- * ήδη σαν "δεν υπάρχει τιμή" (ίδιο μονοπάτι με pool!=='pump'), και το downstream
- * (decideEntry's no_realtime_price / isUnpriceableNonSellEvent's needs_manual_exit)
- * χειριζόταν ΗΔΗ σωστά μια τιμή null — δεν χρειάστηκε καμία αλλαγή στη λογική απόφασης,
- * μόνο εδώ στο parsing layer.
+ * ΑΝΑΓΝΩΡΙΣΜΕΝΟ, όχι απορριπτέο, σχήμα. Από 2026-09-27 (αργότερα την ίδια μέρα) το
+ * priceFromTradeEvent δίνει τιμή και σε αυτά, από solAmount/tokenAmount — βλ. εκεί.
  */
 export interface PumpPortalTradeEvent {
   signature: string;
@@ -92,14 +89,51 @@ export function parseTradeEvent(raw: unknown): PumpPortalTradeEvent | null {
 }
 
 /**
- * Η τρέχουσα τιμή στη bonding curve ΜΕΤΑ από αυτό το trade — null αν το token δεν είναι
- * πια σε 'pump' pool (μετακόμισε σε πραγματικό DEX, διαφορετική φόρμουλα τιμής) Ή αν
- * λείπουν τα bonding-curve πεδία εντελώς (το ΙΔΙΟ πραγματικό σενάριο, βλ. σχόλιο
- * 2026-09-27 πάνω στο interface — και τα δύο σημαίνουν "δεν έχουμε φόρμουλα τιμής εδώ").
+ * Κάτω από αυτό το ποσό SOL, ένα trade σε graduated token ΔΕΝ δίνει τιμή — dust trades
+ * (π.χ. 0.000987 SOL, παρατηρημένο στα logs) έχουν fees/rounding που κάνουν το
+ * solAmount/tokenAmount αναξιόπιστο, και μία τέτοια παράλογη τιμή θα μπορούσε να
+ * πυροδοτήσει ψευδές stop-loss/trailing.
+ */
+export const MIN_SOL_FOR_TRADE_PRICE = 0.01;
+
+/**
+ * true όταν το token έχει «αποφοιτήσει» από τη bonding curve: είτε `pool !== 'pump'`, είτε
+ * λείπουν εντελώς τα bonding-curve πεδία (το πραγματικό post-graduation σχήμα, βλ.
+ * σχόλιο 2026-09-27 πάνω στο interface).
+ */
+export function isGraduatedEvent(event: PumpPortalTradeEvent): boolean {
+  return (
+    event.pool !== 'pump' || event.vTokensInBondingCurve === undefined || event.vSolInBondingCurve === undefined
+  );
+}
+
+/** Graduated trade κάτω από MIN_SOL_FOR_TRADE_PRICE — δεν δίνει τιμή, αλλά ΔΕΝ είναι
+ * "μη τιμολογήσιμο token" (ο caller πρέπει απλά να το αγνοήσει, όχι να παγώσει trade). */
+export function isDustGraduatedTrade(event: PumpPortalTradeEvent): boolean {
+  return isGraduatedEvent(event) && event.solAmount < MIN_SOL_FOR_TRADE_PRICE;
+}
+
+/**
+ * Η τιμή του token (SOL ανά token) σε αυτό το trade.
+ *
+ * - Bonding curve: τα reserves ΜΕΤΑ το trade (vSol/vTokens) — ακριβής spot τιμή.
+ * - Graduated (ΑΛΛΑΓΗ 2026-09-27, ρητή απόφαση χρήστη): το PumpPortal δεν στέλνει
+ *   reserves, οπότε χρησιμοποιούμε την πραγματική τιμή εκτέλεσης solAmount/tokenAmount.
+ *   Ίδιες μονάδες με το bonding-curve (SOL ανά token). Η μέση τιμή εκτέλεσης ενός AMM
+ *   trade βρίσκεται πάντα ανάμεσα στην τιμή πριν και μετά το trade, άρα είναι λογική
+ *   εκτίμηση της τρέχουσας τιμής (+ fees). Πριν, επέστρεφε null: κανένα entry σε
+ *   graduated token, και live trades των οποίων το token αποφοιτούσε πάγωναν σε
+ *   needs_manual_exit ΧΩΡΙΣ καμία αυτόματη προστασία.
+ *
+ * null: degenerate reserves, dust graduated trade, ή μη θετικό tokenAmount.
  */
 export function priceFromTradeEvent(event: PumpPortalTradeEvent): number | null {
-  if (event.pool !== 'pump') return null;
-  if (event.vTokensInBondingCurve === undefined || event.vSolInBondingCurve === undefined) return null;
-  if (event.vTokensInBondingCurve <= 0) return null;
-  return event.vSolInBondingCurve / event.vTokensInBondingCurve;
+  if (!isGraduatedEvent(event)) {
+    const vTokens = event.vTokensInBondingCurve as number;
+    const vSol = event.vSolInBondingCurve as number;
+    if (vTokens <= 0) return null;
+    return vSol / vTokens;
+  }
+  if (event.solAmount < MIN_SOL_FOR_TRADE_PRICE || event.tokenAmount <= 0) return null;
+  return event.solAmount / event.tokenAmount;
 }
