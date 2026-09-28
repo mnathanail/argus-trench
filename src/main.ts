@@ -168,7 +168,14 @@ realtimeConnection = pumpportalApiKey
               );
             }
             const walletLabel = entry.walletName ?? short(entry.walletAddress);
-            const modeLabel = entry.mode === 'live' ? '💰 LIVE' : entry.graduated ? '📝 paper (graduated)' : '📝 paper';
+            const modeLabel =
+              entry.mode === 'live'
+                ? entry.nativeOrderVerified
+                  ? '💰 LIVE'
+                  : '💰 LIVE ⚠️ χωρίς native order'
+                : entry.graduated
+                  ? '📝 paper (graduated)'
+                  : '📝 paper';
             await notify(
               `⚡🎯 νέο trade (realtime) ${modeLabel} — ${short(entry.tokenAddress)} | wallet ${walletLabel} ` +
                 `| entry ${entry.entryPrice.toPrecision(4)} — δες /trades`,

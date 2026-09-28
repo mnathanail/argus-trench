@@ -45,6 +45,10 @@ export interface SwapExecutionResult {
    * creation fails, the swap result is still returned"). null σε κάθε άλλη περίπτωση —
    * ο caller ΠΡΕΠΕΙ να το αντιμετωπίσει σαν "χωρίς προστασία", ΟΧΙ σαν σφάλμα. */
   strategyOrderId: string | null;
+  /** Το ΑΡΧΙΚΟ `swap` response, αυτούσιο (όχι του `order get` polling) — για διάγνωση όταν
+   * ζητήσαμε `--condition-orders` αλλά δεν ήρθε `strategy_order_id` (2026-09-28: σε 14
+   * διαδοχικά live trades δεν δημιουργήθηκε κανένα native order, χωρίς καμία ένδειξη γιατί). */
+  swapResponse: unknown;
 }
 
 /** Ένα condition sub-order για `--condition-orders` (βλ. gmgn-swap SKILL.md). Δεν
@@ -146,7 +150,7 @@ export function parseSwapResponse(raw: unknown): SwapExecutionResult {
   const strategyOrderId = typeof obj['strategy_order_id'] === 'string' && obj['strategy_order_id'] !== ''
     ? obj['strategy_order_id']
     : null;
-  return { filled: FILLED_STATUSES.has(status), status, orderId, txHash, executedPrice, strategyOrderId };
+  return { filled: FILLED_STATUSES.has(status), status, orderId, txHash, executedPrice, strategyOrderId, swapResponse: raw };
 }
 
 /** Poll `order get` μέχρι τελικό status ή εξάντληση προσπαθειών — ΠΟΤΕ δεν αναφέρει
@@ -157,12 +161,13 @@ async function pollUntilTerminal(orderId: string, initial: SwapExecutionResult, 
   // `order get` δεν επιστρέφει ξανά `strategy_order_id` (μόνο το αρχικό `swap` response
   // το έχει) — κρατάμε το αρχικό ρητά, αλλιώς θα χανόταν σιωπηλά στο πρώτο poll.
   const strategyOrderId = initial.strategyOrderId;
+  const swapResponse = initial.swapResponse;
   for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt++) {
     if (FILLED_STATUSES.has(current.status) || FAILED_STATUSES.has(current.status)) break;
     await delay(POLL_INTERVAL_MS);
     try {
       const raw = await runCli('order get', ['order', 'get', '--chain', 'sol', '--order-id', orderId], options);
-      current = { ...parseSwapResponse(raw), strategyOrderId };
+      current = { ...parseSwapResponse(raw), strategyOrderId, swapResponse };
     } catch (error) {
       if (error instanceof SwapFailedError) throw error;
       break; // δικτυακό/παροδικό σφάλμα στο ίδιο το poll — σταμάτα, ανέφερε ό,τι ξέραμε

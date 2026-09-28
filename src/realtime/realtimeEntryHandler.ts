@@ -1,5 +1,10 @@
 import { findPassedTokens, recordTrigger, linkTrade } from '../db/repositories/decisionLog.js';
-import { openTrade, countOpenLiveOrPaperTrades, setNativeOrderState } from '../db/repositories/paperTrades.js';
+import {
+  openTrade,
+  countOpenLiveOrPaperTrades,
+  countOpenTradesForToken,
+  setNativeOrderState,
+} from '../db/repositories/paperTrades.js';
 import { getWallet, type WatchlistWallet } from '../db/repositories/watchlistWallets.js';
 import { logicVersion, PHASE1_THRESHOLDS } from '../decision/gateConfig.js';
 import { applyEntrySlippage } from '../decision/pnl.js';
@@ -36,6 +41,8 @@ export interface RealtimeEntryResult {
   mode: TradeMode;
   /** Graduated token (paper-only δοκιμή όσο LIVE_ON_GRADUATED_TOKENS=false). */
   graduated: boolean;
+  /** Live χωρίς επιβεβαιωμένο native GMGN order = χωρίς server-side stop-loss/trailing. */
+  nativeOrderVerified: boolean;
 }
 
 export type EntryWalletInput = Pick<
@@ -99,6 +106,38 @@ export function decideEntry(
  * μπορούσε να μείνει χωρίς κανένα trade row να το καταγράφει (race στο claim) — σιωπηλά
  * χαμένη, ξοδεμένη θέση.
  */
+/**
+ * Tokens με entry σε εξέλιξη ΤΩΡΑ (από το recordTrigger μέχρι το openTrade/linkTrade).
+ *
+ * ΠΡΑΓΜΑΤΙΚΟ INCIDENT 2026-09-28: 4 tokens αγοράστηκαν live 2-3 φορές μέσα σε δευτερόλεπτα
+ * (π.χ. 6474/6475 με 150ms διαφορά, 6466/6467/6468 στο ίδιο token). Το decision_log row
+ * συνδέεται με το trade μόνο ΜΕΤΑ το swap (δευτερόλεπτα)· στο μεταξύ ένα δεύτερο wallet
+ * του watchlist που αγόραζε το ίδιο token έκανε claim το ΙΔΙΟ row (το recordTrigger
+ * ελέγχει ανοιχτό trade ανά wallet, όχι ανά token) και άνοιγε δεύτερη πραγματική θέση.
+ * Ένα Node process (βλ. CLAUDE.md "Process topology") → ένα in-memory Set αρκεί ως lock.
+ */
+const entriesInFlight = new Set<string>();
+
+/** Test-only: πόσα entries θεωρούνται σε εξέλιξη (για επιβεβαίωση ότι το lock ελευθερώνεται). */
+export function entriesInFlightCount(): number {
+  return entriesInFlight.size;
+}
+
+/**
+ * Τρέχει το `fn` μόνο αν δεν τρέχει ήδη entry για το ίδιο token· αλλιώς επιστρέφει
+ * `IN_FLIGHT` χωρίς να το καλέσει. Το lock ελευθερώνεται ΠΑΝΤΑ (και σε exception).
+ */
+export const IN_FLIGHT = Symbol('entry_in_flight');
+export async function withTokenEntryLock<T>(mint: string, fn: () => Promise<T>): Promise<T | typeof IN_FLIGHT> {
+  if (entriesInFlight.has(mint)) return IN_FLIGHT;
+  entriesInFlight.add(mint);
+  try {
+    return await fn();
+  } finally {
+    entriesInFlight.delete(mint);
+  }
+}
+
 export async function handleRealtimeEntryEvent(
   event: PumpPortalTradeEvent,
   connection: PumpPortalConnection,
@@ -139,6 +178,30 @@ export async function handleRealtimeEntryEvent(
   // TS δε στενεύει το `wallet` μέσω του decideEntry (ξεχωριστή function) — αλλά
   // decision.type==='enter' εγγυάται ήδη ότι wallet!==null (βλ. decideEntry).
   if (wallet === null) return null;
+
+  // 2026-09-28: ΕΝΑ trade ανά token — βλ. entriesInFlight. Πρώτα το in-memory lock (πιάνει
+  // ταυτόχρονα events), μετά η βάση (πιάνει ένα νέο event όσο το trade είναι ακόμα ανοιχτό).
+  const result = await withTokenEntryLock(event.mint, async () => {
+    if ((await countOpenTradesForToken(event.mint)) > 0) {
+      console.log(`[realtime-entry-skip] reason=token_already_open mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`);
+      return null;
+    }
+    return enterClaimedSignal(event, connection, wallet, decision, version);
+  });
+  if (result === IN_FLIGHT) {
+    console.log(`[realtime-entry-skip] reason=entry_in_flight mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`);
+    return null;
+  }
+  return result;
+}
+
+async function enterClaimedSignal(
+  event: PumpPortalTradeEvent,
+  connection: PumpPortalConnection,
+  wallet: WatchlistWallet,
+  decision: Extract<EntryDecision, { type: 'enter' }>,
+  version: string,
+): Promise<RealtimeEntryResult | null> {
 
   const decisionLogId = await recordTrigger({
     tokenAddress: event.mint,
@@ -218,5 +281,6 @@ export async function handleRealtimeEntryEvent(
     killSwitchJustTriggered: live.killSwitchJustTriggered,
     mode: live.mode,
     graduated: decision.graduated,
+    nativeOrderVerified: live.nativeOrderVerified,
   };
 }

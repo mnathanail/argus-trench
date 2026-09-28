@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { decideEntry, type EntryWalletInput } from './realtimeEntryHandler.js';
+import { decideEntry, entriesInFlightCount, IN_FLIGHT, withTokenEntryLock, type EntryWalletInput } from './realtimeEntryHandler.js';
 import type { PumpPortalTradeEvent } from './pumpportalEvents.js';
 
 const WALLET = 'WalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1';
@@ -109,4 +109,34 @@ test('uses the real event price (vSol/vTokens), not any placeholder', () => {
   if (decision.type === 'enter') {
     assert.ok(Math.abs(decision.entryPrice - 9.0393e-8) / 9.0393e-8 < 0.01);
   }
+});
+
+// --- 2026-09-28: ΕΝΑ entry ανά token (πραγματικό incident: διπλές/τριπλές live αγορές) ---
+
+test('withTokenEntryLock: a second concurrent entry for the SAME token is refused (the 150ms double-buy case)', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  let calls = 0;
+  const first = withTokenEntryLock('MintA', async () => { calls += 1; await gate; return 'first'; });
+  const second = await withTokenEntryLock('MintA', async () => { calls += 1; return 'second'; });
+  assert.equal(second, IN_FLIGHT);
+  release();
+  assert.equal(await first, 'first');
+  assert.equal(calls, 1, 'η δεύτερη αγορά δεν πρέπει να εκτελεστεί καθόλου');
+});
+
+test('withTokenEntryLock: different tokens run concurrently', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const a = withTokenEntryLock('MintB', async () => { await gate; return 'b'; });
+  const c = await withTokenEntryLock('MintC', async () => 'c');
+  assert.equal(c, 'c');
+  release();
+  assert.equal(await a, 'b');
+});
+
+test('withTokenEntryLock: the lock is released even if the entry throws', async () => {
+  await assert.rejects(withTokenEntryLock('MintD', async () => { throw new Error('swap failed'); }));
+  assert.equal(entriesInFlightCount(), 0);
+  assert.equal(await withTokenEntryLock('MintD', async () => 'again'), 'again');
 });

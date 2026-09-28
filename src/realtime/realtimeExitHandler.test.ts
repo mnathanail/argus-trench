@@ -6,6 +6,7 @@ import {
   shouldSkipLiveExitCheck,
   isPastLiveTimeout,
   isUnpriceableNonSellEvent,
+  LIVE_EXIT_ATTEMPT_STALE_MS,
   type TickDecisionInput,
 } from './realtimeExitHandler.js';
 import type { PumpPortalTradeEvent } from './pumpportalEvents.js';
@@ -240,7 +241,7 @@ test('shouldSkipLiveExitCheck: live trade με ΠΡΟΣΦΑΤΗ exit_attempt_sta
 
 test('shouldSkipLiveExitCheck: live trade με ΠΑΛΙΑ exit_attempt_started_at ΔΕΝ αγνοείται — πιθανή κολλημένη προσπάθεια, επιτρέπεται νέα', () => {
   const attemptStarted = ENTRY_AT;
-  const now = new Date(ENTRY_AT.getTime() + 61_000); // 61s μετά — πλέον «μπαγιάτικο»
+  const now = new Date(ENTRY_AT.getTime() + LIVE_EXIT_ATTEMPT_STALE_MS + 1_000); // μόλις πέρα από το όριο — πλέον «μπαγιάτικο»
   assert.equal(shouldSkipLiveExitCheck(liveTrade({ exitAttemptStartedAt: attemptStarted }), now), false);
 });
 

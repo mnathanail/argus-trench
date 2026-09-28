@@ -188,6 +188,20 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
     const balanceAfter = await getLiveSolBalance();
     const nativeOrderVerified =
       result.strategyOrderId !== null && (await verifyNativeOrder(wallet.address, tokenAddress, result.strategyOrderId));
+    if (result.strategyOrderId === null) {
+      // 2026-09-28: ζητήσαμε --condition-orders αλλά το GMGN δεν δημιούργησε strategy — η
+      // θέση ΔΕΝ έχει server-side stop-loss/trailing, μόνο το δικό μας realtime tracking.
+      // Κρατάμε ολόκληρο το swap response για να φανεί ΓΙΑΤΙ (πριν: καμία καταγραφή).
+      console.warn(`[live-entry] ⚠️ κανένα native strategy order για ${tokenAddress} — το swap response δεν είχε strategy_order_id`);
+      await recordExecutionError({
+        paperTradeId: null,
+        tokenAddress,
+        action: 'buy',
+        amountSol: LIVE_POSITION_SIZE_SOL,
+        errorMessage: 'Το buy πέτυχε, αλλά ΔΕΝ δημιουργήθηκε native strategy order (κανένα strategy_order_id στο swap response) — η θέση δεν έχει server-side stop-loss/trailing.',
+        errorDetail: { swapResponse: result.swapResponse, conditionOrders: liveExitConditionOrders() },
+      });
+    }
     if (result.strategyOrderId !== null && !nativeOrderVerified) {
       // Η δημιουργία "πέτυχε" (είχαμε strategy_order_id) αλλά δεν επιβεβαιώθηκε υγιής —
       // ΔΕΝ είναι σφάλμα του ίδιου του buy (η θέση ανοίχτηκε κανονικά), αλλά αξίζει

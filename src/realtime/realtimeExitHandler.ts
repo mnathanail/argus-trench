@@ -17,6 +17,7 @@ import { fetchLiveSolWallet, getLiveSolBalance } from '../gmgn/portfolio.js';
 import { executeLiveSell, INSUFFICIENT_TOKEN_BALANCE_ERROR_CODE, SwapFailedError } from '../gmgn/swap.js';
 import { cancelStrategyOrderBestEffort, estimateExitAmountSol, getStrategyOrder, inferExitReason } from '../gmgn/strategyOrders.js';
 import { checkTick } from './tickExit.js';
+import { verifySellAfterError } from '../live/sellVerification.js';
 import { isDustGraduatedTrade, priceFromTradeEvent, type PumpPortalTradeEvent } from './pumpportalEvents.js';
 import { unsubscribeIfNoLongerNeeded } from './subscriptionManager.js';
 import type { PumpPortalConnection } from './pumpportalConnection.js';
@@ -55,7 +56,11 @@ export type TickDecisionInput = Pick<
  * εξέλιξη» — βλ. migration 0011. Αρκετά μεγάλο για το πλήρες confirmation polling του
  * GMGN swap (έως ~30s), με άνεση· πιο παλιό από αυτό σημαίνει πιθανό κολλημένη/κρασαρισμένη
  * προηγούμενη προσπάθεια, όχι ενεργή — επιτρέπουμε νέα. */
-export const LIVE_EXIT_ATTEMPT_STALE_MS = 60_000;
+export const LIVE_EXIT_ATTEMPT_STALE_MS = 150_000;
+// ΑΛΛΑΓΗ 2026-09-28: 60s → 150s. Μια live πώληση μπορεί πλέον να περιλαμβάνει, μετά από
+// error, on-chain έλεγχο υπολοίπου (~12s) ΚΑΙ μία επανάληψη της πώλησης (έως ~30s + poll)
+// — βλ. executeLiveCloseAndFinalize. Με 60s, ένα δεύτερο tick θα μπορούσε να ξεκινήσει
+// ταυτόχρονη πώληση πάνω στην ίδια θέση όσο η πρώτη ακόμα επαληθεύεται.
 
 /**
  * Καθαρή, τεσταρίσιμη απόφαση — «πρέπει αυτό το trade να αγνοηθεί εντελώς σε αυτό το
@@ -403,31 +408,98 @@ async function executeLiveCloseAndFinalize(
   }
   const balanceBefore = wallet.balances.find((b) => b.symbol === 'SOL')?.balance ?? 0;
 
+  let firstError: unknown;
   try {
     const result = await executeLiveSell(wallet.address, tokenAddress);
     const balanceAfter = await getLiveSolBalance();
-    const actualExitAmountSol = balanceAfter - balanceBefore;
-    const actualEntryAmountSol = pending.actualEntryAmountSol ?? 0;
-    const pnlSol = actualExitAmountSol - actualEntryAmountSol;
-    const pnlPct = actualEntryAmountSol > 0 ? pnlSol / actualEntryAmountSol : null;
-
-    const closed = await closeTrade(pending.tradeId, {
-      exitReason: pending.exitReason,
-      exitTriggerDetail: pending.exitTriggerDetail,
-      simulatedExitPrice: result.executedPrice ?? pending.exitPrice,
-      pnlSol,
-      pnlPct,
-      assumedFeesPct: 0,
-      pnlNetPct: pnlPct,
-      actualExitAmountSol,
-    });
-    if (closed) await unsubscribeIfNoLongerNeeded(connection, tokenAddress);
-    return { type: 'closed', tokenAddress, exitReason: pending.exitReason, pnlPct: pnlPct ?? 0 };
+    return finalizeLiveClose(pending, tokenAddress, connection, balanceAfter - balanceBefore, result.executedPrice);
   } catch (error) {
-    const reconciled = await tryReconcileAlreadyClosedByNativeOrder(pending, tokenAddress, wallet.address, connection, error);
-    if (reconciled !== null) return reconciled;
-    return failLiveClose(pending, tokenAddress, error);
+    firstError = error;
   }
+
+  const reconciled = await tryReconcileAlreadyClosedByNativeOrder(pending, tokenAddress, wallet.address, connection, firstError);
+  if (reconciled !== null) return reconciled;
+
+  // ΝΕΟ 2026-09-28 — βλ. live/sellVerification.ts: το error του CLI ΔΕΝ αποδεικνύει ότι
+  // η πώληση απέτυχε (trade 6442: "αποτυχία" που στην πραγματικότητα εκτελέστηκε, +104%).
+  // Το on-chain υπόλοιπο αποφασίζει.
+  const verdict = await verifySellAfterError(wallet.address, tokenAddress, balanceBefore);
+  if (verdict.kind === 'sold') {
+    await recordExecutionError({
+      paperTradeId: pending.tradeId,
+      tokenAddress,
+      action: 'sell',
+      amountSol: pending.actualEntryAmountSol,
+      errorMessage: `Το gmgn-cli επέστρεψε error, αλλά η πώληση ΕΠΙΒΕΒΑΙΩΘΗΚΕ on-chain (token balance 0, +${verdict.proceedsSol.toFixed(6)} SOL) — το trade κλείνει κανονικά. Αρχικό error: ${errorText(firstError)}`,
+      errorDetail: firstError,
+    });
+    return finalizeLiveClose(pending, tokenAddress, connection, verdict.proceedsSol, null);
+  }
+
+  if (verdict.kind === 'still_held') {
+    // Τα tokens είναι ακόμα εκεί — η πώληση πράγματι δεν έγινε. ΜΙΑ επανάληψη (π.χ. το GMGN
+    // δεν είχε ακόμα "δει" τα tokens αμέσως μετά το buy — trade 6442 πούλησε 19″ μετά).
+    try {
+      const retryBalanceBefore = await getLiveSolBalance();
+      const result = await executeLiveSell(wallet.address, tokenAddress);
+      const balanceAfter = await getLiveSolBalance();
+      await recordExecutionError({
+        paperTradeId: pending.tradeId,
+        tokenAddress,
+        action: 'sell',
+        amountSol: pending.actualEntryAmountSol,
+        errorMessage: `Η 1η πώληση απέτυχε με τα tokens ακόμα στο wallet — η επανάληψη ΠΕΤΥΧΕ. Αρχικό error: ${errorText(firstError)}`,
+        errorDetail: firstError,
+      });
+      return finalizeLiveClose(pending, tokenAddress, connection, balanceAfter - retryBalanceBefore, result.executedPrice);
+    } catch (retryError) {
+      await recordExecutionError({
+        paperTradeId: pending.tradeId,
+        tokenAddress,
+        action: 'sell',
+        amountSol: pending.actualEntryAmountSol,
+        errorMessage: `1η πώληση (tokens ακόμα στο wallet): ${errorText(firstError)}`,
+        errorDetail: firstError,
+      });
+      return failLiveClose(pending, tokenAddress, retryError, 'και η επανάληψη απέτυχε, τα tokens είναι ακόμα στο wallet');
+    }
+  }
+
+  const context =
+    verdict.kind === 'gone_elsewhere'
+      ? 'το token δεν είναι πια στο wallet αλλά δεν μπήκε SOL — πιθανόν πουλήθηκε αλλού, έλεγξε στο GMGN'
+      : 'ο on-chain έλεγχος υπολοίπου απέτυχε — άγνωστη κατάσταση, έλεγξε στο GMGN';
+  return failLiveClose(pending, tokenAddress, firstError, context);
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Κοινό κλείσιμο live trade με ΠΡΑΓΜΑΤΙΚΑ νούμερα (έσοδα SOL από διαφορά υπολοίπου). */
+async function finalizeLiveClose(
+  pending: PendingLiveClose,
+  tokenAddress: string,
+  connection: PumpPortalConnection,
+  actualExitAmountSol: number,
+  executedPrice: number | null,
+): Promise<RealtimeTradeOutcome> {
+  const actualEntryAmountSol = pending.actualEntryAmountSol ?? 0;
+  const pnlSol = actualExitAmountSol - actualEntryAmountSol;
+  const pnlPct = actualEntryAmountSol > 0 ? pnlSol / actualEntryAmountSol : null;
+
+  const closed = await closeTrade(pending.tradeId, {
+    exitReason: pending.exitReason,
+    exitTriggerDetail: pending.exitTriggerDetail,
+    simulatedExitPrice: executedPrice ?? pending.exitPrice,
+    pnlSol,
+    pnlPct,
+    assumedFeesPct: 0,
+    pnlNetPct: pnlPct,
+    actualExitAmountSol,
+  });
+  if (closed) await unsubscribeIfNoLongerNeeded(connection, tokenAddress);
+  return { type: 'closed', tokenAddress, exitReason: pending.exitReason, pnlPct: pnlPct ?? 0 };
 }
 
 /**
@@ -495,8 +567,10 @@ async function failLiveClose(
   pending: PendingLiveClose,
   tokenAddress: string,
   error: unknown,
+  context?: string,
 ): Promise<RealtimeTradeOutcome> {
-  const errorMessage = error instanceof Error ? error.message : String(error);
+  const baseMessage = error instanceof Error ? error.message : String(error);
+  const errorMessage = context === undefined ? baseMessage : `${baseMessage} — ${context}`;
   await recordExecutionError({
     paperTradeId: pending.tradeId,
     tokenAddress,
