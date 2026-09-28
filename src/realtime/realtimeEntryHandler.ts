@@ -3,6 +3,7 @@ import {
   openTrade,
   countOpenLiveOrPaperTrades,
   countOpenTradesForToken,
+  enableShadowTracking,
   setNativeOrderState,
 } from '../db/repositories/paperTrades.js';
 import { getWallet, type WatchlistWallet } from '../db/repositories/watchlistWallets.js';
@@ -264,6 +265,11 @@ async function enterClaimedSignal(
     entryAt: new Date(), // πραγματικό realtime event — "τώρα" ΕΙΝΑΙ η πραγματική στιγμή
   });
   await linkTrade(decisionLogId, tradeId);
+  // 2026-09-28: κάθε νέο trade καταγράφει ΚΑΙ πού θα είχε βγει το 4B trailing (shadow) —
+  // βλ. realtime/shadowExit.ts. Best-effort: ένα σφάλμα εδώ δεν ακυρώνει το trade.
+  await enableShadowTracking(tradeId).catch((error: unknown) => {
+    console.error(`[shadow] enableShadowTracking(${tradeId}) απέτυχε: ${error instanceof Error ? error.message : String(error)}`);
+  });
   if (live.mode === 'live') {
     await setNativeOrderState(tradeId, {
       liveStrategyOrderId: live.liveStrategyOrderId,

@@ -1,4 +1,4 @@
-import { countOpenTradesForToken, type OpenTradeSubscriptionTarget } from '../db/repositories/paperTrades.js';
+import { countTradesNeedingTicksForToken, type OpenTradeSubscriptionTarget } from '../db/repositories/paperTrades.js';
 import type { Queryable } from '../db/tx.js';
 import type { PumpPortalConnection } from './pumpportalConnection.js';
 
@@ -71,7 +71,9 @@ export async function unsubscribeIfNoLongerNeeded(
   tokenAddress: string,
   conn?: Queryable,
 ): Promise<void> {
-  const stillNeeded = await countOpenTradesForToken(tokenAddress, conn);
+  // 2026-09-28: μετράει ΚΑΙ ανοιχτά shadows (4B shadow δοκιμή) — το shadow πρέπει να
+  // συνεχίσει να παίρνει ticks μετά την πραγματική έξοδο.
+  const stillNeeded = await countTradesNeedingTicksForToken(tokenAddress, conn);
   if (stillNeeded === 0) {
     connection.unsubscribeToken(tokenAddress);
   }

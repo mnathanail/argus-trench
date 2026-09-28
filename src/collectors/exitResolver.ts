@@ -1,5 +1,12 @@
 import { getDecisionById } from '../db/repositories/decisionLog.js';
-import { closeTrade, countOpenTrades, markTradeChecked, selectOpenTradesForCheck, type PaperTrade } from '../db/repositories/paperTrades.js';
+import {
+  closeTrade,
+  countOpenTrades,
+  expireStaleShadows,
+  markTradeChecked,
+  selectOpenTradesForCheck,
+  type PaperTrade,
+} from '../db/repositories/paperTrades.js';
 import type { ExitReason } from '../db/types.js';
 import { fetchWalletSells } from '../gmgn/activity.js';
 import { rethrowIfRateLimited } from '../gmgn/errors.js';
@@ -63,6 +70,17 @@ export async function runExitResolverCycle(
   // Το ΣΥΝΟΛΙΚΟ open count (όχι μόνο το batch) — αλλιώς το log θα έδειχνε "open=10" ενώ
   // ίσως υπάρχουν 40, ακριβώς το νούμερο που χρειαστήκαμε σήμερα για να διαγνώσουμε το
   // backlog. Ένα μικρό, σταθερό επιπλέον weight (query, όχι GMGN call) αξίζει τον κόπο.
+  // 2026-09-28: shadows (4B δοκιμή) ανοιχτά >24h — π.χ. νεκρό token χωρίς ticks — κλείνουν
+  // εδώ ως timeout, και γίνεται unsubscribe όσων tokens δεν χρειάζονται πια. Best-effort.
+  try {
+    const expiredTokens = await expireStaleShadows();
+    if (realtimeConnection) {
+      for (const token of expiredTokens) await unsubscribeIfNoLongerNeeded(realtimeConnection, token);
+    }
+  } catch (error) {
+    console.error(`[exit-resolver] expireStaleShadows απέτυχε: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
   const totalOpen = await countOpenTrades();
   return { openTrades: totalOpen, closed, failures, failureReasons };
 }

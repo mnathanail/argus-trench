@@ -179,6 +179,20 @@ export const LIVE_KILL_SWITCH_CONSEC_LOSSES = 10;
  * paper fallback όπως κάθε άλλο σήμα), αλλιώς μένει false.
  */
 export const LIVE_ON_GRADUATED_TOKENS = false;
+
+/**
+ * "4B" trailing — ΜΟΝΟ σε shadow mode (2026-09-28, ρητή απόφαση χρήστη), βλ. migration
+ * 0017 και realtime/shadowExit.ts. ΔΕΝ επηρεάζει καμία πραγματική έξοδο.
+ *
+ * - GRACE: τα πρώτα X ms μετά την αγορά το trailing ΔΕΝ βγαίνει (το stop-loss ισχύει).
+ * - CONFIRM: μετά το grace, η τιμή πρέπει να ΜΕΙΝΕΙ κάτω από το trailing stop για X ms
+ *   συνεχόμενα (όχι ένα tick) πριν την έξοδο· αν ανέβει ξανά πάνω, το ρολόι μηδενίζει.
+ *
+ * Αφορμή: trade 6442 βγήκε σε στιγμιαία πτώση 25%, 19″ μετά την αγορά, στο +104% — το
+ * token πήγε ~×23. Συντηρητικές αρχικές τιμές· ρύθμιση με βάση το shadow report.
+ */
+export const TRAILING_GRACE_MS = 60_000;
+export const TRAILING_CONFIRM_MS = 10_000;
 export const LIVE_DAILY_LOSS_CAP_SOL = 0.5;
 
 export function conditionOrdersJson(): Record<string, unknown>[] {

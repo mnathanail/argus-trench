@@ -1,4 +1,8 @@
 import {
+  closeShadow,
+  getShadowTradeLocked,
+  listShadowOpenTradeIdsForToken,
+  updateShadowState,
   closeTrade,
   getOpenTradeForTickLocked,
   listOpenTradeIdsForToken,
@@ -18,6 +22,7 @@ import { executeLiveSell, INSUFFICIENT_TOKEN_BALANCE_ERROR_CODE, SwapFailedError
 import { cancelStrategyOrderBestEffort, estimateExitAmountSol, getStrategyOrder, inferExitReason } from '../gmgn/strategyOrders.js';
 import { checkTick } from './tickExit.js';
 import { verifySellAfterError } from '../live/sellVerification.js';
+import { decideShadowTick } from './shadowExit.js';
 import { isDustGraduatedTrade, priceFromTradeEvent, type PumpPortalTradeEvent } from './pumpportalEvents.js';
 import { unsubscribeIfNoLongerNeeded } from './subscriptionManager.js';
 import type { PumpPortalConnection } from './pumpportalConnection.js';
@@ -200,6 +205,10 @@ export async function handleRealtimeTradeEvent(
   event: PumpPortalTradeEvent,
   connection: PumpPortalConnection,
 ): Promise<RealtimeTradeOutcome[]> {
+  // 2026-09-28: shadow δοκιμή 4B — ΠΡΙΝ και ΑΝΕΞΑΡΤΗΤΑ από την πραγματική λογική, και
+  // ποτέ δεν πετάει (ένα σφάλμα στο shadow δεν πρέπει να αγγίξει πραγματική έξοδο).
+  await processShadowTicks(event, connection);
+
   const candidateIds = await listOpenTradeIdsForToken(event.mint);
   if (candidateIds.length === 0) return [];
 
@@ -224,6 +233,48 @@ export async function handleRealtimeTradeEvent(
   }
 
   return outcomes;
+}
+
+/**
+ * Shadow "4B" trailing (βλ. realtime/shadowExit.ts, migration 0017): για κάθε trade με
+ * ανοιχτό shadow σε αυτό το token — πραγματικό trade ανοιχτό ή όχι — ενημερώνει/κλείνει
+ * ΜΟΝΟ τις shadow_* στήλες. Ποτέ δεν πετάει.
+ */
+async function processShadowTicks(event: PumpPortalTradeEvent, connection: PumpPortalConnection): Promise<void> {
+  let ids: number[];
+  try {
+    ids = await listShadowOpenTradeIdsForToken(event.mint);
+  } catch (error) {
+    console.error(`[shadow] listShadowOpenTradeIdsForToken απέτυχε: ${errorText(error)}`);
+    return;
+  }
+  for (const id of ids) {
+    try {
+      await withTransaction(async (client) => {
+        const trade = await getShadowTradeLocked(id, client);
+        if (trade === null) return;
+        const decision = decideShadowTick(
+          {
+            entryPrice: trade.entryPrice,
+            entryAt: trade.entryAt,
+            triggerWalletAddress: trade.triggerWalletAddress,
+            state: { peak: trade.peak, trailingActive: trade.trailingActive, breachSince: trade.breachSince },
+          },
+          event,
+          new Date(),
+        );
+        if (decision.type === 'update') {
+          await updateShadowState(id, decision.state, client);
+        } else if (decision.type === 'exit') {
+          const closed = await closeShadow(id, decision.reason, decision.price, client);
+          // Αν το πραγματικό trade έχει ήδη κλείσει, αυτό ήταν ίσως το τελευταίο που χρειαζόταν ticks.
+          if (closed && trade.status !== 'open') await unsubscribeIfNoLongerNeeded(connection, event.mint, client);
+        }
+      });
+    } catch (error) {
+      console.error(`[shadow] σφάλμα στο trade ${id}: ${errorText(error)}`);
+    }
+  }
 }
 
 /** Το `decideForTick` σκόπιμα αγνοεί trades πέρα από το EXIT_TIMEOUT_MS — ΠΑΝΤΑ

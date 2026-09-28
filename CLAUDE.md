@@ -787,6 +787,27 @@ tests specifically covering the profit floor.
 - `/resume_live` records `resumed_at` (migration 0016); the consecutive-loss streak only
   counts live trades closed after it.
 
+## Live sells, duplicates and the 4B trailing shadow (2026-09-28)
+- **A gmgn-cli error on a sell is not proof it failed.** Trade 6442 (3RNy7erx…) was frozen
+  as needs_manual_exit although the sell had executed on-chain (+104%). After a sell error
+  `executeLiveCloseAndFinalize` checks the real token balance (`live/sellVerification.ts`):
+  gone + SOL received → close with real proceeds; still held → one retry; otherwise
+  needs_manual_exit with the reason. gmgn-cli prints the confirmation banner and
+  "Proceeding non-interactively" on EVERY swap before the real error — `summarize()` skips
+  them; the full CLI output is stored in `trade_execution_errors.error_detail_json`.
+  GMGN business errors (e.g. 40003701) arrive as CLI API errors and are mapped to
+  `SwapFailedError(errorCode)` in `swap.ts`.
+- **One entry per token**: `withTokenEntryLock` (in-process, per mint) + skip if the token
+  already has an open trade — 4 tokens had been bought live 2-3× within seconds.
+- **Missing native orders** (none of the 14 frozen trades had one) are recorded with the
+  full swap response; Telegram says "LIVE ⚠️ χωρίς native order".
+- **4B trailing in SHADOW mode** (migration 0017, `realtime/shadowExit.ts`): grace
+  `TRAILING_GRACE_MS` (no trailing exit right after entry; stop-loss still immediate) +
+  confirmation `TRAILING_CONFIRM_MS` (price must stay below the stop, not one tick). Runs on
+  the same ticks as the real logic, independently, and keeps running after the real exit;
+  NEVER affects a real exit. Compare with `railway run npm run trailing-shadow-report`;
+  apply to real exits only if it wins across all trades.
+
 ## Phased rollout
 0. ✅ Setup & instrumentation (API key, plugin install, logging skeleton) — **done**
 1. 🚧 Read-only signal collection (no trading, logging only) — **implemented**:
