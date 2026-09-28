@@ -29,6 +29,10 @@ export const ROUTE_WEIGHTS = {
   'portfolio token-balance': 1,
   'portfolio created-tokens': 2,
   'token holders': 5,
+  // 2026-09-28 — on-demand gate (decision/onDemandGate.ts). Βάρη από
+  // .agents/skills/gmgn-token/SKILL.md (Rate Limit πίνακας).
+  'token info': 1,
+  'token security': 1,
   'track follow-tokens': 3,
   'track follow-token-groups': 1,
   'track follow-wallet': 3,

@@ -18,6 +18,7 @@ import {
   LIVE_POSITION_SIZE_PCT,
   LIVE_POSITION_SIZE_SOL,
   LIVE_ON_GRADUATED_TOKENS,
+  LIVE_ON_DEMAND_GATE,
   conditionOrdersJson,
   liveExitConditionOrders,
 } from '../decision/paperTradingConfig.js';
@@ -30,6 +31,7 @@ import {
   type PumpPortalTradeEvent,
 } from './pumpportalEvents.js';
 import { subscribeForNewTrade } from './subscriptionManager.js';
+import { tryOnDemandGate } from './onDemandGateRunner.js';
 import type { PumpPortalConnection } from './pumpportalConnection.js';
 import type { TradeMode } from '../db/types.js';
 
@@ -49,7 +51,12 @@ export interface RealtimeEntryResult {
   graduated: boolean;
   /** Live χωρίς επιβεβαιωμένο native GMGN order = χωρίς server-side stop-loss/trailing. */
   nativeOrderVerified: boolean;
+  /** Μπήκε μέσω on-demand gate (2026-09-28) — βλ. decision/onDemandGate.ts. */
+  onDemandGate: boolean;
 }
+
+/** Από πού ήρθε το «πέρασε το gate» ενός σήματος. */
+export type GateSource = 'discovery' | 'on_demand';
 
 export type EntryWalletInput = Pick<
   WatchlistWallet,
@@ -152,9 +159,24 @@ export async function handleRealtimeEntryEvent(
 
   const wallet = await getWallet(event.traderPublicKey);
   const version = logicVersion(PHASE1_THRESHOLDS);
-  const gateSnapshotExists = (await findPassedTokens([event.mint], version)).has(event.mint);
+  let gateSnapshotExists = (await findPassedTokens([event.mint], version)).has(event.mint);
   // ΜΟΝΟ live/paper — τα παλιά log_only δεν πρέπει να κόβουν live entries (βλ. countOpenLiveOrPaperTrades).
   const openTradesCount = await countOpenLiveOrPaperTrades();
+
+  // 2026-09-28 — on-demand gate: το token δεν έχει (ακόμα) περάσει το gate του discovery,
+  // αλλά όλα τα άλλα κριτήρια ισχύουν → έλεγχος εκείνη τη στιγμή, αντί να χάσουμε τη
+  // (συνήθως πρώτη και φτηνότερη) αγορά του wallet. ΜΟΝΟ σε bonding-curve tokens: τα
+  // graduated είναι εξ ορισμού ήδη «αργά». Βλ. decision/onDemandGate.ts.
+  let gateSource: GateSource = 'discovery';
+  if (
+    !gateSnapshotExists &&
+    !isGraduatedEvent(event) &&
+    decideEntry(event, wallet, true, openTradesCount).type === 'enter' &&
+    (await tryOnDemandGate(event.mint, version)) === 'passed'
+  ) {
+    gateSnapshotExists = true;
+    gateSource = 'on_demand';
+  }
 
   const decision = decideEntry(event, wallet, gateSnapshotExists, openTradesCount);
   if (decision.type === 'skip') {
@@ -192,7 +214,7 @@ export async function handleRealtimeEntryEvent(
       console.log(`[realtime-entry-skip] reason=token_already_open mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`);
       return null;
     }
-    return enterClaimedSignal(event, connection, wallet, decision, version);
+    return enterClaimedSignal(event, connection, wallet, decision, version, gateSource);
   });
   if (result === IN_FLIGHT) {
     console.log(`[realtime-entry-skip] reason=entry_in_flight mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`);
@@ -207,6 +229,7 @@ async function enterClaimedSignal(
   wallet: WatchlistWallet,
   decision: Extract<EntryDecision, { type: 'enter' }>,
   version: string,
+  gateSource: GateSource,
 ): Promise<RealtimeEntryResult | null> {
 
   const decisionLogId = await recordTrigger({
@@ -229,6 +252,8 @@ async function enterClaimedSignal(
       // αποφοιτημένα tokens (paper-only δοκιμή) από τα κανονικά bonding-curve σήματα.
       token_stage: decision.graduated ? 'graduated' : 'bonding_curve',
       entry_price_source: decision.graduated ? 'trade_sol_over_tokens' : 'bonding_curve_reserves',
+      // 2026-09-28 — για το `npm run on-demand-gate-report`.
+      gate_source: gateSource,
     },
     decision: 'signal_logged',
     decisionReasonText:
@@ -242,7 +267,9 @@ async function enterClaimedSignal(
   const live =
     decision.graduated && !LIVE_ON_GRADUATED_TOKENS
       ? fallbackOutcomeFor('graduated_paper_only')
-      : await attemptLiveEntry(event.mint);
+      : gateSource === 'on_demand' && !LIVE_ON_DEMAND_GATE
+        ? fallbackOutcomeFor('on_demand_gate_paper_only')
+        : await attemptLiveEntry(event.mint);
   // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #3): το live.entryPrice είναι ΗΔΗ η πραγματική,
   // εκτελεσμένη τιμή — καμία προσομοίωση δε χρειάζεται ή πρέπει να εφαρμοστεί εκεί. Η
   // ωμή, παρατηρημένη τιμή του σήματος (decision.entryPrice) εφαρμόζεται ΜΟΝΟ όταν η
@@ -293,5 +320,6 @@ async function enterClaimedSignal(
     mode: live.mode,
     graduated: decision.graduated,
     nativeOrderVerified: live.nativeOrderVerified,
+    onDemandGate: gateSource === 'on_demand',
   };
 }

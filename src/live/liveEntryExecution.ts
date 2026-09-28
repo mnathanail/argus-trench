@@ -73,6 +73,8 @@ const PAPER_OUTCOME: LiveEntryOutcome = {
 export type LiveFallbackReason =
   /** Graduated token ενώ LIVE_ON_GRADUATED_TOKENS=false — σκόπιμα paper, δοκιμαστική περίοδος. */
   | 'graduated_paper_only'
+  /** Είσοδος μέσω on-demand gate ενώ LIVE_ON_DEMAND_GATE=false — σκόπιμα paper (2026-09-28). */
+  | 'on_demand_gate_paper_only'
   | 'wallet_unavailable'
   | 'insufficient_capital'
   | 'risk_gate_blocked'

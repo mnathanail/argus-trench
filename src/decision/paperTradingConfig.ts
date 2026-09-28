@@ -249,3 +249,17 @@ export function liveExitConditionOrders(): Record<string, unknown>[] {
     },
   ];
 }
+
+/**
+ * On-demand gate (2026-09-28, ρητή απόφαση χρήστη) — βλ. decision/onDemandGate.ts.
+ * Όταν ένα wallet μας αγοράζει token ΧΩΡΙΣ καμία αξιολόγηση gate, το ελέγχουμε εκείνη
+ * τη στιγμή αντί να χάσουμε το σήμα (μετρημένη καθυστέρηση πριν: 20–26′ από τη δημιουργία).
+ * Μόνο paper μέχρι να δείξει θετικά το `npm run on-demand-gate-report`· τότε
+ * LIVE_ON_DEMAND_GATE = true.
+ */
+export const ON_DEMAND_GATE_ENABLED = true;
+export const LIVE_ON_DEMAND_GATE = false;
+/** Ανώτατο όριο on-demand ελέγχων/λεπτό (κάθε έλεγχος = 2 GMGN calls, weight 1+1). */
+export const ON_DEMAND_GATE_MAX_PER_MINUTE = 20;
+/** Προτεραιότητα στον κοινό GMGN limiter: πάνω από όλα τα collectors, κάτω από τα swaps (1000). */
+export const ON_DEMAND_GATE_PRIORITY = 900;

@@ -808,6 +808,14 @@ tests specifically covering the profit floor.
   NEVER affects a real exit. Compare with `railway run npm run trailing-shadow-report`;
   apply to real exits only if it wins across all trades.
 
+## On-demand gate (2026-09-28)
+
+- Measured before: realtime entries happened a median 20–26 min after token creation. A watched-wallet buy became a trade only if discovery (GMGN trenches, every 2/5 min, and only once GMGN counted ≥1 smart wallet) had ALREADY passed the token, so the first, cheapest buy was lost (`gate_not_passed`).
+- Now (`src/decision/onDemandGate.ts`, `src/realtime/onDemandGateRunner.ts`): when a watched wallet buys a bonding-curve token with NO gate evaluation at all, we check it on the spot with `gmgn-cli token info` + `token security` (weight 1+1, priority 900, ≤20 checks/min, one check per token) using PHASE1_THRESHOLDS.
+- Mapping: top_10_holder_rate exact; bundler = security.bundler_trader_amount_rate else info.stat.top_bundler_trader_percentage; entrapment = info.stat.top_entrapment_trader_percentage; rug_ratio / suspected_insider_hold_rate only if GMGN returns them (the real sample did NOT — recorded as `unavailable`); smart degen ≥1 = the trigger wallet itself. Required fields are fail-closed.
+- Evaluations are stored in decision_log with `candidate_source='on_demand'` (migration 0018); trades carry `trigger_wallet_snapshot_json.gate_source`. A token already rejected by discovery is never re-checked.
+- Paper-only (`LIVE_ON_DEMAND_GATE=false`) until `railway run npm run on-demand-gate-report` says ✅.
+
 ## Price units: SOL vs USD (2026-09-28)
 
 - Realtime trades (`source_channel = 'pumpportal_websocket'`) store entry/peak/exit prices in **SOL per token**. Everything from GMGN (kline candles, gate snapshot `price`) is in **USD**. Never compare the two directly.

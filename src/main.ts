@@ -175,7 +175,9 @@ realtimeConnection = pumpportalApiKey
                   : '💰 LIVE ⚠️ χωρίς native order'
                 : entry.graduated
                   ? '📝 paper (graduated)'
-                  : '📝 paper';
+                  : entry.onDemandGate
+                    ? '📝 paper (on-demand gate)'
+                    : '📝 paper';
             await notify(
               `⚡🎯 νέο trade (realtime) ${modeLabel} — ${short(entry.tokenAddress)} | wallet ${walletLabel} ` +
                 `| entry ${entry.entryPrice.toPrecision(4)} — δες /trades`,

@@ -11,7 +11,8 @@ export type WalletSource = 'smart_money' | 'kol' | 'manual';
  * Πώς παρατηρήθηκε ο candidate. Βλ. migration 0003 και layer 1 στο CLAUDE.md — τα δύο
  * calls δεν έχουν την ίδια στατιστική σημασία και ΔΕΝ πρέπει να αναμειχθούν στην ανάλυση.
  */
-export type CandidateSource = 'gated_pool' | 'sample_window';
+/** 'on_demand' — 2026-09-28, migration 0018 (decision/onDemandGate.ts). */
+export type CandidateSource = 'gated_pool' | 'sample_window' | 'on_demand';
 
 /**
  * Το pump.fun bonding-curve lifecycle stage του candidate ΤΗ ΣΤΙΓΜΗ της αξιολόγησης —

@@ -260,6 +260,49 @@ export async function findPassedTokens(
   return new Map(rows.map((row) => [row.token_address, row.gate_snapshot_json]));
 }
 
+/** Υπάρχει ΟΠΟΙΑΔΗΠΟΤΕ αξιολόγηση gate (πέρασε ή όχι, οποιαδήποτε προέλευση) για το token;
+ * Το on-demand gate τρέχει ΜΟΝΟ όταν δεν υπάρχει καμία — ένα token που το discovery ήδη
+ * απέρριψε μένει απορριμμένο. */
+export async function hasAnyGateEvaluation(tokenAddress: string, logicVersion: string, conn?: Queryable): Promise<boolean> {
+  const { rows } = await db(conn).query<{ exists: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM decision_log WHERE token_address = $1 AND logic_version = $2) AS exists`,
+    [tokenAddress, logicVersion],
+  );
+  return rows[0]?.exists === true;
+}
+
+/** Γράφει το αποτέλεσμα ενός on-demand gate (migration 0018). ON CONFLICT DO NOTHING: αν
+ * δύο events για το ίδιο token έτρεξαν ταυτόχρονα, κρατάμε το πρώτο. null = υπήρχε ήδη. */
+export async function insertOnDemandGateDecision(
+  input: {
+    tokenAddress: string;
+    logicVersion: string;
+    gateSnapshot: Record<string, unknown>;
+    gatePassed: boolean;
+    gateFailReason: string | null;
+  },
+  conn?: Queryable,
+): Promise<number | null> {
+  const { rows } = await db(conn).query<{ id: string }>(
+    `INSERT INTO decision_log (
+       token_address, chain, logic_version, candidate_source, category,
+       gate_snapshot_json, gate_passed, gate_fail_reason, decision, decision_reason_text
+     ) VALUES ($1, 'sol', $2, 'on_demand', 'new_creation', $3, $4, $5, $6, $7)
+     ON CONFLICT (token_address, logic_version, candidate_source, category) DO NOTHING
+     RETURNING id`,
+    [
+      input.tokenAddress,
+      input.logicVersion,
+      JSON.stringify(input.gateSnapshot),
+      input.gatePassed,
+      input.gateFailReason,
+      input.gatePassed ? 'skipped_no_trigger' : 'skipped_gate',
+      input.gatePassed ? 'on-demand gate πέρασε' : `on-demand gate: ${input.gateFailReason ?? ''}`,
+    ],
+  );
+  return rows[0] === undefined ? null : toNum(rows[0].id);
+}
+
 export interface TriggerRecord {
   tokenAddress: string;
   logicVersion: string;
