@@ -97,6 +97,14 @@ export function parseTradeEvent(raw: unknown): PumpPortalTradeEvent | null {
 export const MIN_SOL_FOR_TRADE_PRICE = 0.01;
 
 /**
+ * Τιμή του `source_channel` στο trigger_wallet_snapshot_json των realtime σημάτων.
+ * ΠΡΟΣΟΧΗ (2026-09-28): οι τιμές αυτών των trades (entry/peak/exit) είναι σε SOL ανά
+ * token — ΟΧΙ σε USD όπως οι GMGN τιμές (kline, gate snapshot). Όποιος τις συγκρίνει με
+ * GMGN δεδομένα πρέπει πρώτα να τις φέρει στην ίδια μονάδα (βλ. exitResolver.ts).
+ */
+export const REALTIME_SOURCE_CHANNEL = 'pumpportal_websocket';
+
+/**
  * true όταν το token έχει «αποφοιτήσει» από τη bonding curve: είτε `pool !== 'pump'`, είτε
  * λείπουν εντελώς τα bonding-curve πεδία (το πραγματικό post-graduation σχήμα, βλ.
  * σχόλιο 2026-09-27 πάνω στο interface).

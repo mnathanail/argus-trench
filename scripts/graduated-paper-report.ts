@@ -20,6 +20,7 @@ interface GroupStats {
   total: number;
   open: number;
   closed: number;
+  unknown: number;
   winners: number;
   avgNetPct: number | null;
   medianNetPct: number | null;
@@ -38,6 +39,7 @@ async function groupStats(stage: 'graduated' | 'bonding_curve', modes: string[])
     total: string;
     open: string;
     closed: string;
+    unknown: string;
     winners: string;
     avg_net: string | null;
     median_net: string | null;
@@ -48,7 +50,8 @@ async function groupStats(stage: 'graduated' | 'bonding_curve', modes: string[])
   }>(
     `SELECT count(*)                                                        AS total,
             count(*) FILTER (WHERE pt.status = 'open')                      AS open,
-            count(*) FILTER (WHERE pt.status = 'closed')                    AS closed,
+            count(*) FILTER (WHERE pt.status = 'closed' AND pt.pnl_net_pct IS NOT NULL) AS closed,
+            count(*) FILTER (WHERE pt.status = 'closed' AND pt.pnl_net_pct IS NULL)     AS unknown,
             count(*) FILTER (WHERE pt.status = 'closed' AND pt.pnl_net_pct > 0) AS winners,
             avg(pt.pnl_net_pct) FILTER (WHERE pt.status = 'closed')         AS avg_net,
             percentile_cont(0.5) WITHIN GROUP (ORDER BY pt.pnl_net_pct)
@@ -69,6 +72,7 @@ async function groupStats(stage: 'graduated' | 'bonding_curve', modes: string[])
     total: Number(r?.total ?? 0),
     open: Number(r?.open ?? 0),
     closed: Number(r?.closed ?? 0),
+    unknown: Number(r?.unknown ?? 0),
     winners: Number(r?.winners ?? 0),
     avgNetPct: num(r?.avg_net),
     medianNetPct: num(r?.median_net),
@@ -103,7 +107,7 @@ function printGroup(title: string, s: GroupStats): void {
   const winRate = s.closed > 0 ? s.winners / s.closed : null;
   console.log(`\n=== ${title} ===`);
   console.log(`  από:            ${s.since ? s.since.toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : '—'}`);
-  console.log(`  trades:         ${s.total} (κλειστά ${s.closed}, ανοιχτά ${s.open})`);
+  console.log(`  trades:         ${s.total} (κλειστά ${s.closed}, ανοιχτά ${s.open}, άγνωστο αποτέλεσμα ${s.unknown})`);
   console.log(`  win rate:       ${pct(winRate)} (${s.winners}/${s.closed})`);
   console.log(`  μέσο pnl (net): ${pct(s.avgNetPct)}   διάμεσο: ${pct(s.medianNetPct)}`);
   console.log(`  σύνολο:         ${sol(s.sumPnlSol)}`);
@@ -131,9 +135,13 @@ try {
       `  ⏳ Ανεπαρκές δείγμα: ${graduated.closed} κλειστά (χρειάζονται ≥ ${MIN_CLOSED_FOR_VERDICT}). ` +
         `Άφησέ το να τρέξει κι άλλο πριν αποφασίσεις.`,
     );
-  } else if ((graduated.avgNetPct ?? 0) > 0 && (graduated.sumPnlSol ?? 0) > 0) {
-    console.log('  ✅ Θετικό: μέσο και συνολικό αποτέλεσμα πάνω από μηδέν, μετά τα fees.');
+  } else if ((graduated.avgNetPct ?? 0) > 0 && (graduated.sumPnlSol ?? 0) > 0 && (graduated.medianNetPct ?? 0) > 0) {
+    console.log('  ✅ Θετικό: μέσο, διάμεσο και συνολικό αποτέλεσμα πάνω από μηδέν, μετά τα fees.');
     console.log('     → LIVE_ON_GRADUATED_TOKENS = true στο src/decision/paperTradingConfig.ts');
+  } else if ((graduated.avgNetPct ?? 0) > 0 && (graduated.sumPnlSol ?? 0) > 0) {
+    // 2026-09-28: το πρώτο τρέξιμο έβγαλε ✅ από ΕΝΑ ψεύτικο +7429% (USD bug) με διάμεσο ~0.
+    console.log('  ⚠️ Μέσο/σύνολο θετικό αλλά διάμεσο ≤ 0 — το κέρδος έρχεται από λίγα outliers.');
+    console.log('     → LIVE_ON_GRADUATED_TOKENS μένει false· δες τα μεγαλύτερα trades πριν αποφασίσεις.');
   } else {
     console.log('  ❌ Αρνητικό: μέσο ή συνολικό αποτέλεσμα κάτω από μηδέν, μετά τα fees.');
     console.log('     → LIVE_ON_GRADUATED_TOKENS μένει false.');

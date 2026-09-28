@@ -25,6 +25,7 @@
     "test-live-sell": "tsx scripts/test-live-sell.ts",
     "close-manual-exit": "tsx scripts/close-manual-exit.ts",
     "graduated-report": "tsx scripts/graduated-paper-report.ts",
+    "repair-usd-priced-exits": "tsx scripts/repair-usd-priced-exits.ts",
     "trailing-shadow-report": "tsx scripts/trailing-shadow-report.ts",
     "close-stale-live-trades": "tsx scripts/close-stale-live-trades.ts",
     "create-pumpportal-wallet": "tsx scripts/create-pumpportal-wallet.ts",

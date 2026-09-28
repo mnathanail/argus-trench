@@ -23,7 +23,12 @@ import {
 } from '../decision/paperTradingConfig.js';
 import { WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE } from '../collectors/intervals.js';
 import { attemptLiveEntry, fallbackOutcomeFor } from '../live/liveEntryExecution.js';
-import { isGraduatedEvent, priceFromTradeEvent, type PumpPortalTradeEvent } from './pumpportalEvents.js';
+import {
+  isGraduatedEvent,
+  priceFromTradeEvent,
+  REALTIME_SOURCE_CHANNEL,
+  type PumpPortalTradeEvent,
+} from './pumpportalEvents.js';
 import { subscribeForNewTrade } from './subscriptionManager.js';
 import type { PumpPortalConnection } from './pumpportalConnection.js';
 import type { TradeMode } from '../db/types.js';
@@ -219,7 +224,7 @@ async function enterClaimedSignal(
       buy_cost_sol: event.solAmount,
       buy_tx_hash: event.signature,
       buy_timestamp: Math.floor(Date.now() / 1000),
-      source_channel: 'pumpportal_websocket',
+      source_channel: REALTIME_SOURCE_CHANNEL,
       // 2026-09-27 — για το `npm run graduated-report`: ξεχωρίζει τα σήματα σε ήδη
       // αποφοιτημένα tokens (paper-only δοκιμή) από τα κανονικά bonding-curve σήματα.
       token_stage: decision.graduated ? 'graduated' : 'bonding_curve',

@@ -24,6 +24,7 @@ import {
 import { EXIT_RESOLVER_LOOP_PACING_MS, EXIT_RESOLVER_TRADES_PER_CYCLE } from './intervals.js';
 import { delay } from '../util/delay.js';
 import { unsubscribeIfNoLongerNeeded } from '../realtime/subscriptionManager.js';
+import { REALTIME_SOURCE_CHANNEL } from '../realtime/pumpportalEvents.js';
 import type { PumpPortalConnection } from '../realtime/pumpportalConnection.js';
 
 /**
@@ -102,6 +103,15 @@ async function resolveOneTrade(
   const decision = await getDecisionById(trade.decisionLogId);
   const triggerWallet = decision?.triggerWalletAddress ?? null;
 
+  // ΔΙΟΡΘΩΣΗ 2026-09-28 (πραγματικό incident, trade 6451: "+7429%" που δεν έγινε ποτέ):
+  // τα realtime trades έχουν τιμές σε SOL, ενώ το GMGN kline δίνει USD. Το resolver
+  // σύγκρινε USD candles με SOL entry → κάθε έξοδος που έβρισκε ήταν ~×(τιμή SOL σε USD).
+  // Για αυτά τα trades το realtime tick path (checkTick) είναι ο μόνος σωστός κριτής όσο
+  // είναι ζωντανά· το resolver τα αγγίζει ΜΟΝΟ στο 24ωρο timeout (το decideForTick
+  // αγνοεί τα paper trades μετά από αυτό), με τα candles μετατραπέντα σε SOL.
+  const solPriced = isSolPricedTrade(decision?.sourceChannel ?? null);
+  if (solPriced && Date.now() - trade.entryAt.getTime() < EXIT_TIMEOUT_MS) return false;
+
   const fromSeconds = Math.floor(trade.entryAt.getTime() / 1000);
   const rawCandles = await fetchKline({
     tokenAddress: trade.tokenAddress,
@@ -109,10 +119,15 @@ async function resolveOneTrade(
     priority: 200,
   });
   // Defensive sort: δεν έχουμε επαληθεύσει αν το GMGN εγγυάται χρονολογική σειρά.
-  const candles = [...rawCandles].sort((a, b) => a.timestamp - b.timestamp);
+  const sortedCandles = [...rawCandles].sort((a, b) => a.timestamp - b.timestamp);
+  const candles = solPriced
+    ? anchorCandlesToEntryPrice(sortedCandles, trade.simulatedEntryPrice, trade.entryAt)
+    : sortedCandles;
 
   let walletSellAt: Date | null = null;
-  if (triggerWallet !== null) {
+  // Στα realtime trades το πούλημα του trigger wallet το βλέπει ήδη το tick path
+  // (exit_signal) — δεν ξοδεύουμε GMGN activity call γι' αυτό.
+  if (triggerWallet !== null && !solPriced) {
     const sells = await fetchWalletSells(triggerWallet, {
       priority: 100,
       stopAtTimestamp: trade.entryAt.getTime(),
@@ -152,6 +167,35 @@ async function resolveOneTrade(
     await unsubscribeIfNoLongerNeeded(realtimeConnection, trade.tokenAddress);
   }
   return true;
+}
+
+/** Το trade ανοίχτηκε από το realtime κανάλι → οι τιμές του είναι σε SOL, όχι USD. */
+export function isSolPricedTrade(sourceChannel: string | null): boolean {
+  return sourceChannel === REALTIME_SOURCE_CHANNEL;
+}
+
+/**
+ * Φέρνει USD candles (GMGN kline) στη μονάδα ενός SOL-denominated entry price, ώστε το
+ * `resolveExit` να συγκρίνει ίδιο με ίδιο. Άγκυρα: η τιμή του candle τη στιγμή της
+ * εισόδου (close του candle που περιέχει το entry, αλλιώς open του πρώτου μετά) ≙
+ * entryPrice. Οι σχετικές κινήσεις μετά την είσοδο μένουν ακριβείς· το μόνο σφάλμα είναι
+ * η κίνηση μέσα στο λεπτό της εισόδου και η μεταβολή SOL/USD μέσα στο 24ωρο.
+ * Χωρίς χρήσιμη άγκυρα → [] (το resolveExit το κλείνει ως no_market_data στο timeout,
+ * δηλαδή «άγνωστο αποτέλεσμα» — ποτέ ψεύτικο νούμερο).
+ */
+export function anchorCandlesToEntryPrice(candles: readonly Candle[], entryPrice: number, entryAt: Date): Candle[] {
+  const containing = candles.filter((c) => c.timestamp <= entryAt.getTime()).at(-1);
+  const after = candles.find((c) => c.timestamp > entryAt.getTime());
+  const anchorUsd = containing !== undefined ? containing.close : after?.open;
+  if (anchorUsd === undefined || !(anchorUsd > 0) || !(entryPrice > 0)) return [];
+  const scale = entryPrice / anchorUsd;
+  return candles.map((c) => ({
+    ...c,
+    open: c.open * scale,
+    high: c.high * scale,
+    low: c.low * scale,
+    close: c.close * scale,
+  }));
 }
 
 export interface ExitCheckInput {

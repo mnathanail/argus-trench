@@ -808,6 +808,14 @@ tests specifically covering the profit floor.
   NEVER affects a real exit. Compare with `railway run npm run trailing-shadow-report`;
   apply to real exits only if it wins across all trades.
 
+## Price units: SOL vs USD (2026-09-28)
+
+- Realtime trades (`source_channel = 'pumpportal_websocket'`) store entry/peak/exit prices in **SOL per token**. Everything from GMGN (kline candles, gate snapshot `price`) is in **USD**. Never compare the two directly.
+- Incident: the exit resolver ran USD candles against SOL entries and closed realtime paper trades at ~×(SOL/USD) — trade 6451 "+7429%" produced the only ✅ of the first `graduated-report`.
+- Fix (`exitResolver.ts`): SOL-priced trades are skipped until the 24h timeout (the tick path owns them); at timeout the candles are anchored to the entry price (`anchorCandlesToEntryPrice`). No GMGN activity call for them.
+- Cleanup: `railway run npm run repair-usd-priced-exits` (dry run) → `-- --apply`. Marks affected paper trades as unknown outcome (`no_market_data`, pnl NULL); originals kept in `exit_trigger_detail_json.usd_price_bug`.
+- `graduated-report` now needs a positive **median** too before it says ✅.
+
 ## Phased rollout
 0. ✅ Setup & instrumentation (API key, plugin install, logging skeleton) — **done**
 1. 🚧 Read-only signal collection (no trading, logging only) — **implemented**:

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { resolveExit } from './exitResolver.js';
+import { anchorCandlesToEntryPrice, isSolPricedTrade, resolveExit } from './exitResolver.js';
 import type { Candle } from '../gmgn/kline.js';
 
 const ENTRY_AT = new Date('2026-08-28T00:00:00Z');
@@ -251,4 +251,45 @@ test('resolveExit: real incident shape — checked ~73h late, a huge pump AFTER 
   assert.equal(result?.exitReason, 'timeout');
   assert.equal(result?.exitPrice, 0.58);
   assert.ok((result?.exitPrice ?? 0) < ENTRY_PRICE, 'δεν πρέπει να δείχνει κέρδος από το μεταγενέστερο pump');
+});
+
+// --- 2026-09-28: SOL-priced realtime trades vs USD kline (incident trade 6451) ---
+
+const SOL_ENTRY = 0.000000400856; // SOL ανά token (PumpPortal)
+const SOL_USD = 75.3;
+function usdCandle(secondsAfterEntry: number, solPrice: number): Candle {
+  const usd = solPrice * SOL_USD;
+  return { timestamp: ENTRY_AT.getTime() + secondsAfterEntry * 1000, open: usd, high: usd * 1.02, low: usd * 0.7, close: usd };
+}
+
+test('REGRESSION 6451: USD candles against a SOL entry fake a ×75 trailing exit; anchored candles do not', () => {
+  const candles = [usdCandle(-30, SOL_ENTRY), usdCandle(30, SOL_ENTRY * 1.01), usdCandle(90, SOL_ENTRY * 0.99)];
+  const now = new Date(ENTRY_AT.getTime() + 120_000);
+
+  const raw = resolveExit({ entryPrice: SOL_ENTRY, entryAt: ENTRY_AT, candles, walletSellAt: null, now });
+  assert.equal(raw?.exitReason, 'trailing_stop');
+  assert.ok((raw?.exitPrice ?? 0) / SOL_ENTRY > 40, 'το bug: έξοδος ~×(SOL/USD)');
+
+  const anchored = anchorCandlesToEntryPrice(candles, SOL_ENTRY, ENTRY_AT);
+  const fixed = resolveExit({ entryPrice: SOL_ENTRY, entryAt: ENTRY_AT, candles: anchored, walletSellAt: null, now });
+  assert.equal(fixed, null, 'καμία κίνηση ≥ +50% → καμία έξοδος');
+});
+
+test('anchorCandlesToEntryPrice: relative moves are preserved in SOL; the containing candle close is the anchor', () => {
+  const candles = [usdCandle(-30, SOL_ENTRY), usdCandle(60, SOL_ENTRY * 2)];
+  const out = anchorCandlesToEntryPrice(candles, SOL_ENTRY, ENTRY_AT);
+  assert.ok(Math.abs((out[0]?.close ?? 0) - SOL_ENTRY) < 1e-18);
+  assert.ok(Math.abs((out[1]?.close ?? 0) / SOL_ENTRY - 2) < 1e-9);
+});
+
+test('anchorCandlesToEntryPrice: no candle at/before entry → first candle open is the anchor; no candles → []', () => {
+  const out = anchorCandlesToEntryPrice([usdCandle(30, SOL_ENTRY * 3)], SOL_ENTRY, ENTRY_AT);
+  assert.ok(Math.abs((out[0]?.open ?? 0) - SOL_ENTRY) < 1e-18);
+  assert.deepEqual(anchorCandlesToEntryPrice([], SOL_ENTRY, ENTRY_AT), []);
+});
+
+test('isSolPricedTrade: only the realtime channel', () => {
+  assert.equal(isSolPricedTrade('pumpportal_websocket'), true);
+  assert.equal(isSolPricedTrade(null), false);
+  assert.equal(isSolPricedTrade('gmgn_smart_money'), false);
 });

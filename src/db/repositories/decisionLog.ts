@@ -409,6 +409,9 @@ export interface DecisionSummary {
   tokenAddress: string;
   triggerType: TriggerType | null;
   triggerWalletAddress: string | null;
+  /** `trigger_wallet_snapshot_json->>'source_channel'` — 'pumpportal_websocket' σημαίνει
+   * ότι το simulated_entry_price είναι σε SOL (όχι USD όπως οι GMGN τιμές). */
+  sourceChannel: string | null;
 }
 
 /**
@@ -423,8 +426,10 @@ export async function getDecisionById(id: number, conn?: Queryable): Promise<Dec
     token_address: string;
     trigger_type: TriggerType | null;
     trigger_wallet_address: string | null;
+    source_channel: string | null;
   }>(
-    `SELECT id, token_address, trigger_type, trigger_wallet_address
+    `SELECT id, token_address, trigger_type, trigger_wallet_address,
+            trigger_wallet_snapshot_json->>'source_channel' AS source_channel
        FROM decision_log WHERE id = $1`,
     [id],
   );
@@ -435,6 +440,7 @@ export async function getDecisionById(id: number, conn?: Queryable): Promise<Dec
     tokenAddress: row.token_address,
     triggerType: row.trigger_type,
     triggerWalletAddress: row.trigger_wallet_address,
+    sourceChannel: row.source_channel,
   };
 }
 
