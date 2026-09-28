@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { decideEntry, entriesInFlightCount, IN_FLIGHT, withTokenEntryLock, type EntryWalletInput } from './realtimeEntryHandler.js';
+import {
+  buildEntryTiming,
+  decideEntry,
+  entriesInFlightCount,
+  IN_FLIGHT,
+  withTokenEntryLock,
+  type EntryWalletInput,
+} from './realtimeEntryHandler.js';
+import { fallbackOutcomeFor } from '../live/liveEntryExecution.js';
 import type { PumpPortalTradeEvent } from './pumpportalEvents.js';
 
 const WALLET = 'WalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1';
@@ -139,4 +147,53 @@ test('withTokenEntryLock: the lock is released even if the entry throws', async 
   await assert.rejects(withTokenEntryLock('MintD', async () => { throw new Error('swap failed'); }));
   assert.equal(entriesInFlightCount(), 0);
   assert.equal(await withTokenEntryLock('MintD', async () => 'again'), 'again');
+});
+
+// --- 2026-09-28: entry_timing_json ---
+
+const TIMING_EVENT: PumpPortalTradeEvent = {
+  signature: 'sig1', mint: 'MintT', traderPublicKey: 'W', txType: 'buy', tokenAmount: 1000, solAmount: 0.5,
+  vSolInBondingCurve: 30, vTokensInBondingCurve: 1_000_000_000, marketCapSol: 30, pool: 'pump',
+};
+
+test('buildEntryTiming: live entry records signal vs executed price and the live timing', () => {
+  const t = buildEntryTiming(
+    TIMING_EVENT,
+    { type: 'enter', entryPrice: 0.00000003, graduated: false },
+    'discovery',
+    { receivedAt: Date.now() - 2500, lookupMs: 12, onDemandGateMs: null },
+    8,
+    2400,
+    {
+      mode: 'live', actualEntryAmountSol: 0.05, entryPrice: 0.0000000315, liveStrategyOrderId: null,
+      nativeOrderVerified: false, killSwitchJustTriggered: false, fallbackReason: null,
+      timing: {
+        walletQueueMs: 0, walletExecMs: 900, riskGateMs: 5, reserveMs: 4,
+        swap: { submitQueueMs: 0, submitExecMs: 1300, confirmMs: 0, initialStatus: 'successful' },
+        postSwapMs: 5000, totalMs: 7200, txHash: 'tx', reportInputSol: 0.05, reportGasSol: 0.00004,
+        balanceDiffSol: 0.0521, priorityFeeSol: 0.00002, tipFeeSol: 0.00002,
+      },
+    },
+  );
+  assert.equal(t['mode'], 'live');
+  assert.equal(t['gate_source'], 'discovery');
+  assert.ok(Math.abs((t['slippage_vs_signal'] as number) - 0.05) < 1e-9);
+  assert.equal((t['signal'] as Record<string, unknown>)['mcap_sol'], 30);
+  assert.ok(((t['ms'] as Record<string, number>)['event_to_insert'] ?? 0) >= 2500);
+  assert.equal((t['live'] as Record<string, unknown>)['walletExecMs'], 900);
+});
+
+test('buildEntryTiming: paper fallback keeps the reason, no slippage', () => {
+  const t = buildEntryTiming(
+    TIMING_EVENT,
+    { type: 'enter', entryPrice: 0.00000003, graduated: false },
+    'on_demand',
+    { receivedAt: Date.now(), lookupMs: 10, onDemandGateMs: 1100 },
+    5,
+    0,
+    fallbackOutcomeFor('on_demand_gate_paper_only'),
+  );
+  assert.equal(t['fallback_reason'], 'on_demand_gate_paper_only');
+  assert.equal(t['slippage_vs_signal'], null);
+  assert.equal((t['ms'] as Record<string, number>)['on_demand_gate'], 1100);
 });

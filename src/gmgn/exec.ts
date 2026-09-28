@@ -54,6 +54,14 @@ export interface RunOptions {
   priority?: number;
   /** Το `--raw` μπαίνει αυτόματα· δώσε false μόνο αν θέλεις το human-readable output. */
   raw?: boolean;
+  /** 2026-09-28 — μέτρηση ταχύτητας εισόδου: πόσο περίμενε στην ουρά του κοινού limiter
+   * και πόσο κράτησε το ίδιο το gmgn-cli (spawn + HTTP). Καλείται και σε αποτυχία. */
+  onTiming?: (timing: CliTiming) => void;
+}
+
+export interface CliTiming {
+  queueMs: number;
+  execMs: number;
 }
 
 /**
@@ -68,7 +76,9 @@ export async function runCli(
   options: RunOptions = {},
 ): Promise<unknown> {
   const weight = ROUTE_WEIGHTS[route];
+  const queuedAt = Date.now();
   await limiter.acquire(weight, options.priority);
+  const startedAt = Date.now();
 
   const argv = options.raw === false ? [...args] : [...args, '--raw'];
 
@@ -82,7 +92,9 @@ export async function runCli(
       encoding: 'utf8',
     });
     stdout = result.stdout;
+    options.onTiming?.({ queueMs: startedAt - queuedAt, execMs: Date.now() - startedAt });
   } catch (error) {
+    options.onTiming?.({ queueMs: startedAt - queuedAt, execMs: Date.now() - startedAt });
     const gmgnError = toGmgnError(error, argv);
     if (gmgnError instanceof GmgnRateLimitError) {
       // Also pause requests already waiting inside the limiter queue.

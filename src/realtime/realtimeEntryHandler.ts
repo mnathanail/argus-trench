@@ -23,7 +23,12 @@ import {
   liveExitConditionOrders,
 } from '../decision/paperTradingConfig.js';
 import { WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE } from '../collectors/intervals.js';
-import { attemptLiveEntry, fallbackOutcomeFor } from '../live/liveEntryExecution.js';
+import {
+  attemptLiveEntry,
+  fallbackOutcomeFor,
+  type LiveEntryOutcome,
+  type LiveEntryTiming,
+} from '../live/liveEntryExecution.js';
 import {
   isGraduatedEvent,
   priceFromTradeEvent,
@@ -57,6 +62,13 @@ export interface RealtimeEntryResult {
 
 /** Από πού ήρθε το «πέρασε το gate» ενός σήματος. */
 export type GateSource = 'discovery' | 'on_demand';
+
+/** 2026-09-28 — χρόνοι της διαδρομής σήμα → trade (βλ. entry_timing_json, migration 0019). */
+interface EntryTimeline {
+  receivedAt: number;
+  lookupMs: number;
+  onDemandGateMs: number | null;
+}
 
 export type EntryWalletInput = Pick<
   WatchlistWallet,
@@ -156,12 +168,14 @@ export async function handleRealtimeEntryEvent(
   connection: PumpPortalConnection,
 ): Promise<RealtimeEntryResult | null> {
   if (event.txType !== 'buy') return null; // γρήγορη έξοδος, αποφεύγει τα παρακάτω DB calls
+  const receivedAt = Date.now();
 
   const wallet = await getWallet(event.traderPublicKey);
   const version = logicVersion(PHASE1_THRESHOLDS);
   let gateSnapshotExists = (await findPassedTokens([event.mint], version)).has(event.mint);
   // ΜΟΝΟ live/paper — τα παλιά log_only δεν πρέπει να κόβουν live entries (βλ. countOpenLiveOrPaperTrades).
   const openTradesCount = await countOpenLiveOrPaperTrades();
+  const timeline: EntryTimeline = { receivedAt, lookupMs: Date.now() - receivedAt, onDemandGateMs: null };
 
   // 2026-09-28 — on-demand gate: το token δεν έχει (ακόμα) περάσει το gate του discovery,
   // αλλά όλα τα άλλα κριτήρια ισχύουν → έλεγχος εκείνη τη στιγμή, αντί να χάσουμε τη
@@ -171,11 +185,15 @@ export async function handleRealtimeEntryEvent(
   if (
     !gateSnapshotExists &&
     !isGraduatedEvent(event) &&
-    decideEntry(event, wallet, true, openTradesCount).type === 'enter' &&
-    (await tryOnDemandGate(event.mint, version)) === 'passed'
+    decideEntry(event, wallet, true, openTradesCount).type === 'enter'
   ) {
-    gateSnapshotExists = true;
-    gateSource = 'on_demand';
+    const onDemandStartedAt = Date.now();
+    const outcome = await tryOnDemandGate(event.mint, version);
+    timeline.onDemandGateMs = Date.now() - onDemandStartedAt;
+    if (outcome === 'passed') {
+      gateSnapshotExists = true;
+      gateSource = 'on_demand';
+    }
   }
 
   const decision = decideEntry(event, wallet, gateSnapshotExists, openTradesCount);
@@ -214,7 +232,7 @@ export async function handleRealtimeEntryEvent(
       console.log(`[realtime-entry-skip] reason=token_already_open mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`);
       return null;
     }
-    return enterClaimedSignal(event, connection, wallet, decision, version, gateSource);
+    return enterClaimedSignal(event, connection, wallet, decision, version, gateSource, timeline);
   });
   if (result === IN_FLIGHT) {
     console.log(`[realtime-entry-skip] reason=entry_in_flight mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`);
@@ -230,8 +248,9 @@ async function enterClaimedSignal(
   decision: Extract<EntryDecision, { type: 'enter' }>,
   version: string,
   gateSource: GateSource,
+  timeline: EntryTimeline,
 ): Promise<RealtimeEntryResult | null> {
-
+  const claimStartedAt = Date.now();
   const decisionLogId = await recordTrigger({
     tokenAddress: event.mint,
     logicVersion: version,
@@ -264,6 +283,8 @@ async function enterClaimedSignal(
 
   // 2026-09-27: σε graduated token, live ΜΟΝΟ αν LIVE_ON_GRADUATED_TOKENS — αλλιώς
   // κατευθείαν paper, χωρίς καν να αγγίξουμε κεφάλαιο/risk gate/swap.
+  const claimMs = Date.now() - claimStartedAt;
+  const liveStartedAt = Date.now();
   const live =
     decision.graduated && !LIVE_ON_GRADUATED_TOKENS
       ? fallbackOutcomeFor('graduated_paper_only')
@@ -276,6 +297,8 @@ async function enterClaimedSignal(
   // θέση είναι paper/log_only — βλ. applyEntrySlippage στο pnl.ts.
   const finalEntryPrice =
     live.entryPrice ?? applyEntrySlippage(decision.entryPrice, PAPER_ASSUMED_SLIPPAGE_PCT);
+  const entryTiming = buildEntryTiming(event, decision, gateSource, timeline, claimMs, Date.now() - liveStartedAt, live);
+  logEntryTiming(event.mint, entryTiming);
 
   const tradeId = await openTrade({
     decisionLogId,
@@ -295,6 +318,7 @@ async function enterClaimedSignal(
     // πριν, άσχετο με τη σημερινή αλλαγή.
     conditionOrders: live.mode === 'live' ? liveExitConditionOrders() : conditionOrdersJson(),
     entryAt: new Date(), // πραγματικό realtime event — "τώρα" ΕΙΝΑΙ η πραγματική στιγμή
+    entryTiming,
   });
   await linkTrade(decisionLogId, tradeId);
   // 2026-09-28: κάθε νέο trade καταγράφει ΚΑΙ πού θα είχε βγει το 4B trailing (shadow) —
@@ -322,4 +346,70 @@ async function enterClaimedSignal(
     nativeOrderVerified: live.nativeOrderVerified,
     onDemandGate: gateSource === 'on_demand',
   };
+}
+
+/**
+ * 2026-09-28 — το περιεχόμενο του paper_trades.entry_timing_json (migration 0019). Σταθερά
+ * ονόματα: τα διαβάζει το scripts/entry-speed-report.ts.
+ *  - signal.price: η τιμή της αγοράς του wallet μας (ωμή, χωρίς paper slippage).
+ *  - executed_price / slippage_vs_signal: μόνο live — πόσο χειρότερα αγοράσαμε από αυτό.
+ *  - ms.*: χρόνοι ανά βήμα· ms.event_to_insert = από τη λήψη του event ως το INSERT του trade.
+ *  - live: ό,τι μέτρησε το attemptLiveEntry (ουρά/εκτέλεση wallet, swap submit/confirm,
+ *    post-swap, report vs balance-diff, fees).
+ */
+export function buildEntryTiming(
+  event: PumpPortalTradeEvent,
+  decision: Extract<EntryDecision, { type: 'enter' }>,
+  gateSource: GateSource,
+  timeline: EntryTimeline,
+  claimMs: number,
+  liveAttemptMs: number,
+  live: LiveEntryOutcome,
+): Record<string, unknown> {
+  const executed = live.mode === 'live' ? live.entryPrice : null;
+  return {
+    v: 1,
+    event_received_at: new Date(timeline.receivedAt).toISOString(),
+    gate_source: gateSource,
+    graduated: decision.graduated,
+    mode: live.mode,
+    fallback_reason: live.fallbackReason,
+    signal: {
+      price: decision.entryPrice,
+      mcap_sol: event.marketCapSol ?? null,
+      sol_amount: event.solAmount,
+      signature: event.signature,
+    },
+    executed_price: executed,
+    slippage_vs_signal: executed !== null && decision.entryPrice > 0 ? executed / decision.entryPrice - 1 : null,
+    ms: {
+      lookup: timeline.lookupMs,
+      on_demand_gate: timeline.onDemandGateMs,
+      claim: claimMs,
+      live_attempt: liveAttemptMs,
+      event_to_insert: Date.now() - timeline.receivedAt,
+    },
+    live: live.timing,
+  };
+}
+
+function logEntryTiming(mint: string, t: Record<string, unknown>): void {
+  const ms = t['ms'] as Record<string, number | null>;
+  const live = t['live'] as LiveEntryTiming | null;
+  const slip = t['slippage_vs_signal'] as number | null;
+  const parts = [
+    `mint=${mint.slice(0, 8)}`,
+    `mode=${String(t['mode'])}`,
+    `gate=${String(t['gate_source'])}`,
+    `total=${ms['event_to_insert']}ms`,
+    `lookup=${ms['lookup']}`,
+    ms['on_demand_gate'] !== null ? `on_demand=${ms['on_demand_gate']}` : null,
+    `claim=${ms['claim']}`,
+    live?.walletExecMs != null ? `wallet=${live.walletQueueMs}+${live.walletExecMs}` : null,
+    live?.swap ? `swap=${live.swap.submitQueueMs}+${live.swap.submitExecMs} confirm=${live.swap.confirmMs}(${live.swap.initialStatus})` : null,
+    live?.postSwapMs != null ? `post=${live.postSwapMs}` : null,
+    slip !== null ? `slip=${(slip * 100).toFixed(1)}%` : null,
+    t['fallback_reason'] ? `fallback=${String(t['fallback_reason'])}` : null,
+  ];
+  console.log(`[entry-timing] ${parts.filter((p) => p !== null).join(' ')}`);
 }

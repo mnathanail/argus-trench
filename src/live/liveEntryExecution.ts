@@ -1,5 +1,12 @@
 import { fetchLiveSolWallet, getLiveSolBalance } from '../gmgn/portfolio.js';
-import { executeLiveBuy } from '../gmgn/swap.js';
+import {
+  CONDITION_ORDER_PRIORITY_FEE_SOL,
+  CONDITION_ORDER_TIP_FEE_SOL,
+  executeLiveBuy,
+  TRADE_PRIORITY,
+  type SwapTiming,
+} from '../gmgn/swap.js';
+import type { CliTiming } from '../gmgn/exec.js';
 import { getStrategyOrder } from '../gmgn/strategyOrders.js';
 import { decideTradeMode } from '../decision/tradeMode.js';
 import { checkLiveRiskGate } from '../decision/liveRiskGate.js';
@@ -36,6 +43,35 @@ export interface LiveEntryOutcome {
    * ο χρήστης να το μάθει ΑΜΕΣΩΣ αντί μόνο από το επόμενο (πιθανώς μπαγιάτικο) daily
    * digest — πραγματικό εύρημα 2026-09-17/18, ο χρήστης μπερδεύτηκε με στιγμιότυπο digest. */
   killSwitchJustTriggered: boolean;
+  /** Γιατί ΔΕΝ έγινε live (null όταν έγινε). 2026-09-28 — για το entry-speed-report. */
+  fallbackReason: LiveFallbackReason | null;
+  /** Χρόνοι/μετρήσεις της απόπειρας (null όταν δεν ξεκίνησε καν, π.χ. graduated). */
+  timing: LiveEntryTiming | null;
+}
+
+/**
+ * 2026-09-28, ρητό αίτημα χρήστη: «βάλε ό,τι log χρειάζεται για να έχεις ξεκάθαρη εικόνα
+ * αύριο» — πού πάει ο χρόνος μιας live αγοράς και πόσο πληρώνουμε σε τιμή γι' αυτόν.
+ * Αποθηκεύεται στο paper_trades.entry_timing_json (migration 0019).
+ */
+export interface LiveEntryTiming {
+  /** `portfolio info` πριν το swap: αναμονή στην ουρά + εκτέλεση. */
+  walletQueueMs: number | null;
+  walletExecMs: number | null;
+  riskGateMs: number | null;
+  reserveMs: number | null;
+  swap: SwapTiming | null;
+  /** Μετά το swap: balance + επιβεβαίωση native order (το trade ΔΕΝ είναι ακόμα στη βάση). */
+  postSwapMs: number | null;
+  totalMs: number;
+  txHash: string | null;
+  /** report.input_amount / gas_native vs balance-diff — αν συμφωνούν, το pre-swap
+   * `portfolio info` μπορεί να βγει από τη διαδρομή της αγοράς. */
+  reportInputSol: number | null;
+  reportGasSol: number | null;
+  balanceDiffSol: number | null;
+  priorityFeeSol: number;
+  tipFeeSol: number;
 }
 
 /**
@@ -56,6 +92,8 @@ const PAPER_OUTCOME: LiveEntryOutcome = {
   liveStrategyOrderId: null,
   nativeOrderVerified: false,
   killSwitchJustTriggered: false,
+  fallbackReason: null,
+  timing: null,
 };
 
 /**
@@ -87,7 +125,7 @@ export function fallbackOutcomeFor(reason: LiveFallbackReason, killSwitchJustTri
   // flag, ώστε ένα μελλοντικό λάθος στον caller να μην μπορεί ποτέ να στείλει το alert
   // κάτω από λάθος λόγο αποτυχίας (π.χ. reservation_lost/swap_failed).
   const shouldFlag = reason === 'risk_gate_blocked' && killSwitchJustTriggered;
-  return shouldFlag ? { ...PAPER_OUTCOME, killSwitchJustTriggered: true } : PAPER_OUTCOME;
+  return { ...PAPER_OUTCOME, fallbackReason: reason, killSwitchJustTriggered: shouldFlag };
 }
 
 /** Πόσο περιμένουμε πριν το πρώτο verify poll — το strategy order χρειάζεται λίγο χρόνο
@@ -143,9 +181,40 @@ async function verifyNativeOrder(
  * paper row αμέσως μετά, γι' αυτό η αποτυχία δεν συνδέεται άμεσα με trade id εδώ).
  */
 export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryOutcome> {
+  const startedAt = Date.now();
+  const timing: LiveEntryTiming = {
+    walletQueueMs: null,
+    walletExecMs: null,
+    riskGateMs: null,
+    reserveMs: null,
+    swap: null,
+    postSwapMs: null,
+    totalMs: 0,
+    txHash: null,
+    reportInputSol: null,
+    reportGasSol: null,
+    balanceDiffSol: null,
+    priorityFeeSol: Number(CONDITION_ORDER_PRIORITY_FEE_SOL),
+    tipFeeSol: Number(CONDITION_ORDER_TIP_FEE_SOL),
+  };
+  const withTiming = (outcome: LiveEntryOutcome): LiveEntryOutcome => ({
+    ...outcome,
+    timing: { ...timing, totalMs: Date.now() - startedAt },
+  });
+
   let wallet;
   try {
-    wallet = await fetchLiveSolWallet();
+    // 2026-09-28: TRADE_PRIORITY — πριν ήταν προτεραιότητα 0 (ίδια με τα collectors), άρα
+    // μια live αγορά μπορούσε να περιμένει στην ουρά πίσω από discovery/scoring/kline
+    // πριν καν ξεκινήσει το swap. Το ίδιο το call μένει: το υπόλοιπο ΠΡΙΝ το swap
+    // χρειάζεται για το πραγματικό κόστος (balance-diff) — βλ. LiveEntryTiming.reportInputSol.
+    wallet = await fetchLiveSolWallet({
+      priority: TRADE_PRIORITY,
+      onTiming: (t: CliTiming) => {
+        timing.walletQueueMs = t.queueMs;
+        timing.walletExecMs = t.execMs;
+      },
+    });
   } catch (error) {
     // ΔΙΟΡΘΩΣΗ 2026-09-18 (πραγματικό εύρημα): πριν, αυτό το catch ήταν ΕΝΤΕΛΩΣ σιωπηλό —
     // ούτε log, ούτε trade_execution_errors row, τίποτα. Αν το `portfolio info` αρχίσει
@@ -164,20 +233,24 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
       errorMessage: `δεν διαβάστηκε το live SOL wallet (portfolio info) — ${error instanceof Error ? error.message : String(error)}`,
       errorDetail: error,
     });
-    return fallbackOutcomeFor('wallet_unavailable'); // δεν διαβάστηκε καν το υπόλοιπο — ασφαλές fallback
+    return withTiming(fallbackOutcomeFor('wallet_unavailable')); // δεν διαβάστηκε καν το υπόλοιπο — ασφαλές fallback
   }
 
   const balance = wallet.balances.find((b) => b.symbol === 'SOL')?.balance ?? 0;
   if (decideTradeMode(balance, LIVE_POSITION_SIZE_SOL) !== 'live') {
-    return fallbackOutcomeFor('insufficient_capital');
+    return withTiming(fallbackOutcomeFor('insufficient_capital'));
   }
 
+  let stepAt = Date.now();
   const risk = await checkLiveRiskGate();
-  if (!risk.allowed) return fallbackOutcomeFor('risk_gate_blocked', risk.justHalted);
+  timing.riskGateMs = Date.now() - stepAt;
+  if (!risk.allowed) return withTiming(fallbackOutcomeFor('risk_gate_blocked', risk.justHalted));
 
+  stepAt = Date.now();
   const reserved = await reserveLiveCapital(balance, LIVE_POSITION_SIZE_SOL);
+  timing.reserveMs = Date.now() - stepAt;
   // ένα σχεδόν-ταυτόχρονο σήμα μόλις δέσμευσε ό,τι έμενε
-  if (!reserved) return fallbackOutcomeFor('reservation_lost');
+  if (!reserved) return withTiming(fallbackOutcomeFor('reservation_lost'));
 
   try {
     const result = await executeLiveBuy(
@@ -187,9 +260,16 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
       {},
       liveExitConditionOrders(),
     );
-    const balanceAfter = await getLiveSolBalance();
+    timing.swap = result.timing ?? null;
+    timing.txHash = result.txHash;
+    timing.reportInputSol = result.reportInputAmount;
+    timing.reportGasSol = result.reportGasNative;
+    stepAt = Date.now();
+    const balanceAfter = await getLiveSolBalance({ priority: TRADE_PRIORITY });
+    timing.balanceDiffSol = balance - balanceAfter;
     const nativeOrderVerified =
       result.strategyOrderId !== null && (await verifyNativeOrder(wallet.address, tokenAddress, result.strategyOrderId));
+    timing.postSwapMs = Date.now() - stepAt;
     if (result.strategyOrderId === null) {
       // 2026-09-28: ζητήσαμε --condition-orders αλλά το GMGN δεν δημιούργησε strategy — η
       // θέση ΔΕΝ έχει server-side stop-loss/trailing, μόνο το δικό μας realtime tracking.
@@ -217,14 +297,16 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
         errorMessage: `native strategy order ${result.strategyOrderId} δεν επιβεβαιώθηκε υγιές μετά το entry — fallback στο δικό μας realtime tracking`,
       });
     }
-    return {
+    return withTiming({
       mode: 'live',
       actualEntryAmountSol: balance - balanceAfter,
       entryPrice: result.executedPrice,
       liveStrategyOrderId: nativeOrderVerified ? result.strategyOrderId : null,
       nativeOrderVerified,
       killSwitchJustTriggered: false, // επιτυχές live trade — δεν πυροδότησε τίποτα
-    };
+      fallbackReason: null,
+      timing: null,
+    });
   } catch (error) {
     await recordExecutionError({
       paperTradeId: null,
@@ -234,7 +316,7 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
       errorMessage: error instanceof Error ? error.message : String(error),
       errorDetail: error,
     });
-    return fallbackOutcomeFor('swap_failed');
+    return withTiming(fallbackOutcomeFor('swap_failed'));
   } finally {
     // ΠΑΝΤΑ απελευθέρωσε την κράτηση, ό,τι κι αν συνέβη στο swap — αλλιώς το reserved_sol
     // θα «κολλούσε» ψηλά για πάντα, μπλοκάροντας μελλοντικά, εντελώς άσχετα σήματα.

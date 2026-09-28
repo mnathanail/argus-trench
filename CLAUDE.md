@@ -816,6 +816,13 @@ tests specifically covering the profit floor.
 - Evaluations are stored in decision_log with `candidate_source='on_demand'` (migration 0018); trades carry `trigger_wallet_snapshot_json.gate_source`. A token already rejected by discovery is never re-checked.
 - Paper-only (`LIVE_ON_DEMAND_GATE=false`) until `railway run npm run on-demand-gate-report` says ✅.
 
+## Entry speed measurement (2026-09-28)
+
+- Every realtime trade writes `paper_trades.entry_timing_json` (migration 0019): signal price/mcap, gate source, fallback reason, ms per step (lookup, on-demand gate, claim, live attempt, event→insert), and for live the `portfolio info` queue/exec time, swap queue/exec/confirm, post-swap time, executed price vs signal (`slippage_vs_signal`), GMGN report input+gas vs balance-diff, priority/tip fee. Same data as one `[entry-timing]` log line per entry.
+- `runCli` accepts `onTiming` (limiter queue vs exec). The pre-swap `portfolio info` and post-swap balance now run at TRADE_PRIORITY (were 0 = same as collectors).
+- Analysis: `railway run npm run entry-speed-report`. Decides (a) whether higher priority/tip fees are worth it (slippage grows with delay?) and (b) whether the pre-swap `portfolio info` can be dropped (report input+gas ≈ balance-diff?).
+- Known: after the swap the trade is inserted only after balance + native-order verify (NATIVE_ORDER_VERIFY_DELAY_MS 4s) — realtime exits don't see it meanwhile; `postSwapMs` measures it.
+
 ## Price units: SOL vs USD (2026-09-28)
 
 - Realtime trades (`source_channel = 'pumpportal_websocket'`) store entry/peak/exit prices in **SOL per token**. Everything from GMGN (kline candles, gate snapshot `price`) is in **USD**. Never compare the two directly.

@@ -27,7 +27,7 @@ const POLL_INTERVAL_MS = 5_000;
  * rateLimiter.ts) — μόνο εξασφαλίζει ότι, μόλις υπάρξει διαθέσιμος χώρος, το trade
  * εξυπηρετείται ΠΡΩΤΟ, όχι πίσω από μια ουρά αναμονής routine κλήσεων.
  */
-const TRADE_PRIORITY = 1000;
+export const TRADE_PRIORITY = 1000;
 
 const FILLED_STATUSES = new Set(['confirmed', 'processed', 'successful']);
 const FAILED_STATUSES = new Set(['failed', 'expired']);
@@ -49,6 +49,25 @@ export interface SwapExecutionResult {
    * ζητήσαμε `--condition-orders` αλλά δεν ήρθε `strategy_order_id` (2026-09-28: σε 14
    * διαδοχικά live trades δεν δημιουργήθηκε κανένα native order, χωρίς καμία ένδειξη γιατί). */
   swapResponse: unknown;
+  /** `report.input_amount` σε ανθρώπινες μονάδες (÷10^input_token_decimals) — μόνο όταν
+   * το GMGN το δίνει (state=30, successful). 2026-09-28: καταγράφεται για σύγκριση με το
+   * balance-diff, ώστε να κρίνουμε αν μπορούμε να βγάλουμε το pre-swap `portfolio info`. */
+  reportInputAmount: number | null;
+  /** `report.gas_native` — fee σε SOL, όταν υπάρχει. */
+  reportGasNative: number | null;
+  /** Χρόνοι του swap (μόνο από executeLiveBuy) — βλ. entry-speed-report. */
+  timing?: SwapTiming;
+}
+
+export interface SwapTiming {
+  /** Αναμονή στην ουρά του κοινού GMGN limiter πριν σταλεί το swap. */
+  submitQueueMs: number;
+  /** gmgn-cli swap: spawn + HTTP μέχρι να επιστρέψει το πρώτο response. */
+  submitExecMs: number;
+  /** Από το πρώτο response μέχρι τελικό status (order get polling ανά POLL_INTERVAL_MS). */
+  confirmMs: number;
+  /** Status του ΠΡΩΤΟΥ response (π.χ. 'pending' ή ήδη 'successful'). */
+  initialStatus: string;
 }
 
 /** Ένα condition sub-order για `--condition-orders` (βλ. gmgn-swap SKILL.md). Δεν
@@ -147,10 +166,29 @@ export function parseSwapResponse(raw: unknown): SwapExecutionResult {
   const txHash = typeof obj['hash'] === 'string' ? obj['hash'] : null;
   const report = typeof obj['report'] === 'object' && obj['report'] !== null ? (obj['report'] as Record<string, unknown>) : null;
   const executedPrice = report !== null && typeof report['price'] === 'string' ? Number(report['price']) : null;
+  const reportNum = (key: string): number | null => {
+    const v = report?.[key];
+    const n = typeof v === 'string' || typeof v === 'number' ? Number(v) : NaN;
+    return Number.isFinite(n) ? n : null;
+  };
+  const inputRaw = reportNum('input_amount');
+  const inputDecimals = reportNum('input_token_decimals');
+  const reportInputAmount = inputRaw !== null && inputDecimals !== null ? inputRaw / 10 ** inputDecimals : null;
+  const reportGasNative = reportNum('gas_native');
   const strategyOrderId = typeof obj['strategy_order_id'] === 'string' && obj['strategy_order_id'] !== ''
     ? obj['strategy_order_id']
     : null;
-  return { filled: FILLED_STATUSES.has(status), status, orderId, txHash, executedPrice, strategyOrderId, swapResponse: raw };
+  return {
+    filled: FILLED_STATUSES.has(status),
+    status,
+    orderId,
+    txHash,
+    executedPrice,
+    strategyOrderId,
+    swapResponse: raw,
+    reportInputAmount,
+    reportGasNative,
+  };
 }
 
 /** Poll `order get` μέχρι τελικό status ή εξάντληση προσπαθειών — ΠΟΤΕ δεν αναφέρει
@@ -182,8 +220,8 @@ async function pollUntilTerminal(orderId: string, initial: SwapExecutionResult, 
 /** Ελάχιστα, ασφαλή defaults — το SKILL.md απαιτεί και τα δύο flags όποτε περνάμε
  * `--condition-orders` σε sol. Τιμές πολύ πάνω από τα ρητά ελάχιστα (0.00001) του
  * SKILL.md, ώστε να μην κολλήσει η strategy creation σε peak congestion. */
-const CONDITION_ORDER_PRIORITY_FEE_SOL = '0.00002';
-const CONDITION_ORDER_TIP_FEE_SOL = '0.00002';
+export const CONDITION_ORDER_PRIORITY_FEE_SOL = '0.00002';
+export const CONDITION_ORDER_TIP_FEE_SOL = '0.00002';
 
 /**
  * Αγορά — input=SOL (currency, άρα ΠΑΝΤΑ --amount, ΠΟΤΕ --percent, βλ. SKILL.md).
@@ -218,6 +256,7 @@ export async function executeLiveBuy(
         ]
       : [];
 
+  let submit = { queueMs: 0, execMs: 0 };
   const raw = await runSwapCli(
     [
       'swap',
@@ -231,14 +270,23 @@ export async function executeLiveBuy(
       ...conditionOrderArgs,
       '--yes',
     ],
-    tradeOptions,
+    { ...tradeOptions, onTiming: (t) => { submit = t; } },
   );
   const result = parseSwapResponse(raw);
   if (FAILED_STATUSES.has(result.status)) {
     throw new SwapFailedError(`swap status=${result.status}`, result.status);
   }
-  if (result.orderId === null) return result; // ασυνήθιστο, αλλά τίποτα άλλο να κάνουμε
-  return pollUntilTerminal(result.orderId, result, tradeOptions);
+  const confirmStartedAt = Date.now();
+  const final = result.orderId === null ? result : await pollUntilTerminal(result.orderId, result, tradeOptions);
+  return {
+    ...final,
+    timing: {
+      submitQueueMs: submit.queueMs,
+      submitExecMs: submit.execMs,
+      confirmMs: Date.now() - confirmStartedAt,
+      initialStatus: result.status,
+    },
+  };
 }
 
 /**

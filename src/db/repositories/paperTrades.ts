@@ -25,6 +25,8 @@ export interface NewPaperTrade {
    * συναλλαγή να μετρηθεί. Αντικαθιστά την ανάγκη για assumed_fees_pct σε live trades —
    * το πραγματικό pnl_sol υπολογίζεται απευθείας από αυτό, βλ. realtimeExitHandler.ts. */
   actualEntryAmountSol?: number;
+  /** 2026-09-28 (migration 0019) — χρόνοι/τιμές της εισόδου, βλ. realtimeEntryHandler.ts. */
+  entryTiming?: Record<string, unknown> | null;
   /** Η ΠΡΑΓΜΑΤΙΚΗ στιγμή της on-chain αγοράς (π.χ. buy.timestamp), ΟΧΙ πότε το
    * επεξεργαστήκαμε — undefined πέφτει σε now() (προεπιλογή, π.χ. αν δεν υπάρχει
    * διαθέσιμο ιστορικό timestamp). Κρίσιμο για catch-up batches: ένα wallet-activity
@@ -141,8 +143,9 @@ export async function openTrade(input: NewPaperTrade, conn?: Queryable): Promise
     `INSERT INTO paper_trades (
        decision_log_id, token_address, chain, mode, intended_size_pct, bankroll_at_entry,
        simulated_entry_price, simulated_entry_amount_sol, assumed_slippage_pct,
-       assumed_latency_ms, condition_orders_json, entry_at, actual_entry_amount_sol
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       assumed_latency_ms, condition_orders_json, entry_at, actual_entry_amount_sol,
+       entry_timing_json
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
      RETURNING id`,
     [
       input.decisionLogId,
@@ -158,6 +161,7 @@ export async function openTrade(input: NewPaperTrade, conn?: Queryable): Promise
       toJsonParam(input.conditionOrders),
       input.entryAt ?? new Date(),
       input.actualEntryAmountSol ?? null,
+      input.entryTiming ? JSON.stringify(input.entryTiming) : null,
     ],
   );
   return toNum(requireRow(rows, 'openTrade').id);

@@ -27,6 +27,7 @@
     "graduated-report": "tsx scripts/graduated-paper-report.ts",
     "repair-usd-priced-exits": "tsx scripts/repair-usd-priced-exits.ts",
     "on-demand-gate-report": "tsx scripts/on-demand-gate-report.ts",
+    "entry-speed-report": "tsx scripts/entry-speed-report.ts",
     "trailing-shadow-report": "tsx scripts/trailing-shadow-report.ts",
     "close-stale-live-trades": "tsx scripts/close-stale-live-trades.ts",
     "create-pumpportal-wallet": "tsx scripts/create-pumpportal-wallet.ts",
