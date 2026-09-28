@@ -1,5 +1,5 @@
 import { runCli, type RunOptions } from './exec.js';
-import { GmgnResponseError } from './errors.js';
+import { GmgnCliError, GmgnResponseError } from './errors.js';
 import { config } from '../config.js';
 import { delay } from '../util/delay.js';
 
@@ -66,9 +66,47 @@ export class SwapFailedError extends Error {
     message: string,
     readonly status: string,
     readonly errorCode: string | null = null,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = 'SwapFailedError';
+  }
+}
+
+/**
+ * Το GMGN `code` από ένα αποτυχημένο `POST /v1/trade/swap`, όπως το τυπώνει το gmgn-cli
+ * (output.js exitOnError / OpenApiClient buildOpenApiErrorMessage):
+ * `[gmgn-cli] POST /v1/trade/swap failed: HTTP 400 code=40003701 error=... message=...`.
+ * null αν δεν υπάρχει τέτοια γραμμή.
+ */
+export function swapApiErrorCodeFromCliOutput(output: string): string | null {
+  const match = /\/v1\/trade\/swap failed:[^\n]*\bcode=(\d+)/.exec(output);
+  return match?.[1] ?? null;
+}
+
+/**
+ * `runCli('swap', ...)` που μετατρέπει ένα GMGN API business error σε `SwapFailedError`
+ * με το σωστό `errorCode`.
+ *
+ * ΔΙΟΡΘΩΣΗ 2026-09-28 (πραγματικό incident, επαναλαμβανόμενα "ΠΡΑΓΜΑΤΙΚΗ πώληση
+ * ΑΠΕΤΥΧΕ" alerts, π.χ. trade 6490): το GMGN επιστρέφει το `40003701` ("insufficient
+ * token balance") ως API-level error (`code !== 0` στο response), οπότε το gmgn-cli
+ * τερματίζει με exit 1 και εμείς παίρναμε `GmgnCliError` — ΟΧΙ `SwapFailedError`. Το
+ * realtimeExitHandler όμως αναγνωρίζει "η θέση έχει ήδη πουληθεί από το native GMGN
+ * order" ΜΟΝΟ με `SwapFailedError.errorCode === '40003701'`, άρα κάθε φορά που το native
+ * trailing/stop-loss πουλούσε πρώτο, το trade κατέληγε needs_manual_exit αντί να κλείσει
+ * με τα πραγματικά νούμερα του strategy order. Το αρχικό GmgnCliError (με ολόκληρο το
+ * output) μένει ως `cause`.
+ */
+async function runSwapCli(args: readonly string[], options: RunOptions): Promise<unknown> {
+  try {
+    return await runCli('swap', args, options);
+  } catch (error) {
+    if (error instanceof GmgnCliError) {
+      const code = swapApiErrorCodeFromCliOutput(error.output);
+      if (code !== null) throw new SwapFailedError(error.message, 'error', code, { cause: error });
+    }
+    throw error;
   }
 }
 
@@ -175,8 +213,7 @@ export async function executeLiveBuy(
         ]
       : [];
 
-  const raw = await runCli(
-    'swap',
+  const raw = await runSwapCli(
     [
       'swap',
       '--chain', 'sol',
@@ -212,8 +249,7 @@ export async function executeLiveSell(
   if (!config.automatedTradesAllowed()) throw new AutomatedTradesDisabledError();
   const tradeOptions: RunOptions = { priority: TRADE_PRIORITY, ...options };
 
-  const raw = await runCli(
-    'swap',
+  const raw = await runSwapCli(
     [
       'swap',
       '--chain', 'sol',

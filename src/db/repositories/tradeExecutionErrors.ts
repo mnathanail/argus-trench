@@ -13,16 +13,36 @@ export interface NewTradeExecutionError {
   errorDetail?: unknown;
 }
 
-function serializeErrorDetail(detail: unknown): string | null {
+/**
+ * ΔΙΟΡΘΩΣΗ 2026-09-28 (πραγματικό incident, trade 6490): για Error κρατούσαμε μόνο
+ * name/message/stack — ΟΧΙ τα δικά του πεδία. Το `GmgnCliError.output` (ολόκληρο το
+ * stdout+stderr του gmgn-cli, δηλαδή ο πραγματικός λόγος αποτυχίας) χανόταν έτσι
+ * εντελώς, και μια λάθος σύνοψη στο error_message δεν είχε καμία εφεδρεία στη βάση.
+ * Τώρα αποθηκεύονται και όλα τα own enumerable πεδία (output, exitCode, command,
+ * errorCode, status, ...), και το `cause` αναδρομικά.
+ */
+export function serializeErrorDetail(detail: unknown): string | null {
   if (detail === undefined) return null;
   if (detail instanceof Error) {
-    return JSON.stringify({ name: detail.name, message: detail.message, stack: detail.stack });
+    return JSON.stringify(errorToPlain(detail));
   }
   try {
     return JSON.stringify(detail);
   } catch {
     return JSON.stringify({ raw: String(detail) });
   }
+}
+
+function errorToPlain(error: Error, depth = 0): Record<string, unknown> {
+  const plain: Record<string, unknown> = { name: error.name, message: error.message, stack: error.stack };
+  for (const [key, value] of Object.entries(error)) {
+    if (key in plain) continue;
+    plain[key] = value;
+  }
+  if (error.cause !== undefined && depth < 3) {
+    plain['cause'] = error.cause instanceof Error ? errorToPlain(error.cause, depth + 1) : error.cause;
+  }
+  return plain;
 }
 
 /**

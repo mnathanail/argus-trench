@@ -12,7 +12,7 @@ import { test } from 'node:test';
 
 import { buildActivityArgs, parseActivityResponse } from './activity.js';
 import { GmgnCliError, GmgnRateLimitError, GmgnResponseError, rethrowIfRateLimited } from './errors.js';
-import { LOCAL_CLI_BIN, runCli } from './exec.js';
+import { LOCAL_CLI_BIN, runCli, summarize } from './exec.js';
 import { buildHoldersArgs, parseHoldersResponse } from './holders.js';
 import { buildKlineArgs, parseKlineResponse } from './kline.js';
 import { TokenBucket, type Clock } from './rateLimiter.js';
@@ -372,5 +372,55 @@ test('non-JSON output becomes GmgnResponseError, not a crash', async () => {
       runCli('market trenches', ['market', 'trenches']),
       GmgnResponseError,
     );
+  });
+});
+
+// --- 2026-09-28: το πραγματικό σχήμα ενός αποτυχημένου swap ΜΕΤΑ από επιτυχή επιβεβαίωση ---
+// Trade 6490: το Telegram έδειχνε "gmgn-cli failed: [gmgn-cli] Proceeding non-interactively
+// (--yes + GMGN_ALLOW_AUTOMATED_TRADES=1)." — δηλαδή τη γραμμή που λέει ότι η επιβεβαίωση
+// ΠΕΡΑΣΕ, ενώ το πραγματικό σφάλμα (output.js exitOnError) ερχόταν μετά.
+const PASSED_CONFIRMATION_THEN_API_ERROR = [
+  '',
+  '⚠️  Swap — confirmation required',
+  '---------------------------------',
+  '  Chain:        sol',
+  '  Wallet:       Abc123',
+  '  Input token:  8sL3pqc1Ppsy7NN2U2f1dVUDK12KZ4HWHsuiiBMPpump',
+  '[gmgn-cli] Proceeding non-interactively (--yes + GMGN_ALLOW_AUTOMATED_TRADES=1).',
+  '[gmgn-cli] POST /v1/trade/swap failed: HTTP 400 code=40003701 error=INSUFFICIENT_BALANCE message=insufficient token balance',
+].join('\n');
+
+test('summarize: after a PASSED confirmation, surfaces the real API error — never the "Proceeding non-interactively" line', () => {
+  const summary = summarize(PASSED_CONFIRMATION_THEN_API_ERROR);
+  assert.match(summary, /code=40003701/);
+  assert.doesNotMatch(summary, /Proceeding non-interactively/);
+  assert.doesNotMatch(summary, /confirmation required/);
+});
+
+test('summarize: skips the indented summary lines of the banner block (they are not errors)', () => {
+  const summary = summarize(['⚠️  Swap — confirmation required', '-----', '  Chain:        sol', 'boom: something broke'].join('\n'));
+  assert.equal(summary, 'boom: something broke');
+});
+
+test('summarize: ignores gmgn-cli sanitize notices', () => {
+  const summary = summarize(
+    ['[gmgn-cli] Notice: neutralized 1 suspicious metadata value(s) in this response (possible prompt-injection attempt).', '[gmgn-cli] real failure'].join('\n'),
+  );
+  assert.equal(summary, '[gmgn-cli] real failure');
+});
+
+test('summarize: plain single-line output is returned as-is', () => {
+  assert.equal(summarize('something failed'), 'something failed');
+});
+
+test('passed confirmation + API error via the real CLI path: GmgnCliError message carries the API error, output keeps everything', async () => {
+  const lines = PASSED_CONFIRMATION_THEN_API_ERROR.split('\n').map((l) => `console.error(${JSON.stringify(l)});`);
+  await withFakeCli([...lines, 'process.exit(1);'].join('\n'), async () => {
+    await assert.rejects(runCli('swap', ['swap', '--yes']), (error: unknown) => {
+      assert.ok(error instanceof GmgnCliError);
+      assert.match(error.message, /^gmgn-cli failed: \[gmgn-cli\] POST \/v1\/trade\/swap failed: .*code=40003701/);
+      assert.match(error.output, /Proceeding non-interactively/);
+      return true;
+    });
   });
 });

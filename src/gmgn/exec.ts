@@ -116,7 +116,7 @@ function toGmgnError(error: unknown, argv: readonly string[]): Error {
 
   const rateLimited = /\b429\b|RATE_LIMIT/i.test(output);
   if (rateLimited) {
-    return new GmgnRateLimitError(`GMGN rate limit hit: ${firstLine(output)}`, parseResetAt(output), output);
+    return new GmgnRateLimitError(`GMGN rate limit hit: ${summarize(output)}`, parseResetAt(output), output);
   }
 
   const exitCode = typeof err.code === 'number' ? err.code : null;
@@ -126,32 +126,50 @@ function toGmgnError(error: unknown, argv: readonly string[]): Error {
 }
 
 /**
- * ΔΙΟΡΘΩΣΗ 2026-09-27, πραγματικό incident: 6 live sells απέτυχαν με μήνυμα
- * "gmgn-cli failed: ⚠️  Swap — confirmation required" — αυτό είναι απλά ο ΤΙΤΛΟΣ που
- * τυπώνει το confirm.js του gmgn-cli (βλ. node_modules/gmgn-cli/dist/confirm.js,
- * printSummary()) ΠΡΙΝ τυπώσει τον πραγματικό λόγο αποτυχίας 2-3 γραμμές πιο κάτω (είτε
- * "--yes was supplied but GMGN_ALLOW_AUTOMATED_TRADES=1 is not set..." είτε "No
- * interactive terminal available..."). Το παλιό firstLine(output) έπαιρνε ΜΟΝΟ τη
- * δεύτερη γραμμή του output (η πρώτη είναι κενή — `\n${header}`), δηλαδή ΜΟΝΟ τον τίτλο
- * — ο πραγματικός λόγος χανόταν εντελώς από το δικό μας trade_execution_errors.error_message,
- * καθιστώντας αδύνατη τη διάγνωση χωρίς να ξαναδιαβάσουμε το raw CLI output (που δεν
- * κρατάμε πουθενά αλλού). `output` στο GmgnCliError ΠΑΡΑΜΕΝΕΙ το πλήρες κείμενο —
- * αυτό εδώ αλλάζει μόνο ποια γραμμή(ες) καταλήγουν στο μήνυμα που βλέπουμε.
+ * Γραμμές του gmgn-cli που ΔΕΝ είναι ποτέ ο λόγος αποτυχίας: το banner επιβεβαίωσης
+ * (confirm.js printSummary — τυπώνεται σε ΚΑΘΕ swap, πριν από οτιδήποτε άλλο), η
+ * γραμμή που λέει ότι η επιβεβαίωση ΠΕΡΑΣΕ, και οι sanitize notices (output.js).
  */
-function summarize(output: string): string {
-  if (/confirmation required/i.test(output)) {
-    // Η πρώτη γραμμή που μοιάζει με πραγματικό λόγο (ξεκινάει με "[gmgn-cli]", ή περιέχει
-    // "GMGN_ALLOW_AUTOMATED_TRADES"/"interactive terminal"/"Confirmation not received") —
-    // ΟΧΙ απλά η πρώτη μη-κενή γραμμή, που θα ήταν ξανά ο τίτλος.
-    const lines = output.split('\n').map((l) => l.trim());
-    const reasonLine = lines.find(
-      (l) =>
-        l.startsWith('[gmgn-cli]') ||
-        /GMGN_ALLOW_AUTOMATED_TRADES|interactive terminal|Confirmation not received/i.test(l),
-    );
-    if (reasonLine) return reasonLine;
+const NOISE_LINE =
+  /confirmation required|^-{3,}$|Proceeding non-interactively|^\[gmgn-cli\] (Notice: neutralized|sanitized )/i;
+
+/**
+ * Η γραμμή που εξηγεί την αποτυχία, από το ωμό stdout+stderr του gmgn-cli.
+ *
+ * ΙΣΤΟΡΙΚΟ, πραγματικά incidents:
+ * - Μέχρι 2026-09-27 κρατούσαμε την πρώτη γραμμή, που σε ΚΑΘΕ αποτυχημένο swap ήταν το
+ *   banner "⚠️  Swap — confirmation required" — το confirm.js το τυπώνει ΠΑΝΤΑ πρώτο,
+ *   ακόμα κι όταν η επιβεβαίωση περνάει. Έτσι 6 αποτυχημένα sells φαίνονταν σαν πρόβλημα
+ *   με το GMGN_ALLOW_AUTOMATED_TRADES, ενώ ήταν κανονικές αποτυχίες με κρυμμένο λόγο.
+ * - Η διόρθωση της 2026-09-27 κρατούσε την πρώτη "[gmgn-cli]" γραμμή — που στο επιτυχές
+ *   confirmation είναι "[gmgn-cli] Proceeding non-interactively (...)". 2026-09-28 το
+ *   Telegram έδειχνε ακριβώς αυτό (trade 6490), κρύβοντας πάλι το πραγματικό σφάλμα, που
+ *   έρχεται ΜΕΤΑ (output.js exitOnError: "[gmgn-cli] POST /v1/trade/swap failed: ...").
+ *
+ * Τώρα: αγνοούμε το banner block (banner, παύλες, indented γραμμές περίληψης) και τις
+ * γνωστές θορυβώδεις γραμμές, και προτιμάμε την πρώτη "[gmgn-cli]" γραμμή που μένει
+ * (abort ή API error). `GmgnCliError.output` κρατάει ΠΑΝΤΑ ολόκληρο το κείμενο.
+ */
+export function summarize(output: string): string {
+  const rawLines = output.split('\n');
+  const meaningful: string[] = [];
+  let inSummaryBlock = false;
+  for (const raw of rawLines) {
+    const line = raw.trim();
+    if (line === '') continue;
+    if (/confirmation required/i.test(line)) {
+      inSummaryBlock = true; // ακολουθούν παύλες + indented "  Chain: sol" γραμμές
+      continue;
+    }
+    if (inSummaryBlock) {
+      if (/^-{3,}$/.test(line) || /^\s{2,}\S/.test(raw)) continue;
+      inSummaryBlock = false;
+    }
+    if (NOISE_LINE.test(line)) continue;
+    meaningful.push(line);
   }
-  return firstLine(output);
+  const cliLine = meaningful.find((l) => l.startsWith('[gmgn-cli]'));
+  return cliLine ?? meaningful[0] ?? firstLine(output);
 }
 
 /**
