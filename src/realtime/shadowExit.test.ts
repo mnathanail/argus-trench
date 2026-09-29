@@ -2,7 +2,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { checkTick } from './tickExit.js';
-import { decideShadowTick, shadowTick, type ShadowState, type TrailingConfirmationRules } from './shadowExit.js';
+import {
+  decideShadowTick,
+  NO_EXIT_SIGNAL_RULES,
+  shadowTick,
+  type ShadowState,
+  type TrailingConfirmationRules,
+} from './shadowExit.js';
 import type { PumpPortalTradeEvent } from './pumpportalEvents.js';
 
 const ENTRY_AT = new Date('2026-09-27T21:22:10Z');
@@ -100,4 +106,29 @@ test('decideShadowTick: no price (graduated dust) → ignore; unchanged state �
 test('decideShadowTick: a new peak → update', () => {
   const d = decideShadowTick(trade(), ev(1.6), at(30), RULES);
   assert.deepEqual(d, { type: 'update', state: { peak: 1.6, trailingActive: true, breachSince: null } });
+});
+
+// --- 2026-09-29: shadow «χωρίς exit_signal» ---
+
+test('nosig: the trigger wallet selling does NOT exit — keeps tracking', () => {
+  const d = decideShadowTick(trade(), ev(1.2, { txType: 'sell', traderPublicKey: WALLET }), at(30), NO_EXIT_SIGNAL_RULES, {
+    ignoreExitSignal: true,
+  });
+  assert.deepEqual(d, { type: 'update', state: { peak: 1.2, trailingActive: false, breachSince: null } }, 'καμία έξοδος, μόνο νέο peak');
+});
+
+test('nosig: same exits as today\'s real logic (checkTick) — trailing on the first tick at/below the stop, at that price', () => {
+  const rules = NO_EXIT_SIGNAL_RULES;
+  let r = shadowTick({ entryPrice: 1, entryAt: ENTRY_AT, now: at(5), currentPrice: 4, state: fresh }, rules); // ×4
+  assert.equal(r.exit, null);
+  r = shadowTick({ entryPrice: 1, entryAt: ENTRY_AT, now: at(6), currentPrice: 2.9, state: r.state }, rules); // stop 3
+  assert.deepEqual(r.exit, { reason: 'trailing_stop', price: 2.9 });
+  const real = checkTick({ entryPrice: 1, peakPriceSinceEntry: 4, trailingActive: true, currentPrice: 2.9 });
+  assert.equal(real.exit?.exitReason, 'trailing_stop');
+  assert.equal(real.exit?.exitPrice, 2.9);
+});
+
+test('nosig: stop-loss −50% still immediate', () => {
+  const d = decideShadowTick(trade(), ev(0.45), at(10), NO_EXIT_SIGNAL_RULES, { ignoreExitSignal: true });
+  assert.deepEqual(d, { type: 'exit', reason: 'stop_loss', price: 0.45 });
 });

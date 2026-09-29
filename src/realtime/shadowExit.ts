@@ -41,6 +41,13 @@ export const SHADOW_4B_RULES: TrailingConfirmationRules = {
   confirmMs: TRAILING_CONFIRM_MS,
 };
 
+/**
+ * Shadow «χωρίς exit_signal» (2026-09-29, migration 0020): ΙΔΙΟΙ κανόνες με τη σημερινή
+ * λογική (grace 0, επιβεβαίωση 0 → έξοδος στο πρώτο tick ≤ stop, όπως το checkTick),
+ * μόνο που ΔΕΝ βγαίνει όταν πουλάει το trigger wallet (βλ. `ignoreExitSignal`).
+ */
+export const NO_EXIT_SIGNAL_RULES: TrailingConfirmationRules = { graceMs: 0, confirmMs: 0 };
+
 export type ShadowExitReason = 'stop_loss' | 'trailing_stop' | 'exit_signal' | 'timeout';
 
 export interface ShadowTickResult {
@@ -99,6 +106,7 @@ export function decideShadowTick(
   event: PumpPortalTradeEvent,
   now: Date,
   rules: TrailingConfirmationRules = SHADOW_4B_RULES,
+  options: { ignoreExitSignal?: boolean } = {},
 ): ShadowDecision {
   const price = priceFromTradeEvent(event);
 
@@ -106,7 +114,7 @@ export function decideShadowTick(
     return { type: 'exit', reason: 'timeout', price: price ?? trade.state.peak ?? trade.entryPrice };
   }
 
-  if (event.txType === 'sell' && event.traderPublicKey === trade.triggerWalletAddress) {
+  if (!options.ignoreExitSignal && event.txType === 'sell' && event.traderPublicKey === trade.triggerWalletAddress) {
     return { type: 'exit', reason: 'exit_signal', price: price ?? trade.entryPrice };
   }
 

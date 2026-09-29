@@ -30,6 +30,7 @@
     "entry-speed-report": "tsx scripts/entry-speed-report.ts",
     "reconcile-native-exits": "tsx scripts/reconcile-native-exits.ts",
     "holder-risk-report": "tsx scripts/holder-risk-report.ts",
+    "no-exit-signal-report": "tsx scripts/no-exit-signal-report.ts",
     "trailing-shadow-report": "tsx scripts/trailing-shadow-report.ts",
     "close-stale-live-trades": "tsx scripts/close-stale-live-trades.ts",
     "create-pumpportal-wallet": "tsx scripts/create-pumpportal-wallet.ts",

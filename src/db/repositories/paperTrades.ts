@@ -443,7 +443,8 @@ export async function listOpenTradesWithWallet(
       WHERE pt.status = 'open'
          -- 2026-09-28: και ανοιχτά shadows (<24h), ώστε μετά από restart να συνεχίσουν να
          -- παίρνουν ticks ακόμα κι αν το πραγματικό trade έχει κλείσει.
-         OR (pt.shadow_tracked AND pt.shadow_exit_at IS NULL AND pt.entry_at > now() - interval '24 hours')`,
+         OR (pt.shadow_tracked AND pt.shadow_exit_at IS NULL AND pt.entry_at > now() - interval '24 hours')
+         OR (pt.nosig_tracked AND pt.nosig_exit_at IS NULL AND pt.entry_at > now() - interval '24 hours')`
   );
   return rows.map((row) => ({
     tokenAddress: row.token_address,
@@ -798,20 +799,30 @@ export async function getTodayRealizedLossSol(startOfAthensDay: Date, conn?: Que
   return toNum(requireRow(rows, 'getTodayRealizedLossSol').realized_loss);
 }
 
-// --- 2026-09-28: shadow δοκιμή "4B" trailing (migration 0017, realtime/shadowExit.ts) ---
-// Καμία από αυτές τις συναρτήσεις δεν επηρεάζει πραγματική έξοδο — γράφουν ΜΟΝΟ στις
-// shadow_* στήλες.
+// --- Shadow δοκιμές (καμία δεν επηρεάζει πραγματική έξοδο) ---
+//  '4b'    — 2026-09-28, migration 0017, στήλες shadow_*: trailing με grace + επιβεβαίωση.
+//  'nosig' — 2026-09-29, migration 0020, στήλες nosig_*: σημερινή λογική ΧΩΡΙΣ exit_signal.
+// Τα ονόματα στηλών βγαίνουν ΜΟΝΟ από αυτόν τον σταθερό πίνακα (όχι από input).
 
-/** Ενεργοποιεί την shadow καταγραφή για ένα νέο trade (καλείται αμέσως μετά το openTrade). */
+export type ShadowVariant = '4b' | 'nosig';
+export const SHADOW_VARIANTS: readonly ShadowVariant[] = ['4b', 'nosig'];
+const SHADOW_PREFIX: Readonly<Record<ShadowVariant, 'shadow' | 'nosig'>> = { '4b': 'shadow', nosig: 'nosig' };
+
+/** Ενεργοποιεί ΟΛΕΣ τις shadow καταγραφές για ένα νέο trade (καλείται αμέσως μετά το openTrade). */
 export async function enableShadowTracking(id: number, conn?: Queryable): Promise<void> {
-  await db(conn).query(`UPDATE paper_trades SET shadow_tracked = true WHERE id = $1`, [id]);
+  await db(conn).query(`UPDATE paper_trades SET shadow_tracked = true, nosig_tracked = true WHERE id = $1`, [id]);
 }
 
-/** IDs με ανοιχτό shadow σε αυτό το token — είτε το πραγματικό trade είναι ανοιχτό είτε όχι. */
-export async function listShadowOpenTradeIdsForToken(tokenAddress: string, conn?: Queryable): Promise<number[]> {
+/** IDs με ανοιχτό shadow αυτού του variant σε αυτό το token — είτε το πραγματικό trade είναι ανοιχτό είτε όχι. */
+export async function listShadowOpenTradeIdsForToken(
+  tokenAddress: string,
+  conn?: Queryable,
+  variant: ShadowVariant = '4b',
+): Promise<number[]> {
+  const c = SHADOW_PREFIX[variant];
   const { rows } = await db(conn).query<{ id: string }>(
     `SELECT id FROM paper_trades
-      WHERE token_address = $1 AND shadow_tracked AND shadow_exit_at IS NULL
+      WHERE token_address = $1 AND ${c}_tracked AND ${c}_exit_at IS NULL
         AND simulated_entry_price IS NOT NULL AND simulated_entry_price > 0`,
     [tokenAddress],
   );
@@ -831,7 +842,12 @@ export interface ShadowTradeForTick {
 }
 
 /** ΚΛΕΙΔΩΜΕΝΗ ανάγνωση του shadow state — μέσα σε transaction, ίδιο σκεπτικό με getOpenTradeForTickLocked. */
-export async function getShadowTradeLocked(id: number, client: Queryable): Promise<ShadowTradeForTick | null> {
+export async function getShadowTradeLocked(
+  id: number,
+  client: Queryable,
+  variant: ShadowVariant = '4b',
+): Promise<ShadowTradeForTick | null> {
+  const c = SHADOW_PREFIX[variant];
   const { rows } = await db(client).query<{
     id: string;
     token_address: string;
@@ -839,16 +855,16 @@ export async function getShadowTradeLocked(id: number, client: Queryable): Promi
     simulated_entry_price: string;
     entry_at: Date;
     trigger_wallet_address: string | null;
-    shadow_peak_price: string | null;
-    shadow_trailing_active: boolean;
-    shadow_breach_since: Date | null;
+    peak_price: string | null;
+    trailing_active: boolean;
+    breach_since: Date | null;
   }>(
     `SELECT pt.id, pt.token_address, pt.status, pt.simulated_entry_price, pt.entry_at,
-            dl.trigger_wallet_address, pt.shadow_peak_price, pt.shadow_trailing_active,
-            pt.shadow_breach_since
+            dl.trigger_wallet_address, pt.${c}_peak_price AS peak_price,
+            pt.${c}_trailing_active AS trailing_active, pt.${c}_breach_since AS breach_since
        FROM paper_trades pt
        JOIN decision_log dl ON dl.id = pt.decision_log_id
-      WHERE pt.id = $1 AND pt.shadow_tracked AND pt.shadow_exit_at IS NULL
+      WHERE pt.id = $1 AND pt.${c}_tracked AND pt.${c}_exit_at IS NULL
         AND pt.simulated_entry_price IS NOT NULL AND pt.simulated_entry_price > 0
       FOR UPDATE OF pt`,
     [id],
@@ -862,9 +878,9 @@ export async function getShadowTradeLocked(id: number, client: Queryable): Promi
     entryPrice: toNum(row.simulated_entry_price),
     entryAt: row.entry_at,
     triggerWalletAddress: row.trigger_wallet_address,
-    peak: toNumOrNull(row.shadow_peak_price),
-    trailingActive: row.shadow_trailing_active,
-    breachSince: row.shadow_breach_since,
+    peak: toNumOrNull(row.peak_price),
+    trailingActive: row.trailing_active,
+    breachSince: row.breach_since,
   };
 }
 
@@ -872,21 +888,30 @@ export async function updateShadowState(
   id: number,
   state: { peak: number | null; trailingActive: boolean; breachSince: Date | null },
   conn?: Queryable,
+  variant: ShadowVariant = '4b',
 ): Promise<void> {
+  const c = SHADOW_PREFIX[variant];
   await db(conn).query(
     `UPDATE paper_trades
-        SET shadow_peak_price = $2, shadow_trailing_active = $3, shadow_breach_since = $4
-      WHERE id = $1 AND shadow_exit_at IS NULL`,
+        SET ${c}_peak_price = $2, ${c}_trailing_active = $3, ${c}_breach_since = $4
+      WHERE id = $1 AND ${c}_exit_at IS NULL`,
     [id, state.peak, state.trailingActive, state.breachSince],
   );
 }
 
 /** Κλείνει το shadow (idempotent — δεν ξαναγράφει ένα ήδη κλεισμένο shadow). */
-export async function closeShadow(id: number, reason: string, price: number | null, conn?: Queryable): Promise<boolean> {
+export async function closeShadow(
+  id: number,
+  reason: string,
+  price: number | null,
+  conn?: Queryable,
+  variant: ShadowVariant = '4b',
+): Promise<boolean> {
+  const c = SHADOW_PREFIX[variant];
   const result = await db(conn).query(
     `UPDATE paper_trades
-        SET shadow_exit_reason = $2, shadow_exit_price = $3, shadow_exit_at = now()
-      WHERE id = $1 AND shadow_exit_at IS NULL`,
+        SET ${c}_exit_reason = $2, ${c}_exit_price = $3, ${c}_exit_at = now()
+      WHERE id = $1 AND ${c}_exit_at IS NULL`,
     [id, reason, price],
   );
   return (result.rowCount ?? 0) > 0;
@@ -894,14 +919,16 @@ export async function closeShadow(id: number, reason: string, price: number | nu
 
 /**
  * Πόσα trades χρειάζονται ακόμα ticks γι' αυτό το token: ανοιχτά πραγματικά trades ΚΑΙ
- * ανοιχτά shadows (το shadow συνεχίζει μετά την πραγματική έξοδο — γι' αυτό υπάρχει).
+ * ανοιχτά shadows (τα shadows συνεχίζουν μετά την πραγματική έξοδο — γι' αυτό υπάρχουν).
  * Για το unsubscribe· ΟΧΙ για το "ένα trade ανά token" (εκεί μετράει μόνο το πραγματικό).
  */
 export async function countTradesNeedingTicksForToken(tokenAddress: string, conn?: Queryable): Promise<number> {
   const { rows } = await db(conn).query<{ count: string }>(
     `SELECT count(*) AS count FROM paper_trades
       WHERE token_address = $1
-        AND (status = 'open' OR (shadow_tracked AND shadow_exit_at IS NULL))`,
+        AND (status = 'open'
+             OR (shadow_tracked AND shadow_exit_at IS NULL)
+             OR (nosig_tracked AND nosig_exit_at IS NULL))`,
     [tokenAddress],
   );
   return toNum(requireRow(rows, 'countTradesNeedingTicksForToken').count);
@@ -909,16 +936,21 @@ export async function countTradesNeedingTicksForToken(tokenAddress: string, conn
 
 /**
  * Shadows ανοιχτά πάνω από 24h (π.χ. νεκρό token, κανένα tick πια) → κλείνουν ως
- * 'timeout' ΧΩΡΙΣ τιμή (άγνωστη — το report τα μετράει ως unresolved). Επιστρέφει τα
+ * 'timeout' ΧΩΡΙΣ τιμή (άγνωστη — τα reports τα μετράνε ως unresolved). Επιστρέφει τα
  * tokens ώστε ο caller να κάνει unsubscribe όσα δεν χρειάζονται πια.
  */
 export async function expireStaleShadows(conn?: Queryable): Promise<string[]> {
-  const { rows } = await db(conn).query<{ token_address: string }>(
-    `UPDATE paper_trades
-        SET shadow_exit_reason = 'timeout', shadow_exit_price = NULL, shadow_exit_at = now()
-      WHERE shadow_tracked AND shadow_exit_at IS NULL
-        AND entry_at < now() - interval '24 hours'
-      RETURNING token_address`,
-  );
-  return [...new Set(rows.map((r) => r.token_address))];
+  const tokens = new Set<string>();
+  for (const variant of SHADOW_VARIANTS) {
+    const c = SHADOW_PREFIX[variant];
+    const { rows } = await db(conn).query<{ token_address: string }>(
+      `UPDATE paper_trades
+          SET ${c}_exit_reason = 'timeout', ${c}_exit_price = NULL, ${c}_exit_at = now()
+        WHERE ${c}_tracked AND ${c}_exit_at IS NULL
+          AND entry_at < now() - interval '24 hours'
+        RETURNING token_address`,
+    );
+    for (const r of rows) tokens.add(r.token_address);
+  }
+  return [...tokens];
 }

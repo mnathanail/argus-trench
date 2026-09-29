@@ -822,6 +822,7 @@ tests specifically covering the profit floor.
 - GMGN smart money channel (`collectors/gmgnSmartMoney.ts`): removed from the scheduler — it opened no trades since 2026-09-27 and only consumed GMGN budget. Code kept for reference.
 - Holder risk (`decision/holderRiskCheck.ts`, moved from that channel): checked on every realtime entry, stored in `entry_timing_json.holder_risk`. Mode per gate source (`HOLDER_RISK_ENTRY_MODE`): discovery → `'block'` (checked before the buy, ≥50% skipped — same population as where the threshold was measured); on_demand → `'record'` (parallel, no blocking) until `npm run holder-risk-report` confirms it for early entries.
 - 4B trailing shadow keeps running a few more days (no GMGN cost) before it is removed.
+- Second shadow, **"no exit_signal"** (migration 0020, `nosig_*` columns, `NO_EXIT_SIGNAL_RULES` + `ignoreExitSignal` in `realtime/shadowExit.ts`): today's exits (trailing +50%/−25%, floor +10%, stop-loss −50%, 24h timeout) but NOT selling when the copied wallet sells. Question it answers: would letting trailing work beat following the wallet's exit? Data 2026-09-29: 27/34 on-demand trades exited via exit_signal within ~30″ (avg −7.2%), only 1 had reached ×1.5. Compare with `npm run no-exit-signal-report` (split on_demand / discovery). Shadow repository functions take a `ShadowVariant` ('4b' | 'nosig'); column names come only from a fixed map.
 
 ## Native GMGN strategies — what really happens (2026-09-29)
 
