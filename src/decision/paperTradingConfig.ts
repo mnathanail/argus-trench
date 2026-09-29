@@ -178,6 +178,8 @@ export const LIVE_KILL_SWITCH_CONSEC_LOSSES = 10;
  * `npm run graduated-report` — αν τα αποτελέσματα είναι θετικά, γίνεται true (live, με
  * paper fallback όπως κάθε άλλο σήμα), αλλιώς μένει false.
  */
+/* ΑΛΛΑΓΗ 2026-09-29 (ρητή απόφαση χρήστη, graduated-report: 118 trades, −0.38 SOL): με
+ * false, τα σήματα σε graduated tokens ΑΓΝΟΟΥΝΤΑΙ ΕΝΤΕΛΩΣ — ούτε live ούτε paper. */
 export const LIVE_ON_GRADUATED_TOKENS = false;
 
 /**
@@ -264,3 +266,15 @@ export const LIVE_ON_DEMAND_GATE = true;
 export const ON_DEMAND_GATE_MAX_PER_MINUTE = 20;
 /** Προτεραιότητα στον κοινό GMGN limiter: πάνω από όλα τα collectors, κάτω από τα swaps (1000). */
 export const ON_DEMAND_GATE_PRIORITY = 900;
+
+/**
+ * Holder-risk έλεγχος σε κάθε realtime αγορά (2026-09-29, ρητή απόφαση χρήστη) — βλ.
+ * decision/holderRiskCheck.ts για την τεκμηρίωση του ορίου (≥50% → −92.9%, n=460, από το
+ * κανάλι GMGN smart money).
+ *  - 'record': ελέγχεται και καταγράφεται (paper_trades.entry_timing_json.holder_risk),
+ *    ΔΕΝ μπλοκάρει, και τρέχει παράλληλα με την αγορά (καμία καθυστέρηση). Για να
+ *    επιβεβαιώσουμε ότι το όριο ισχύει και στα ΔΙΚΑ ΜΑΣ σήματα: `npm run holder-risk-report`.
+ *  - 'block': ελέγχεται ΠΡΙΝ την αγορά (~0.5–1″), και σήματα με risk ≥ 50% απορρίπτονται.
+ * Ξεκινάμε σε 'record'· γίνεται 'block' μόλις το report δείξει ✅.
+ */
+export const HOLDER_RISK_ENTRY_MODE: 'record' | 'block' = 'record';

@@ -19,6 +19,7 @@ import {
   LIVE_POSITION_SIZE_SOL,
   LIVE_ON_GRADUATED_TOKENS,
   LIVE_ON_DEMAND_GATE,
+  HOLDER_RISK_ENTRY_MODE,
   conditionOrdersJson,
   liveExitConditionOrders,
 } from '../decision/paperTradingConfig.js';
@@ -38,6 +39,8 @@ import {
 import { subscribeForNewTrade } from './subscriptionManager.js';
 import { tryOnDemandGate } from './onDemandGateRunner.js';
 import { attachNativeStrategy } from '../live/nativeStrategyAttach.js';
+import { isHighHolderRisk, tryComputeHolderRisk, type HolderRiskSnapshot } from '../decision/holderRiskCheck.js';
+import { ON_DEMAND_GATE_PRIORITY } from '../decision/paperTradingConfig.js';
 import type { PumpPortalConnection } from './pumpportalConnection.js';
 import type { TradeMode } from '../db/types.js';
 
@@ -226,6 +229,12 @@ export async function handleRealtimeEntryEvent(
   // decision.type==='enter' εγγυάται ήδη ότι wallet!==null (βλ. decideEntry).
   if (wallet === null) return null;
 
+  // 2026-09-29 (ρητή απόφαση χρήστη): graduated tokens → τίποτα, ούτε paper.
+  if (decision.graduated && !LIVE_ON_GRADUATED_TOKENS) {
+    console.log(`[realtime-entry-skip] reason=graduated_off mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`);
+    return null;
+  }
+
   // 2026-09-28: ΕΝΑ trade ανά token — βλ. entriesInFlight. Πρώτα το in-memory lock (πιάνει
   // ταυτόχρονα events), μετά η βάση (πιάνει ένα νέο event όσο το trade είναι ακόμα ανοιχτό).
   const result = await withTokenEntryLock(event.mint, async () => {
@@ -251,6 +260,24 @@ async function enterClaimedSignal(
   gateSource: GateSource,
   timeline: EntryTimeline,
 ): Promise<RealtimeEntryResult | null> {
+  // 2026-09-29 — holder risk (βλ. HOLDER_RISK_ENTRY_MODE). 'block': πριν από οτιδήποτε·
+  // 'record': παράλληλα με την αγορά, το αποτέλεσμα γράφεται στο entry_timing_json.
+  const holderRiskStartedAt = Date.now();
+  const holderRiskPromise = tryComputeHolderRisk(event.mint, { priority: ON_DEMAND_GATE_PRIORITY }).then((r) => ({
+    snapshot: r.snapshot,
+    ms: Date.now() - holderRiskStartedAt,
+  }));
+  if (HOLDER_RISK_ENTRY_MODE === 'block') {
+    const hr = await holderRiskPromise;
+    if (isHighHolderRisk(hr.snapshot.riskPct)) {
+      console.log(
+        `[realtime-entry-skip] reason=holder_risk_high risk=${(hr.snapshot.riskPct ?? 0).toFixed(2)} ` +
+          `mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`,
+      );
+      return null;
+    }
+  }
+
   const claimStartedAt = Date.now();
   const decisionLogId = await recordTrigger({
     tokenAddress: event.mint,
@@ -298,7 +325,12 @@ async function enterClaimedSignal(
   // θέση είναι paper/log_only — βλ. applyEntrySlippage στο pnl.ts.
   const finalEntryPrice =
     live.entryPrice ?? applyEntrySlippage(decision.entryPrice, PAPER_ASSUMED_SLIPPAGE_PCT);
-  const entryTiming = buildEntryTiming(event, decision, gateSource, timeline, claimMs, Date.now() - liveStartedAt, live);
+  const liveAttemptMs = Date.now() - liveStartedAt;
+  const holderRisk = await holderRiskPromise;
+  const entryTiming = {
+    ...buildEntryTiming(event, decision, gateSource, timeline, claimMs, liveAttemptMs, live),
+    holder_risk: holderRiskJson(holderRisk.snapshot, holderRisk.ms),
+  };
   logEntryTiming(event.mint, entryTiming);
 
   const tradeId = await openTrade({
@@ -419,4 +451,15 @@ function logEntryTiming(mint: string, t: Record<string, unknown>): void {
     t['fallback_reason'] ? `fallback=${String(t['fallback_reason'])}` : null,
   ];
   console.log(`[entry-timing] ${parts.filter((p) => p !== null).join(' ')}`);
+}
+
+/** entry_timing_json.holder_risk — σταθερά ονόματα, τα διαβάζει το scripts/holder-risk-report.ts. */
+export function holderRiskJson(snapshot: HolderRiskSnapshot, ms: number): Record<string, unknown> {
+  return {
+    pct: snapshot.riskPct,
+    wallet_count: snapshot.riskWalletCount,
+    checked: snapshot.checked,
+    mode: HOLDER_RISK_ENTRY_MODE,
+    ms,
+  };
 }

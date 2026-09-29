@@ -7,14 +7,19 @@ import { delay } from '../util/delay.js';
 import { PHASE1_THRESHOLDS, logicVersion } from '../decision/gateConfig.js';
 import { fetchSmartMoneyTrades, type SmartMoneyTrade } from '../gmgn/trackSmartmoney.js';
 import {
-  computeFloatShare,
-  computeRiskWalletPct,
-  fetchAllTokenHolders,
-  isFloatDegenerate,
-} from '../gmgn/holderRisk.js';
-import { rethrowIfRateLimited } from '../gmgn/errors.js';
+  HOLDER_RISK_NOT_CHECKED,
+  isHighHolderRisk,
+  tryComputeHolderRisk,
+  type HolderRiskSnapshot,
+} from '../decision/holderRiskCheck.js';
 
 /**
+ * ⛔ ΣΤΑΜΑΤΗΜΕΝΟ 2026-09-29 (ρητή απόφαση χρήστη): δεν είναι πια στον scheduler (main.ts).
+ * Από 2026-09-27 δεν άνοιγε trades, άρα δεν παρήγαγε μετρήσιμο αποτέλεσμα, ενώ έτρωγε
+ * GMGN budget (έως ~60 weight/30″). Η μόνη χρήσιμη λειτουργία του, το holder-risk φίλτρο,
+ * μεταφέρθηκε στις realtime/live αγορές (decision/holderRiskCheck.ts). Ο κώδικας μένει ως
+ * αναφορά.
+ *
  * Δεύτερο, ανεξάρτητο trigger-κανάλι πλάι στο layer 3 (walletActivity.ts /
  * realtimeEntryHandler.ts) — `track smartmoney`, GMGN's ΔΙΚΑ ΤΟΥ tagged smart-money/whale
  * wallets, ΟΧΙ η δική μας self-curated watchlist. CLAUDE.md το είχε ρητά σημειώσει ως
@@ -90,17 +95,9 @@ import { rethrowIfRateLimited } from '../gmgn/errors.js';
  * token+wallet) — ίδια ασφάλεια με το ήδη υπάρχον polling fallback path. Αν αυτό το
  * κανάλι προαχθεί πέρα από πείραμα, ένα persisted cursor (migration) θα άξιζε τον κόπο.
  */
-/** Βλ. σχόλιο "Holder-risk ΦΙΛΤΡΟ εισόδου" πιο πάνω. Σήματα με γνωστό (όχι null)
- * `holder_risk_pct >= HOLDER_RISK_MAX_PCT` αποκλείονται πριν το `recordTrigger`. */
-export const HOLDER_RISK_MAX_PCT = 0.5;
-
-/** Καθαρή απόφαση φιλτραρίσματος, χωριστά testable: `null` (δεν ελέγχθηκε ή
- * unassessable/degenerate float) ΔΕΝ αποκλείει — μόνο ένα γνωστό, υψηλό ποσοστό. Απουσία
- * στοιχείων δεν είναι απόδειξη κινδύνου, και το φίλτρο δεν πρέπει να εξαρτάται από το αν
- * ένα rate-limit hit συνέβη νωρίτερα στον κύκλο (βλ. σχόλιο πάνω από τη function). */
-export function isHighHolderRisk(riskPct: number | null): boolean {
-  return riskPct !== null && riskPct >= HOLDER_RISK_MAX_PCT;
-}
+// 2026-09-29: το holder-risk μετακόμισε στο decision/holderRiskCheck.ts (το χρησιμοποιούν
+// πλέον οι realtime/live αγορές). Re-export για συμβατότητα.
+export { HOLDER_RISK_MAX_PCT, isHighHolderRisk } from '../decision/holderRiskCheck.js';
 
 export interface GmgnSmartMoneyOptions {
   limit?: number;
@@ -244,55 +241,6 @@ export async function runGmgnSmartMoneyCycle(
     skippedHighRisk,
     holderRiskChecksUsed,
   };
-}
-
-interface HolderRiskSnapshot {
-  riskPct: number | null;
-  riskWalletCount: number | null;
-  /** `false` σημαίνει "δεν έγινε καν προσπάθεια" (π.χ. ήδη rate-limited αυτόν τον κύκλο) —
-   * ξεχωριστό από `riskPct === null` που μπορεί να σημαίνει "ελέγχθηκε αλλά degenerate
-   * float / unassessable". Χρήσιμο ΑΡΓΟΤΕΡΑ όταν αναλύσουμε πόσο συχνά ο έλεγχος καν
-   * τρέχει, πριν αποφασίσουμε αν το κόστος (weight 5/σήμα) αξίζει τον κόπο. */
-  checked: boolean;
-}
-
-const HOLDER_RISK_NOT_CHECKED: HolderRiskSnapshot = {
-  riskPct: null,
-  riskWalletCount: null,
-  checked: false,
-};
-
-/**
- * Best-effort holders-risk enrichment για proposal #5 — βλ. το μεγάλο σχόλιο πάνω από
- * `runGmgnSmartMoneyCycle`. ΠΟΤΕ δεν κάνει throw: κάθε σφάλμα (rate limit, malformed
- * response, οτιδήποτε) καταλήγει σε `HOLDER_RISK_NOT_CHECKED`, ώστε το καλούν `for` loop
- * να συνεχίσει κανονικά στο `recordTrigger`. Το `rateLimited: true` λέει στο caller να μη
- * ξαναδοκιμάσει holders calls για το υπόλοιπο του κύκλου.
- */
-async function tryComputeHolderRisk(
-  tokenAddress: string,
-): Promise<{ snapshot: HolderRiskSnapshot; rateLimited: boolean }> {
-  try {
-    const holders = await fetchAllTokenHolders({ tokenAddress });
-    const float = computeFloatShare(holders);
-    const normalCount = holders.filter((h) => h.addrType === 0).length;
-    if (isFloatDegenerate(float, normalCount)) {
-      return { snapshot: { riskPct: null, riskWalletCount: null, checked: true }, rateLimited: false };
-    }
-    const risk = computeRiskWalletPct(holders, float);
-    return {
-      snapshot: { riskPct: risk.riskPct, riskWalletCount: risk.riskWalletCount, checked: true },
-      rateLimited: false,
-    };
-  } catch (error) {
-    let rateLimited = false;
-    try {
-      rethrowIfRateLimited(error);
-    } catch {
-      rateLimited = true;
-    }
-    return { snapshot: HOLDER_RISK_NOT_CHECKED, rateLimited };
-  }
 }
 
 /** Χωριστά από το fetch ώστε να τεσταρίζεται χωρίς δίκτυο — ίδιο μοτίβο με

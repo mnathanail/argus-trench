@@ -816,6 +816,13 @@ tests specifically covering the profit floor.
 - Evaluations are stored in decision_log with `candidate_source='on_demand'` (migration 0018); trades carry `trigger_wallet_snapshot_json.gate_source`. A token already rejected by discovery is never re-checked.
 - Paper-only (`LIVE_ON_DEMAND_GATE=false`) until `railway run npm run on-demand-gate-report` says ✅.
 
+## Signal sources & filters after 2026-09-29
+
+- Graduated tokens: signals are ignored completely (no live, no paper) while LIVE_ON_GRADUATED_TOKENS=false.
+- GMGN smart money channel (`collectors/gmgnSmartMoney.ts`): removed from the scheduler — it opened no trades since 2026-09-27 and only consumed GMGN budget. Code kept for reference.
+- Holder risk (`decision/holderRiskCheck.ts`, moved from that channel): checked on every realtime entry. `HOLDER_RISK_ENTRY_MODE='record'` (in parallel with the buy, stored in `entry_timing_json.holder_risk`, no blocking) until `npm run holder-risk-report` confirms the ≥50% threshold on our own trades; then `'block'` (checked before the buy, ≥50% skipped).
+- 4B trailing shadow keeps running a few more days (no GMGN cost) before it is removed.
+
 ## Native GMGN strategies — what really happens (2026-09-29)
 
 - `swap --condition-orders` ALWAYS answers `status: submitted` without `strategy_order_id` (20/20 live trades). The strategy IS created right after (smart_trade / mix_trade, visible in `order strategy list`). We treated it as missing → `native_order_active=false` → the reconciler never looked → when GMGN's stop-loss sold, the trade stayed "open" in our DB (8 such trades on 2026-09-28; 5 native loss_stops at ~−50…−59%).
