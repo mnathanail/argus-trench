@@ -40,7 +40,7 @@ import { subscribeForNewTrade } from './subscriptionManager.js';
 import { tryOnDemandGate } from './onDemandGateRunner.js';
 import { attachNativeStrategy } from '../live/nativeStrategyAttach.js';
 import { isHighHolderRisk, tryComputeHolderRisk, type HolderRiskSnapshot } from '../decision/holderRiskCheck.js';
-import { ON_DEMAND_GATE_PRIORITY } from '../decision/paperTradingConfig.js';
+import { ON_DEMAND_GATE_PRIORITY, type HolderRiskMode } from '../decision/paperTradingConfig.js';
 import type { PumpPortalConnection } from './pumpportalConnection.js';
 import type { TradeMode } from '../db/types.js';
 
@@ -267,11 +267,12 @@ async function enterClaimedSignal(
     snapshot: r.snapshot,
     ms: Date.now() - holderRiskStartedAt,
   }));
-  if (HOLDER_RISK_ENTRY_MODE === 'block') {
+  const holderRiskMode = HOLDER_RISK_ENTRY_MODE[gateSource];
+  if (holderRiskMode === 'block') {
     const hr = await holderRiskPromise;
     if (isHighHolderRisk(hr.snapshot.riskPct)) {
       console.log(
-        `[realtime-entry-skip] reason=holder_risk_high risk=${(hr.snapshot.riskPct ?? 0).toFixed(2)} ` +
+        `[realtime-entry-skip] reason=holder_risk_high gate=${gateSource} risk=${(hr.snapshot.riskPct ?? 0).toFixed(2)} ` +
           `mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`,
       );
       return null;
@@ -329,7 +330,7 @@ async function enterClaimedSignal(
   const holderRisk = await holderRiskPromise;
   const entryTiming = {
     ...buildEntryTiming(event, decision, gateSource, timeline, claimMs, liveAttemptMs, live),
-    holder_risk: holderRiskJson(holderRisk.snapshot, holderRisk.ms),
+    holder_risk: holderRiskJson(holderRisk.snapshot, holderRisk.ms, holderRiskMode),
   };
   logEntryTiming(event.mint, entryTiming);
 
@@ -454,12 +455,12 @@ function logEntryTiming(mint: string, t: Record<string, unknown>): void {
 }
 
 /** entry_timing_json.holder_risk — σταθερά ονόματα, τα διαβάζει το scripts/holder-risk-report.ts. */
-export function holderRiskJson(snapshot: HolderRiskSnapshot, ms: number): Record<string, unknown> {
+export function holderRiskJson(snapshot: HolderRiskSnapshot, ms: number, mode: HolderRiskMode): Record<string, unknown> {
   return {
     pct: snapshot.riskPct,
     wallet_count: snapshot.riskWalletCount,
     checked: snapshot.checked,
-    mode: HOLDER_RISK_ENTRY_MODE,
+    mode,
     ms,
   };
 }

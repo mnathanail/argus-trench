@@ -5,9 +5,10 @@ import { HOLDER_RISK_MAX_PCT } from '../src/decision/holderRiskCheck.js';
 // Χρήση: railway run npm run holder-risk-report
 //
 // 2026-09-29: ισχύει το όριο holder risk ≥ 50% (τεκμηριωμένο στο κανάλι GMGN smart money,
-// n=1136) ΚΑΙ στις δικές μας realtime αγορές; Διαβάζει paper_trades.entry_timing_json
-// ->'holder_risk' (γράφεται σε κάθε realtime trade, βλ. HOLDER_RISK_ENTRY_MODE). Read-only.
-// Αν ✅ → HOLDER_RISK_ENTRY_MODE = 'block' στο src/decision/paperTradingConfig.ts.
+// n=1136) ΚΑΙ στις πρώιμες αγορές του on-demand gate; Διαβάζει paper_trades.entry_timing_json
+// ->'holder_risk', ΜΟΝΟ όσα γράφτηκαν σε mode 'record' (στο discovery το φίλτρο μπλοκάρει ήδη,
+// άρα εκεί δεν υπάρχουν trades ≥ 50% να μετρηθούν). Read-only.
+// Αν ✅ → HOLDER_RISK_ENTRY_MODE.on_demand = 'block' στο src/decision/paperTradingConfig.ts.
 
 const MIN_CLOSED_HIGH_RISK = 10;
 
@@ -47,15 +48,15 @@ try {
               FILTER (WHERE pt.status = 'closed' AND pt.pnl_net_pct IS NOT NULL)       AS median_net,
             sum(pt.pnl_sol) FILTER (WHERE pt.status = 'closed')                        AS sum_pnl_sol
        FROM paper_trades pt
-      WHERE pt.entry_timing_json ? 'holder_risk'
+      WHERE pt.entry_timing_json->'holder_risk'->>'mode' = 'record'
       GROUP BY GROUPING SETS ((1), (1, pt.mode))
       ORDER BY 1, 2`,
     [HOLDER_RISK_MAX_PCT],
   );
   if (rows.length === 0) {
-    console.log('Κανένα trade με holder_risk ακόμα (χρειάζεται το deploy της 2026-09-29).');
+    console.log('Κανένα trade με holder_risk σε mode record ακόμα.');
   } else {
-    console.log('\n=== Holder risk → αποτέλεσμα (realtime trades, live + paper) ===');
+    console.log('\n=== Holder risk → αποτέλεσμα (on-demand gate, mode record, live + paper) ===');
     console.log('  (όλα = live+paper μαζί· από κάτω ανά mode)');
     for (const r of rows) {
       const closed = Number(r.closed);
@@ -78,7 +79,7 @@ try {
     } else if ((num(high.sum_pnl_sol) ?? 0) < 0 && (num(high.median_net) ?? 0) < 0) {
       console.log(`  ✅ Επιβεβαιώνεται: τα ≥ 50% χάνουν (σύνολο ${num(high.sum_pnl_sol)?.toFixed(4)} SOL, διάμεσο ${pct(num(high.median_net))}).`);
       console.log(`     Χωρίς αυτά, τα υπόλοιπα ${restClosed} κλειστά: σύνολο ${restSum.toFixed(4)} SOL.`);
-      console.log("     → HOLDER_RISK_ENTRY_MODE = 'block' στο src/decision/paperTradingConfig.ts");
+      console.log("     → HOLDER_RISK_ENTRY_MODE.on_demand = 'block' στο src/decision/paperTradingConfig.ts");
     } else {
       console.log('  ❌ Στα δικά μας σήματα τα ≥ 50% ΔΕΝ χάνουν καθαρά — μένουμε σε record.');
     }

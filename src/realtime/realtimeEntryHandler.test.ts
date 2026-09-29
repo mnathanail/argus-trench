@@ -203,7 +203,7 @@ import { holderRiskJson } from './realtimeEntryHandler.js';
 import { isHighHolderRisk } from '../decision/holderRiskCheck.js';
 
 test('holderRiskJson: stable names for the report; null risk is never "high"', () => {
-  assert.deepEqual(holderRiskJson({ riskPct: 0.62, riskWalletCount: 14, checked: true }, 840), {
+  assert.deepEqual(holderRiskJson({ riskPct: 0.62, riskWalletCount: 14, checked: true }, 840, 'record'), {
     pct: 0.62, wallet_count: 14, checked: true, mode: 'record', ms: 840,
   });
   assert.equal(isHighHolderRisk(0.62), true);

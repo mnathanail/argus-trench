@@ -272,9 +272,18 @@ export const ON_DEMAND_GATE_PRIORITY = 900;
  * decision/holderRiskCheck.ts για την τεκμηρίωση του ορίου (≥50% → −92.9%, n=460, από το
  * κανάλι GMGN smart money).
  *  - 'record': ελέγχεται και καταγράφεται (paper_trades.entry_timing_json.holder_risk),
- *    ΔΕΝ μπλοκάρει, και τρέχει παράλληλα με την αγορά (καμία καθυστέρηση). Για να
- *    επιβεβαιώσουμε ότι το όριο ισχύει και στα ΔΙΚΑ ΜΑΣ σήματα: `npm run holder-risk-report`.
+ *    ΔΕΝ μπλοκάρει, και τρέχει παράλληλα με την αγορά (καμία καθυστέρηση).
  *  - 'block': ελέγχεται ΠΡΙΝ την αγορά (~0.5–1″), και σήματα με risk ≥ 50% απορρίπτονται.
- * Ξεκινάμε σε 'record'· γίνεται 'block' μόλις το report δείξει ✅.
+ *
+ * Ανά πηγή gate (ρητή απόφαση χρήστη, ίδια μέρα):
+ *  - discovery → 'block' ΑΜΕΣΩΣ: ίδιος πληθυσμός με το κανάλι όπου τεκμηριώθηκε το όριο
+ *    (tokens που είχαν ήδη περάσει το gate του discovery).
+ *  - on_demand → 'record': πρώιμες είσοδοι (~1′ από τη δημιουργία), όπου οι holders είναι
+ *    αναγκαστικά κυρίως snipers/bots — το όριο μπορεί να μην ισχύει εκεί. Γίνεται 'block'
+ *    μόνο αν το `npm run holder-risk-report` δείξει ✅.
  */
-export const HOLDER_RISK_ENTRY_MODE: 'record' | 'block' = 'record';
+export type HolderRiskMode = 'record' | 'block';
+export const HOLDER_RISK_ENTRY_MODE: Readonly<Record<'discovery' | 'on_demand', HolderRiskMode>> = {
+  discovery: 'block',
+  on_demand: 'record',
+};

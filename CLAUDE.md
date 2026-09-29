@@ -820,7 +820,7 @@ tests specifically covering the profit floor.
 
 - Graduated tokens: signals are ignored completely (no live, no paper) while LIVE_ON_GRADUATED_TOKENS=false.
 - GMGN smart money channel (`collectors/gmgnSmartMoney.ts`): removed from the scheduler — it opened no trades since 2026-09-27 and only consumed GMGN budget. Code kept for reference.
-- Holder risk (`decision/holderRiskCheck.ts`, moved from that channel): checked on every realtime entry. `HOLDER_RISK_ENTRY_MODE='record'` (in parallel with the buy, stored in `entry_timing_json.holder_risk`, no blocking) until `npm run holder-risk-report` confirms the ≥50% threshold on our own trades; then `'block'` (checked before the buy, ≥50% skipped).
+- Holder risk (`decision/holderRiskCheck.ts`, moved from that channel): checked on every realtime entry, stored in `entry_timing_json.holder_risk`. Mode per gate source (`HOLDER_RISK_ENTRY_MODE`): discovery → `'block'` (checked before the buy, ≥50% skipped — same population as where the threshold was measured); on_demand → `'record'` (parallel, no blocking) until `npm run holder-risk-report` confirms it for early entries.
 - 4B trailing shadow keeps running a few more days (no GMGN cost) before it is removed.
 
 ## Native GMGN strategies — what really happens (2026-09-29)
