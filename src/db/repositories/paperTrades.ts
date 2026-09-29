@@ -192,6 +192,8 @@ export interface LiveTradeWithNativeOrder {
   bankrollAtEntry: number | null;
   intendedSizePct: number | null;
   actualEntryAmountSol: number | null;
+  /** 2026-09-29 — για τιμή εξόδου = entry × πραγματικό ratio (βλ. live/ownSellRatio.ts). */
+  simulatedEntryPrice: number | null;
 }
 
 /** Ανοιχτά `mode='live'` trades που έχουν ενεργό native order — τα μόνα που ο live
@@ -207,9 +209,10 @@ export async function listOpenLiveTradesWithNativeOrder(conn?: Queryable): Promi
     bankroll_at_entry: string | null;
     intended_size_pct: string | null;
     actual_entry_amount_sol: string | null;
+    simulated_entry_price: string | null;
   }>(
     `SELECT id, token_address, live_strategy_order_id, entry_at, bankroll_at_entry, intended_size_pct,
-            actual_entry_amount_sol
+            actual_entry_amount_sol, simulated_entry_price
        FROM paper_trades
       WHERE status = 'open' AND mode = 'live' AND native_order_active = true
         AND live_strategy_order_id IS NOT NULL`,
@@ -222,6 +225,7 @@ export async function listOpenLiveTradesWithNativeOrder(conn?: Queryable): Promi
     bankrollAtEntry: toNumOrNull(row.bankroll_at_entry),
     intendedSizePct: toNumOrNull(row.intended_size_pct),
     actualEntryAmountSol: toNumOrNull(row.actual_entry_amount_sol),
+    simulatedEntryPrice: toNumOrNull(row.simulated_entry_price),
   }));
 }
 
@@ -280,6 +284,8 @@ export interface CloseTradeInput {
   pnlNetPct: number | null;
   /** Πραγματικό SOL που πραγματικά εισπράχθηκε (balance-diff) — ΜΟΝΟ για mode='live'. */
   actualExitAmountSol?: number;
+  /** Πραγματική στιγμή εξόδου όταν είναι γνωστή (π.χ. on-chain sell tx) — αλλιώς now(). */
+  exitAt?: Date;
 }
 
 /**
@@ -293,7 +299,7 @@ export async function closeTrade(
 ): Promise<boolean> {
   const result = await db(conn).query(
     `UPDATE paper_trades
-        SET status = 'closed', exit_at = now(), exit_reason = $2,
+        SET status = 'closed', exit_at = COALESCE($10, now()), exit_reason = $2,
             exit_trigger_detail_json = $3, simulated_exit_price = $4,
             pnl_sol = $5, pnl_pct = $6, assumed_fees_pct = $7, pnl_net_pct = $8,
             actual_exit_amount_sol = $9, needs_manual_exit = false,
@@ -309,6 +315,7 @@ export async function closeTrade(
       input.assumedFeesPct,
       input.pnlNetPct,
       input.actualExitAmountSol ?? null,
+      input.exitAt ?? null,
     ],
   );
   return (result.rowCount ?? 0) > 0;

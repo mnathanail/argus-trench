@@ -37,6 +37,7 @@ import {
 } from './pumpportalEvents.js';
 import { subscribeForNewTrade } from './subscriptionManager.js';
 import { tryOnDemandGate } from './onDemandGateRunner.js';
+import { attachNativeStrategy } from '../live/nativeStrategyAttach.js';
 import type { PumpPortalConnection } from './pumpportalConnection.js';
 import type { TradeMode } from '../db/types.js';
 
@@ -331,6 +332,12 @@ async function enterClaimedSignal(
       liveStrategyOrderId: live.liveStrategyOrderId,
       nativeOrderActive: live.nativeOrderVerified,
     });
+    // 2026-09-29: το native strategy δημιουργείται ΜΕΤΑ το swap response — το βρίσκουμε στο
+    // παρασκήνιο (βλ. live/nativeStrategyAttach.ts). Χωρίς αυτό ο reconciler δεν έβλεπε
+    // ποτέ τις πωλήσεις του GMGN και τα trades έμεναν «ανοιχτά».
+    if (!live.nativeOrderVerified && live.walletAddress !== null) {
+      void attachNativeStrategy(tradeId, live.walletAddress, event.mint, liveStartedAt);
+    }
   }
 
   subscribeForNewTrade(connection, event.mint, wallet.address);

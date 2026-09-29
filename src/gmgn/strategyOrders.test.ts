@@ -116,3 +116,38 @@ test('parseStrategyOrder: το checkPrice του sub-order παραμένει π
   // το closePrice παραμένει null ανεξάρτητα — το checkPrice είναι μόνο πληροφοριακό
   assert.equal(parsed?.closePrice, null);
 });
+
+// --- 2026-09-29: πραγματικό `order strategy list` (native strategies που δεν βλέπαμε) ---
+
+import { readFileSync } from 'node:fs';
+import { exitReasonFromStrategy, pickStrategyForEntry, soldByStrategy, type StrategyOrderInfo } from './strategyOrders.js';
+
+const realList = (JSON.parse(readFileSync(new URL('./__fixtures__/strategy-list.real.json', import.meta.url), 'utf8')) as { list: unknown[] }).list
+  .map(parseStrategyOrder)
+  .filter((s): s is StrategyOrderInfo => s !== null);
+
+test('real strategy list: native loss_stop that SOLD — canceled/trade_finish, success_sell_num 1', () => {
+  const s = realList[0]!;
+  assert.equal(s.status, 'closed', '"canceled" → closed');
+  assert.equal(s.baseToken, 'GqqA6P37d5ucWgC3diCgZhnw76qbaoKNDw69aA3vpump');
+  assert.equal(s.createTime, 1790615511016);
+  assert.equal(s.placeAction, 'loss_stop');
+  assert.equal(s.successSellNum, 1);
+  assert.equal(s.closePrice, null, 'close_price έρχεται κενό — γι\' αυτό το on-chain ratio');
+  assert.equal(soldByStrategy(s), true);
+  assert.equal(exitReasonFromStrategy(s), 'stop_loss');
+});
+
+test('real strategy list: token_clear = canceled because the tokens left (NOT sold by the strategy)', () => {
+  const s = realList[1]!;
+  assert.equal(s.reasonBy, 'token_clear');
+  assert.equal(s.successSellNum, 0);
+  assert.equal(soldByStrategy(s), false);
+});
+
+test('pickStrategyForEntry: same token, created from the entry on (2′ margin), newest wins', () => {
+  const gqqa = realList[0]!;
+  assert.equal(pickStrategyForEntry(realList, gqqa.baseToken!, gqqa.createTime! - 60_000)?.orderId, gqqa.orderId);
+  assert.equal(pickStrategyForEntry(realList, gqqa.baseToken!, gqqa.createTime! + 10 * 60_000), null, 'παλιό strategy άλλου trade');
+  assert.equal(pickStrategyForEntry(realList, 'OtherToken', 0), null);
+});

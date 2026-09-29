@@ -16,9 +16,13 @@ export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const LAMPORTS_PER_SOL = 1_000_000_000;
 
 /** Πόσες φορές να κάνουμε poll το order status πριν το αναφέρουμε ως "άγνωστο, ακόμα σε
- * εξέλιξη" (ΟΧΙ αποτυχία) — 3×5s, ίδιο με τη σύσταση του επίσημου SKILL.md. */
-const POLL_ATTEMPTS = 3;
-const POLL_INTERVAL_MS = 5_000;
+ * εξέλιξη" (ΟΧΙ αποτυχία). ΑΛΛΑΓΗ 2026-09-29 (entry-speed-report): ήταν 3×5s — το swap
+ * απαντά ΠΑΝΤΑ `submitted`, άρα κάθε αγορά περίμενε τουλάχιστον 5″ για ένα poll ενώ η
+ * συναλλαγή επιβεβαιώνεται σε ~1″· όλο αυτό το διάστημα το trade δεν υπήρχε στη βάση και
+ * η παρακολούθηση εξόδων δεν το έβλεπε. Τώρα 15×1s: ίδιο συνολικό όριο (15″), `order get`
+ * weight 1, τυπικά 1–2 polls. */
+const POLL_ATTEMPTS = 15;
+const POLL_INTERVAL_MS = 1_000;
 
 /** Πραγματικές συναλλαγές έχουν προτεραιότητα έναντι ΟΛΩΝ των υπόλοιπων routine
  * collectors (wallet-scoring/discovery/exit-resolver) στην ΚΟΙΝΗ ουρά του rate limiter —

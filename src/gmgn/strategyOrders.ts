@@ -42,6 +42,14 @@ export interface StrategyOrderInfo {
   /** "Highest recorded price since open" — απευθείας από το GMGN, καμία δική μας
    * παρακολούθηση χρειάζεται για visibility όσο το native order είναι ενεργό. */
   recordHighPrice: number | null;
+  /** 2026-09-29 — από πραγματικό `order strategy list` (βλ. __fixtures__/strategy-list.real.json). */
+  baseToken: string | null;
+  /** ms epoch. */
+  createTime: number | null;
+  /** Ποιο sub-order έκλεισε τη θέση: 'loss_stop' / 'profit_stop_trace' / '' (δεν πούλησε). */
+  placeAction: string;
+  /** order_statistic.success_sell_num — >0 σημαίνει ότι ΤΟ ΙΔΙΟ το strategy πούλησε. */
+  successSellNum: number;
 }
 
 function toNumOrNull(value: unknown): number | null {
@@ -128,7 +136,68 @@ export function parseStrategyOrder(raw: unknown): StrategyOrderInfo | null {
     reasonBy: typeof obj['reason_by'] === 'string' ? obj['reason_by'] : '',
     reasonCode: typeof obj['reason_code'] === 'string' ? obj['reason_code'] : '',
     recordHighPrice: toNumOrNull(obj['record_high_price']),
+    baseToken: typeof obj['base_token'] === 'string' && obj['base_token'] !== '' ? obj['base_token'] : null,
+    createTime: typeof obj['create_time'] === 'number' && obj['create_time'] > 0 ? obj['create_time'] : null,
+    placeAction: typeof obj['place_action'] === 'string' ? obj['place_action'] : '',
+    successSellNum: successSellNum(obj['order_statistic']),
   };
+}
+
+function successSellNum(raw: unknown): number {
+  if (typeof raw !== 'object' || raw === null) return 0;
+  const v = (raw as Record<string, unknown>)['success_sell_num'];
+  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Το ΙΔΙΟ το native strategy πούλησε τη θέση (όχι ακύρωση επειδή πουλήσαμε εμείς —
+ * εκείνο εμφανίζεται ως `reason_by: token_clear` με success_sell_num 0). */
+export function soldByStrategy(strategy: StrategyOrderInfo): boolean {
+  return strategy.successSellNum > 0 || strategy.conditionOrders.some((sub) => sub.status === 'success');
+}
+
+/** Λόγος εξόδου από το `place_action` (επιβεβαιωμένο πεδίο 2026-09-29), με fallback στο
+ * παλιό heuristic πάνω στο reason_code. */
+export function exitReasonFromStrategy(strategy: StrategyOrderInfo): 'trailing_stop' | 'stop_loss' {
+  if (/loss/i.test(strategy.placeAction)) return 'stop_loss';
+  if (/profit/i.test(strategy.placeAction)) return 'trailing_stop';
+  const successful = strategy.conditionOrders.find((sub) => sub.status === 'success');
+  if (successful !== undefined) return /loss/i.test(successful.orderType) ? 'stop_loss' : 'trailing_stop';
+  return inferExitReason(strategy.reasonCode);
+}
+
+/**
+ * Διαλέγει το strategy ενός live trade από μια λίστα, χωρίς order id.
+ *
+ * 2026-09-29, πραγματικό εύρημα: το `swap --condition-orders` επιστρέφει αμέσως
+ * `status: submitted` ΧΩΡΙΣ `strategy_order_id` — το strategy δημιουργείται αμέσως μετά,
+ * server-side (smart_trade / mix_trade, φαίνεται στο `order strategy list`). Σε 20/20 live
+ * trades το θεωρούσαμε ανύπαρκτο, άρα ποτέ δεν μαθαίναμε όταν το GMGN πουλούσε μόνο του.
+ * Κριτήριο: ίδιο token, δημιουργημένο από το entry και μετά (με περιθώριο), το νεότερο.
+ */
+export function pickStrategyForEntry(
+  strategies: readonly StrategyOrderInfo[],
+  tokenAddress: string,
+  sinceMs: number,
+): StrategyOrderInfo | null {
+  const MARGIN_MS = 120_000;
+  const candidates = strategies.filter(
+    (s) => (s.baseToken === null || s.baseToken === tokenAddress) && (s.createTime ?? 0) >= sinceMs - MARGIN_MS,
+  );
+  candidates.sort((a, b) => (b.createTime ?? 0) - (a.createTime ?? 0));
+  return candidates[0] ?? null;
+}
+
+/** Βρίσκει το strategy ενός live trade (open, αλλιώς history) — βλ. pickStrategyForEntry. */
+export async function findStrategyForToken(
+  walletAddress: string,
+  tokenAddress: string,
+  sinceMs: number,
+  options: RunOptions = {},
+): Promise<StrategyOrderInfo | null> {
+  const open = pickStrategyForEntry(await listStrategies(walletAddress, tokenAddress, 'open', options), tokenAddress, sinceMs);
+  if (open !== null) return open;
+  return pickStrategyForEntry(await listStrategies(walletAddress, tokenAddress, 'history', options), tokenAddress, sinceMs);
 }
 
 /**
@@ -154,6 +223,16 @@ async function findInStrategyList(
   type: 'open' | 'history',
   options: RunOptions,
 ): Promise<StrategyOrderInfo | null> {
+  const list = await listStrategies(walletAddress, tokenAddress, type, options);
+  return list.find((s) => s.orderId === orderId) ?? null;
+}
+
+async function listStrategies(
+  walletAddress: string,
+  tokenAddress: string,
+  type: 'open' | 'history',
+  options: RunOptions,
+): Promise<StrategyOrderInfo[]> {
   const raw = await runCli(
     'order strategy list',
     [
@@ -168,11 +247,7 @@ async function findInStrategyList(
   );
   const obj = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
   const list = Array.isArray(obj['list']) ? obj['list'] : [];
-  for (const item of list) {
-    const parsed = parseStrategyOrder(item);
-    if (parsed !== null && parsed.orderId === orderId) return parsed;
-  }
-  return null;
+  return list.map(parseStrategyOrder).filter((s): s is StrategyOrderInfo => s !== null);
 }
 
 /** Τιμή price-ratio από το ίδιο το GMGN strategy record (open_price/close_price —

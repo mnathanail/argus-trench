@@ -6,7 +6,15 @@ import {
   type LiveTradeWithNativeOrder,
 } from '../db/repositories/paperTrades.js';
 import { recordExecutionError } from '../db/repositories/tradeExecutionErrors.js';
-import { estimateExitAmountSol, getStrategyOrder, inferExitReason } from '../gmgn/strategyOrders.js';
+import {
+  estimateExitAmountSol,
+  exitReasonFromStrategy,
+  getStrategyOrder,
+  inferExitReason,
+  soldByStrategy,
+  type StrategyOrderInfo,
+} from '../gmgn/strategyOrders.js';
+import { findOwnSellRatio, type OwnSellResult } from '../live/ownSellRatio.js';
 import { fetchLiveSolWallet } from '../gmgn/portfolio.js';
 import { rethrowIfRateLimited } from '../gmgn/errors.js';
 import { LIVE_STRATEGY_RECONCILER_LOOP_PACING_MS } from './intervals.js';
@@ -42,7 +50,7 @@ export interface LiveStrategyReconcilerResult {
 // 2026-09-17, ώστε να τα μοιράζεται και το idempotent-guard του exit handler
 // (realtimeExitHandler.ts's executeLiveCloseAndFinalize) — ίδιο σκεπτικό, δύο αφορμές.
 
-async function reconcileOneTrade(
+export async function reconcileOneTrade(
   trade: LiveTradeWithNativeOrder,
   walletAddress: string,
   realtimeConnection: PumpPortalConnection | undefined,
@@ -73,6 +81,13 @@ async function reconcileOneTrade(
     // needs_manual_exit ώστε ο χρήστης να το επιβεβαιώσει με το πραγματικό on-chain
     // ποσό (π.χ. Solscan), ΠΟΤΕ closeTrade με μαντεμένο ή null pnl.
     if (strategy.closePrice === null) {
+      // 2026-09-29: το close_price έρχεται ΠΑΝΤΑ κενό στην πράξη — πριν, ΚΑΘΕ native πώληση
+      // κατέληγε needs_manual_exit χωρίς pnl (άρα αόρατη και στο kill-switch). Τώρα
+      // παίρνουμε το πραγματικό αποτέλεσμα από τις on-chain συναλλαγές του δικού μας wallet.
+      const ownSell = await findOwnSellRatio(walletAddress, trade.tokenAddress, trade.entryAt).catch(() => null);
+      if (ownSell !== null) {
+        return closeFromOwnSell(trade, strategy, ownSell, realtimeConnection);
+      }
       await recordExecutionError({
         paperTradeId: trade.id,
         tokenAddress: trade.tokenAddress,
@@ -169,4 +184,50 @@ export async function runLiveStrategyReconcilerCycle(
   }
 
   return result;
+}
+
+/**
+ * Κλείνει ένα live trade με το ΠΡΑΓΜΑΤΙΚΟ αποτέλεσμα από τις on-chain συναλλαγές του
+ * wallet (βλ. live/ownSellRatio.ts). `strategy` null = δεν βρέθηκε native strategy (το
+ * token απλά έφυγε από το wallet, π.χ. δική μας πώληση που δεν καταγράφηκε).
+ */
+export async function closeFromOwnSell(
+  trade: Pick<LiveTradeWithNativeOrder, 'id' | 'tokenAddress' | 'actualEntryAmountSol' | 'simulatedEntryPrice'>,
+  strategy: StrategyOrderInfo | null,
+  ownSell: OwnSellResult,
+  realtimeConnection: PumpPortalConnection | undefined,
+): Promise<{ outcome: 'none' | 'closed'; alert: string | null }> {
+  const byStrategy = strategy !== null && soldByStrategy(strategy);
+  const exitReason = byStrategy && strategy !== null ? exitReasonFromStrategy(strategy) : 'exit_signal';
+  const actualExitAmountSol = trade.actualEntryAmountSol !== null ? trade.actualEntryAmountSol * ownSell.ratio : null;
+  const pnlSol = actualExitAmountSol !== null && trade.actualEntryAmountSol !== null ? actualExitAmountSol - trade.actualEntryAmountSol : null;
+  const pnlPct = ownSell.ratio - 1;
+  const closed = await closeTrade(trade.id, {
+    exitReason,
+    exitTriggerDetail: {
+      source: byStrategy ? 'gmgn_native_strategy' : 'onchain_sell_outside_our_path',
+      strategy_order_id: strategy?.orderId ?? null,
+      strategy_reason_by: strategy?.reasonBy ?? null,
+      place_action: strategy?.placeAction ?? null,
+      sell_tx: ownSell.sellTxHash,
+      ratio: ownSell.ratio,
+      ratio_source: ownSell.source,
+    },
+    simulatedExitPrice: (trade.simulatedEntryPrice ?? 0) * ownSell.ratio,
+    pnlSol,
+    pnlPct,
+    assumedFeesPct: 0,
+    pnlNetPct: pnlPct,
+    actualExitAmountSol: actualExitAmountSol ?? undefined,
+    exitAt: ownSell.sellAt,
+  });
+  if (!closed) return { outcome: 'none', alert: null };
+  if (realtimeConnection) await unsubscribeIfNoLongerNeeded(realtimeConnection, trade.tokenAddress);
+  const emoji = pnlPct > 0 ? '🟢' : '🔴';
+  return {
+    outcome: 'closed',
+    alert:
+      `⚡ ${emoji} ${byStrategy ? `native ${exitReason}` : 'πώληση εκτός δικής μας διαδρομής'} — ` +
+      `${short(trade.tokenAddress)} pnl ${(pnlPct * 100).toFixed(1)}% (on-chain) — δες /trades`,
+  };
 }

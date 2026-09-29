@@ -1,0 +1,53 @@
+{
+  "next_page_token": "eyJuZXh0X2xpbWl0IjoxNzkwNTkxMDc2NjE0fQ==",
+  "list": [
+    {
+      "base_token": "GqqA6P37d5ucWgC3diCgZhnw76qbaoKNDw69aA3vpump",
+      "chain": "sol",
+      "close_price": "",
+      "close_time": 1790651654491,
+      "condition_orders": [
+        {"check_price": "0.000013991363604645", "cid": "61bcd443-8cbc-4f1e-aee1-b9778be1e194", "drawdown_rate": "25", "order_type": "profit_stop_trace", "price_scale": "50", "sell_ratio": "100", "side": "sell", "status": "cancel", "trigger_time": 1790651654491},
+        {"check_price": "0.000004663787868215", "cid": "db9c8a8c-3799-46ec-b629-1d0592bd7b07", "order_type": "loss_stop", "price_scale": "50", "sell_ratio": "100", "side": "sell", "status": "success", "trigger_time": 1790651623278, "usdt_price": "0.000003805873395135"}
+      ],
+      "create_time": 1790615511016,
+      "open_amount": "632241858951",
+      "open_price": "0.00000932757573643",
+      "order_id": "fc919ed0-a243-415a-b5b5-4c2876d143e0",
+      "order_statistic": {"buy_amount": "632241858951", "buy_quote_price": "78.1073165", "buy_usdt_price": "0.00000932757573643", "quote_profit": "-49382714.9610873429799526841465", "sell_amount": "632241858951", "sell_num": 1, "success_sell_amount": "632241858951", "success_sell_num": 1, "usdt_profit": "-3.491051352834439852681545"},
+      "order_type": "smart_trade",
+      "place_action": "loss_stop",
+      "reason_by": "trade_finish",
+      "reason_code": "",
+      "record_high_price": "0.0000133903395978896124",
+      "status": "canceled",
+      "strategy_status": "canceled",
+      "sub_order_type": "mix_trade",
+      "wallet_address": "yFb3v4wfoc7fSrxXXJ9YTM6JwMVZdnus5fmKe2A6gH5"
+    },
+    {
+      "base_token": "99Mkaf8vbcxQgq2cWQx5NJKF61cNRh8eY3zztNHwpump",
+      "chain": "sol",
+      "close_price": "",
+      "close_time": 1790633300288,
+      "condition_orders": [
+        {"check_price": "0.000029508328832067", "cid": "9e8f477a-e679-45d4-b4b6-89ae0bfd1d49", "drawdown_rate": "25", "order_type": "profit_stop_trace", "price_scale": "50", "sell_ratio": "100", "side": "sell", "status": "cancel", "trigger_time": 1790633300288},
+        {"check_price": "0.000009836109610689", "cid": "ac36c19b-16fd-4b04-85df-c2b096c23eae", "order_type": "loss_stop", "price_scale": "50", "sell_ratio": "100", "side": "sell", "status": "cancel", "trigger_time": 1790633300288}
+      ],
+      "create_time": 1790632767963,
+      "open_amount": "295484679033",
+      "open_price": "0.000019672219221378",
+      "order_id": "e2b070c0-98f1-408e-b321-fe2217d1a993",
+      "order_statistic": {"buy_amount": "295484679033", "sell_amount": "0", "sell_num": 0, "success_sell_amount": "0", "success_sell_num": 0, "usdt_profit": "0"},
+      "order_type": "smart_trade",
+      "place_action": "",
+      "reason_by": "token_clear",
+      "reason_code": "",
+      "record_high_price": "0.0000249120308445144179",
+      "status": "canceled",
+      "strategy_status": "canceled",
+      "sub_order_type": "mix_trade",
+      "wallet_address": "yFb3v4wfoc7fSrxXXJ9YTM6JwMVZdnus5fmKe2A6gH5"
+    }
+  ]
+}

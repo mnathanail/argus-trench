@@ -166,7 +166,7 @@ test('buildEntryTiming: live entry records signal vs executed price and the live
     2400,
     {
       mode: 'live', actualEntryAmountSol: 0.05, entryPrice: 0.0000000315, liveStrategyOrderId: null,
-      nativeOrderVerified: false, killSwitchJustTriggered: false, fallbackReason: null,
+      nativeOrderVerified: false, killSwitchJustTriggered: false, fallbackReason: null, walletAddress: 'W',
       timing: {
         walletQueueMs: 0, walletExecMs: 900, riskGateMs: 5, reserveMs: 4,
         swap: { submitQueueMs: 0, submitExecMs: 1300, confirmMs: 0, initialStatus: 'successful' },

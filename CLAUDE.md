@@ -816,6 +816,16 @@ tests specifically covering the profit floor.
 - Evaluations are stored in decision_log with `candidate_source='on_demand'` (migration 0018); trades carry `trigger_wallet_snapshot_json.gate_source`. A token already rejected by discovery is never re-checked.
 - Paper-only (`LIVE_ON_DEMAND_GATE=false`) until `railway run npm run on-demand-gate-report` says ✅.
 
+## Native GMGN strategies — what really happens (2026-09-29)
+
+- `swap --condition-orders` ALWAYS answers `status: submitted` without `strategy_order_id` (20/20 live trades). The strategy IS created right after (smart_trade / mix_trade, visible in `order strategy list`). We treated it as missing → `native_order_active=false` → the reconciler never looked → when GMGN's stop-loss sold, the trade stayed "open" in our DB (8 such trades on 2026-09-28; 5 native loss_stops at ~−50…−59%).
+- Now: `live/nativeStrategyAttach.ts` finds it after the trade INSERT (background, 6×2s, `pickStrategyForEntry`: same token, created since entry) and sets `live_strategy_order_id` + `native_order_active`.
+- Real strategy fields: `status`/`strategy_status` `canceled` both when it sold (`reason_by: trade_finish`, `place_action: loss_stop|profit_stop_trace`, `order_statistic.success_sell_num ≥ 1`) and when WE sold (`reason_by: token_clear`, success_sell_num 0). `close_price` always empty.
+- Exit result for sells outside our path: `live/ownSellRatio.ts` — our wallet's own buy/sell in `portfolio activity`, ratio = sell cost_usd / buy cost_usd (not check_price/usdt_profit — see incident #1225). The reconciler closes with it (`closeFromOwnSell`, real sell time as exit_at); falls back to needs_manual_exit only if no sell is found.
+- One-off / repair: `npm run reconcile-native-exits` (dry run) → `-- --apply`.
+- Swap status polling is 15×1s (was 3×5s — every live entry waited ≥5″ before the trade existed in the DB).
+- LIVE_ON_DEMAND_GATE = true (explicit user decision, 2026-09-29).
+
 ## Entry speed measurement (2026-09-28)
 
 - Every realtime trade writes `paper_trades.entry_timing_json` (migration 0019): signal price/mcap, gate source, fallback reason, ms per step (lookup, on-demand gate, claim, live attempt, event→insert), and for live the `portfolio info` queue/exec time, swap queue/exec/confirm, post-swap time, executed price vs signal (`slippage_vs_signal`), GMGN report input+gas vs balance-diff, priority/tip fee. Same data as one `[entry-timing]` log line per entry.

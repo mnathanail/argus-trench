@@ -170,9 +170,7 @@ realtimeConnection = pumpportalApiKey
             const walletLabel = entry.walletName ?? short(entry.walletAddress);
             const modeLabel =
               entry.mode === 'live'
-                ? entry.nativeOrderVerified
-                  ? '💰 LIVE'
-                  : '💰 LIVE ⚠️ χωρίς native order'
+                ? '💰 LIVE'
                 : entry.graduated
                   ? '📝 paper (graduated)'
                   : entry.onDemandGate
