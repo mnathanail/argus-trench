@@ -96,11 +96,12 @@ function parseTrader(item: unknown, path: string): TokenTrader {
 
 /**
  * Ετικέτες που αποκλείουν: αγόρασε στο άνοιγμα (sniper), bot bundle (bundler), insider
- * (rat_trader), ο δημιουργός (dev), wallet χωρίς ιστορικό (fresh_wallet — συνήθως
+ * (rat_trader), ο δημιουργός και η ομάδα του (dev/dev_team/creator — ετικέτες του πραγματικού
+ * response), sandwich_bot, wallet χωρίς ιστορικό (fresh_wallet — συνήθως
  * αναλώσιμο wallet του ίδιου operator), πήρε tokens με transfer αντί για αγορά (transfer_in).
  * Ελέγχονται ΚΑΙ στα `tags` ΚΑΙ στα `maker_token_tags`.
  */
-export const EXCLUDED_TRADER_TAGS = ['sniper', 'bundler', 'rat_trader', 'dev', 'fresh_wallet', 'transfer_in'] as const;
+export const EXCLUDED_TRADER_TAGS = ['sniper', 'bundler', 'rat_trader', 'dev', 'dev_team', 'creator', 'fresh_wallet', 'transfer_in', 'sandwich_bot'] as const;
 
 /** Ελάχιστο realized κέρδος σε αυτό το token: ≥ 2x (realized_pnl ≥ 1.0). */
 export const MIN_TRADER_REALIZED_PNL = 1.0;
@@ -110,13 +111,15 @@ export const MIN_TRADER_BUY_COST_USD = 50;
  * (βλ. CLAUDE.md «Wallet quality: snipers vs holders»). */
 export const MIN_TRADER_HOLD_SEC = 120;
 
-export type TraderRejectReason = 'not_wallet' | 'excluded_tag' | 'low_profit' | 'small_size' | 'short_hold' | 'missing_data';
+/** `not_sold` = δεν έχει πουλήσει τίποτα (realized_pnl κενό) — δεν ξέρουμε αν βγαίνει καλά. */
+export type TraderRejectReason = 'not_wallet' | 'excluded_tag' | 'not_sold' | 'low_profit' | 'small_size' | 'short_hold' | 'missing_data';
 
 export function traderRejectReason(trader: TokenTrader, nowSec: number): TraderRejectReason | null {
   if (trader.addrType !== 0) return 'not_wallet';
   const allTags = [...trader.tags, ...trader.makerTokenTags];
   if (EXCLUDED_TRADER_TAGS.some((t) => allTags.includes(t))) return 'excluded_tag';
-  if (trader.realizedPnl === null || trader.buyCostUsd === null || trader.startHoldingAt === null) return 'missing_data';
+  if (trader.buyCostUsd === null || trader.startHoldingAt === null) return 'missing_data';
+  if (trader.realizedPnl === null) return 'not_sold';
   if (trader.realizedPnl < MIN_TRADER_REALIZED_PNL) return 'low_profit';
   if (trader.buyCostUsd < MIN_TRADER_BUY_COST_USD) return 'small_size';
   const heldSec = (trader.endHoldingAt ?? nowSec) - trader.startHoldingAt;

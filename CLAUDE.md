@@ -832,11 +832,13 @@ tests specifically covering the profit floor.
 
 ## Wallet discovery source: top traders (2026-09-29)
 
-- Explicit user decision ("θέλω το 3"): `collectors/walletDiscovery.ts` no longer uses `token holders --tag smart_degen` (it mostly found snipers). Now: `token traders --order-by profit --limit 50` (weight 5) on the ~10 most recently graduated Pump.fun tokens (`gmgn/traders.ts`).
+- Explicit user decision ("θέλω το 3"): `collectors/walletDiscovery.ts` no longer uses `token holders --tag smart_degen` (it mostly found snipers). Now: `token traders --order-by profit --limit 50` (weight 5, `gmgn/traders.ts`) on ~10 tokens that ALREADY ran.
+- Token source = `market trending` (weight 1, `gmgn/trending.ts`): Pump.fun, 6h, age 1h–24h, ATH market cap ≥ $300k, bundler/insider ≤ 30%, by volume; a token scanned once is skipped for 24h (in-memory). NOT the recently graduated tokens: the first real check (token ~1′ old) returned 50 traders who were all dev_team/bundler/sniper/fresh_wallet or had held < 2′ — nobody passed, and many "completed" tokens graduate within 0–1s of creation (bundled launches).
+- Real `token traders` response confirmed (2026-09-29): all fields we read exist (`address`, `addr_type`, `tags`, `maker_token_tags`, `realized_profit`, `realized_pnl`, `history_bought_cost`, `start_holding_at`, `end_holding_at`). Tags also seen: `dev_team`, `creator`, `axiom`, `gmgn`, `paper_hands`, `fomo`, `sandwich_bot`. `realized_pnl` is empty for wallets that never sold → `not_sold`.
 - Free filter on the same response (`traderRejectReason`): addr_type 0; no `sniper`/`bundler`/`rat_trader`/`dev`/`fresh_wallet`/`transfer_in` in `tags` or `maker_token_tags`; realized ≥ 2x on that token; buy ≥ $50; held that token ≥ 2′.
 - Already-known addresses are skipped BEFORE scoring (`listKnownAddresses`); ≤ 40 `portfolio stats` per cycle; wallets rejected at scoring are not re-scored for 24h (in-memory).
 - Admission (`passesTopTraderThreshold`): the existing floor AND `avg_holding_period` ≥ 2′. Inserted as `source='top_trader'` with `avg_holding_sec` — measured separately in `npm run wallet-holding-report` ("Ανά πηγή").
-- The response shape comes from SKILL.md; the fixture `token.traders.doc.json` is doc-based. Verify with `npm run top-traders-check` (`-- <mint> --raw` for a real fixture). A missing field means the trader is rejected (`missing_data`), never admitted.
+- The `market trending` shape is still from SKILL.md (`data.rank`; the parser also accepts `rank`/`list`/array and fails loudly otherwise). Verify with `npm run top-traders-check` (prints the trending list, then the traders of its first token). A missing field means the trader is rejected, never admitted.
 
 ## Native GMGN strategies — what really happens (2026-09-29)
 

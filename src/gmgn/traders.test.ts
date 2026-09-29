@@ -34,7 +34,7 @@ test('traderRejectReason keeps only profitable, non-sniper wallets that held ≥
     PoolAd: 'not_wallet',
     Dust11: 'small_size',
     StillH: null,
-    NoPnl1: 'missing_data',
+    NoPnl1: 'not_sold',
   });
 });
 

@@ -1,25 +1,35 @@
 import 'dotenv/config';
-import { LAUNCHPAD_PLATFORMS } from '../src/decision/gateConfig.js';
 import { runCli } from '../src/gmgn/exec.js';
 import { buildTradersArgs, parseTradersResponse, traderRejectReason } from '../src/gmgn/traders.js';
-import { fetchTrenches } from '../src/gmgn/trenches.js';
-import { pickRecentGraduated } from '../src/collectors/walletDiscovery.js';
+import { buildTrendingArgs, parseTrendingResponse } from '../src/gmgn/trending.js';
 
-// Χρήση: railway run npm run top-traders-check                 (πιο πρόσφατο graduated token)
+// Χρήση: railway run npm run top-traders-check                 (1ο token του trending που χρησιμοποιεί το discovery)
 //        railway run npm run top-traders-check -- <mint>
 //        railway run npm run top-traders-check -- <mint> --raw  (ολόκληρο το JSON, για fixture)
 //
 // 2026-09-29: επαλήθευση της νέας πηγής wallet discovery (gmgn/traders.ts) σε ΠΡΑΓΜΑΤΙΚΟ
 // response: ποια πεδία έρχονται και ποιοι traders περνούν / απορρίπτονται και γιατί.
-// Κανένα DB write. Κόστος: 1 `token traders` (weight 5) + 1 trenches αν δεν δοθεί mint.
+// Κανένα DB write. Κόστος: 1 `token traders` (weight 5) + 1 trending (weight 1) αν δεν δοθεί mint.
 
 const args = process.argv.slice(2);
 const rawMode = args.includes('--raw');
 let mint = args.find((a) => !a.startsWith('--'));
 if (mint === undefined) {
-  const graduated = await fetchTrenches({ category: 'completed', launchpadPlatforms: LAUNCHPAD_PLATFORMS });
-  mint = pickRecentGraduated(graduated, 1)[0]?.tokenAddress;
-  if (mint === undefined) throw new Error('κανένα graduated token');
+  const rawTrending = await runCli('market trending', buildTrendingArgs(), {});
+  let tokens;
+  try {
+    tokens = parseTrendingResponse(rawTrending);
+  } catch (error) {
+    console.log(`❌ trending: άγνωστο σχήμα (${(error as Error).message}). Αρχή response:\n${JSON.stringify(rawTrending).slice(0, 1500)}`);
+    process.exit(1);
+  }
+  console.log(`\nTrending (όπως το discovery): ${tokens.length} tokens`);
+  for (const t of tokens.slice(0, 10)) {
+    const age = t.creationTimestamp === null ? '?' : `${((Date.now() / 1000 - t.creationTimestamp) / 3600).toFixed(1)}h`;
+    console.log(`  ${t.address.slice(0, 8)} ATH $${t.historyHighestMarketCap?.toFixed(0) ?? '?'} ηλικία ${age}`);
+  }
+  mint = tokens[0]?.address;
+  if (mint === undefined) throw new Error('κανένα token στο trending');
 }
 
 const raw = await runCli('token traders', buildTradersArgs({ tokenAddress: mint }), {});

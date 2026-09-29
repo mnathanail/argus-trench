@@ -1,8 +1,8 @@
 import { insertWalletIfNew, listKnownAddresses } from '../db/repositories/watchlistWallets.js';
-import { LAUNCHPAD_PLATFORMS } from '../decision/gateConfig.js';
 import { rethrowIfRateLimited } from '../gmgn/errors.js';
 import { fetchTokenTraders, traderRejectReason, type TokenTrader, type TraderRejectReason } from '../gmgn/traders.js';
-import { fetchTrenches, type TrenchCandidate } from '../gmgn/trenches.js';
+import { type TrenchCandidate } from '../gmgn/trenches.js';
+import { fetchTrendingTokens, type TrendingToken } from '../gmgn/trending.js';
 import type { PumpPortalConnection } from '../realtime/pumpportalConnection.js';
 import { fetchWalletStats, type WalletStats } from '../gmgn/walletStats.js';
 import { WALLET_DISCOVERY_LOOP_PACING_MS } from './intervals.js';
@@ -13,7 +13,7 @@ import { delay } from '../util/delay.js';
  * Layer 2 — «Αυτόματο» wallet discovery (CLAUDE.md). Hourly, standing process
  * ανεξάρτητο από τα layer 1/3 collectors:
  *
- *   ~8-10 πρόσφατα graduated Pump.fun tokens (default — βλ. σημείωση παρακάτω)
+ *   ~10 Pump.fun tokens που έτρεξαν (trending 6h, 1h–24h, ATH ≥ $300k), όχι ήδη σαρωμένα
  *     → top traders κατά κέρδος ανά token (από 2026-09-29· πριν: holders `smart_degen`)
  *     → φίλτρο sniper/bundler/κέρδος/κράτημα από το ίδιο response
  *     → μοναδικά candidate wallets, με πόσα tokens τα «είδαν» (βαρύτητα, όχι φίλτρο)
@@ -74,14 +74,36 @@ export const DISCOVERY_MAX_SCORED_PER_CYCLE = 40;
  * απλώς το ξαναελέγχει, κανένα πρόβλημα). */
 const REJECTED_TTL_MS = 24 * 60 * 60 * 1000;
 const recentlyRejected = new Map<string, number>();
+/** Token που σαρώθηκε δεν ξανασαρώνεται για 24h — κάθε ωριαίος κύκλος παίρνει ΝΕΑ tokens. */
+const SCANNED_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const recentlyScannedTokens = new Map<string, number>();
 
 export function resetWalletDiscoveryState(): void {
   recentlyRejected.clear();
+  recentlyScannedTokens.clear();
+}
+
+/** Με τη σειρά του trending (volume), όσα δεν σαρώθηκαν πρόσφατα, μοναδικά. */
+export function pickUnscannedTokens(
+  trending: readonly TrendingToken[],
+  scanned: ReadonlyMap<string, number>,
+  sampleSize: number,
+): { tokenAddress: string }[] {
+  const seen = new Set<string>();
+  const picked: { tokenAddress: string }[] = [];
+  for (const t of trending) {
+    if (scanned.has(t.address) || seen.has(t.address)) continue;
+    seen.add(t.address);
+    picked.push({ tokenAddress: t.address });
+    if (picked.length >= sampleSize) break;
+  }
+  return picked;
 }
 
 /**
  * 2026-09-29 (ρητή απόφαση χρήστη, «θέλω το 3»): πηγή = TOP TRADERS κατά κέρδος
- * (`token traders --order-by profit`) των πρόσφατα graduated tokens, ΟΧΙ holders με
+ * (`token traders --order-by profit`) tokens που ΗΔΗ έτρεξαν (`market trending`, βλ.
+ * gmgn/trending.ts — ΟΧΙ τα πρόσφατα graduated: ηλικίας ~1′, μόνο dev/bundlers), ΟΧΙ holders με
  * ετικέτα smart_degen. Λόγος: τα smart_degen που βρίσκαμε ήταν κυρίως snipers (πουλούν
  * < 2′ μετά την αγορά) — αντιγράφοντάς τα χάναμε δομικά (−0.34 SOL σε 187 αντιγραφές).
  *
@@ -99,12 +121,15 @@ export async function runWalletDiscoveryCycle(
   const tradersLimit = options.tradersLimitPerToken ?? 50;
   const nowSec = Math.floor(Date.now() / 1000);
 
-  const graduated = await fetchTrenches({ category: 'completed', launchpadPlatforms: LAUNCHPAD_PLATFORMS });
-  const tokens = pickRecentGraduated(graduated, sampleSize);
+  const now = Date.now();
+  for (const [address, at] of recentlyScannedTokens) if (now - at > SCANNED_TOKEN_TTL_MS) recentlyScannedTokens.delete(address);
+  const trending = await fetchTrendingTokens();
+  const tokens = pickUnscannedTokens(trending, recentlyScannedTokens, sampleSize);
+  for (const token of tokens) recentlyScannedTokens.set(token.tokenAddress, now);
 
   const perTokenTraders: TokenTrader[][] = [];
   const rejected: Record<TraderRejectReason, number> = {
-    not_wallet: 0, excluded_tag: 0, low_profit: 0, small_size: 0, short_hold: 0, missing_data: 0,
+    not_wallet: 0, excluded_tag: 0, not_sold: 0, low_profit: 0, small_size: 0, short_hold: 0, missing_data: 0,
   };
   let tradersSeen = 0;
   let traderFailures = 0;
@@ -131,7 +156,6 @@ export async function runWalletDiscoveryCycle(
 
   const ranked = rankCandidatesByFrequency(perTokenTraders);
   const known = await listKnownAddresses(ranked.map((c) => c.address));
-  const now = Date.now();
   for (const [address, at] of recentlyRejected) if (now - at > REJECTED_TTL_MS) recentlyRejected.delete(address);
   const toScore = ranked
     .filter((c) => !known.has(c.address) && !recentlyRejected.has(c.address))
