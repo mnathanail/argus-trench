@@ -29,6 +29,8 @@ export const ROUTE_WEIGHTS = {
   'portfolio token-balance': 1,
   'portfolio created-tokens': 2,
   'token holders': 5,
+  // 2026-09-29 — wallet discovery από top traders (gmgn/traders.ts). SKILL.md: weight 5.
+  'token traders': 5,
   // 2026-09-28 — on-demand gate (decision/onDemandGate.ts). Βάρη από
   // .agents/skills/gmgn-token/SKILL.md (Rate Limit πίνακας).
   'token info': 1,

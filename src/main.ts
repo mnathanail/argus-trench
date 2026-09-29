@@ -286,12 +286,13 @@ const loops: LoopDefinition[] = [
     run: async () => {
       const result = await runWalletDiscoveryCycle({ realtimeConnection });
       console.log(
-        `[wallet-discovery] tokens=${result.tokensScanned} candidates=${result.uniqueCandidates} ` +
+        `[wallet-discovery] tokens=${result.tokensScanned} traders=${result.tradersSeen} ` +
+          `rejected=${JSON.stringify(result.rejected)} candidates=${result.uniqueCandidates} ` +
           `discovered=${result.discovered} belowThreshold=${result.belowThreshold} ` +
           `alreadyKnown=${result.alreadyKnown} failures=${result.failures}`,
       );
       if (result.discovered > 0) {
-        await notify(`🔎 ${result.discovered} νέο(α) smart_money wallet(s) προστέθηκαν στη watchlist`);
+        await notify(`🔎 ${result.discovered} νέο(α) top_trader wallet(s) προστέθηκαν στη watchlist`);
       }
     },
   },

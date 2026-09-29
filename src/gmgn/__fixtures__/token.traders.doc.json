@@ -1,0 +1,9 @@
+{"list":[
+{"address":"GoodTrader1111111111111111111111111111111111","account_address":"Ata1111111111111111111111111111111111111111","addr_type":0,"tags":["smart_degen"],"maker_token_tags":["top_holder"],"realized_profit":"1250.5","realized_pnl":"2.4","history_bought_cost":"520.1","start_holding_at":1759140000,"end_holding_at":1759141800,"profit":"1300"},
+{"address":"SniperWallet1111111111111111111111111111111","addr_type":0,"tags":[],"maker_token_tags":["sniper"],"realized_profit":"900","realized_pnl":"5","history_bought_cost":"180","start_holding_at":1759140000,"end_holding_at":1759140030},
+{"address":"QuickFlip11111111111111111111111111111111111","addr_type":0,"tags":[],"maker_token_tags":[],"realized_profit":"400","realized_pnl":"1.5","history_bought_cost":"260","start_holding_at":1759140000,"end_holding_at":1759140060},
+{"address":"PoolAddress1111111111111111111111111111111111","addr_type":2,"exchange":"pump_amm","tags":[],"maker_token_tags":[]},
+{"address":"Dust11111111111111111111111111111111111111111","addr_type":0,"tags":[],"maker_token_tags":[],"realized_profit":"40","realized_pnl":"9","history_bought_cost":"4.4","start_holding_at":1759140000,"end_holding_at":0},
+{"address":"StillHolding11111111111111111111111111111111","addr_type":0,"tags":[],"maker_token_tags":[],"realized_profit":"300","realized_pnl":1.2,"history_bought_cost":250,"start_holding_at":1759140000,"end_holding_at":null},
+{"address":"NoPnl111111111111111111111111111111111111111","addr_type":0,"tags":[],"maker_token_tags":[],"realized_profit":"","history_bought_cost":"100","start_holding_at":1759140000}
+]}

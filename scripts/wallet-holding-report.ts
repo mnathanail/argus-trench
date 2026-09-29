@@ -82,6 +82,11 @@ try {
     );
   };
 
+  console.log('\n--- Ανά πηγή (top_trader = νέα πηγή discovery από 2026-09-29) ---');
+  for (const source of [...new Set(wallets.map((w) => w.source))].sort()) {
+    console.log(`  ${source.padEnd(11)} ${summary(wallets.filter((w) => w.source === source))}`);
+  }
+
   console.log('\n--- Ανά ζώνη χρόνου κρατήματος (αποτέλεσμα των ΔΙΚΩΝ μας αντιγραφών) ---');
   for (const [label, lo, hi] of BUCKETS) {
     const ws = known.filter((w) => (w.hold as number) >= lo && (w.hold as number) < hi);

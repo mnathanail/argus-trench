@@ -7,7 +7,9 @@ import { parseTrenchesResponse } from '../gmgn/trenches.js';
 import type { WalletStats } from '../gmgn/walletStats.js';
 import { ADVISORY_WIN_RATE_FLOOR } from '../telegram/commands.js';
 import {
+  MIN_AVG_HOLDING_SEC,
   passesAutoDiscoveryThreshold,
+  passesTopTraderThreshold,
   pickRecentGraduated,
   rankCandidatesByFrequency,
 } from './walletDiscovery.js';
@@ -119,4 +121,13 @@ test('passesAutoDiscoveryThreshold uses tokenCount (token_num), a wallet with hu
     passesAutoDiscoveryThreshold(stats({ winRate: 0.9, tokenCount: 5, buyCount: 5000, sellCount: 5000 })),
     false,
   );
+});
+
+// --- passesTopTraderThreshold (2026-09-29) ------------------------------------------------
+
+test('passesTopTraderThreshold = existing floor AND avg holding ≥ 2′; unknown holding fails', () => {
+  assert.equal(passesTopTraderThreshold(stats({ avgHoldingPeriodSec: MIN_AVG_HOLDING_SEC })), true);
+  assert.equal(passesTopTraderThreshold(stats({ avgHoldingPeriodSec: MIN_AVG_HOLDING_SEC - 1 })), false);
+  assert.equal(passesTopTraderThreshold(stats({ avgHoldingPeriodSec: null })), false);
+  assert.equal(passesTopTraderThreshold(stats({ winRate: ADVISORY_WIN_RATE_FLOOR })), false);
 });

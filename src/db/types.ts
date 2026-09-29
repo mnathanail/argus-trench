@@ -5,7 +5,8 @@
 
 export type Chain = 'sol' | 'bsc' | 'base' | 'eth';
 
-export type WalletSource = 'smart_money' | 'kol' | 'manual';
+/** 'top_trader' (2026-09-29): wallet discovery από `token traders` — βλ. collectors/walletDiscovery.ts. */
+export type WalletSource = 'smart_money' | 'kol' | 'manual' | 'top_trader';
 
 /**
  * Πώς παρατηρήθηκε ο candidate. Βλ. migration 0003 και layer 1 στο CLAUDE.md — τα δύο

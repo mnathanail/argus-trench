@@ -309,6 +309,7 @@ export interface NewDiscoveredWallet {
   winRate?: number | null;
   pnlMultiplier?: number | null;
   tradeCount?: number | null;
+  avgHoldingSec?: number | null;
 }
 
 /**
@@ -327,8 +328,8 @@ export async function insertWalletIfNew(
   conn?: Queryable,
 ): Promise<boolean> {
   const result = await db(conn).query(
-    `INSERT INTO watchlist_wallets (address, chain, source, active, win_rate, pnl_multiplier, trade_count)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
+    `INSERT INTO watchlist_wallets (address, chain, source, active, win_rate, pnl_multiplier, trade_count, avg_holding_sec)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
      ON CONFLICT (address) DO NOTHING`,
     [
       input.address,
@@ -338,7 +339,19 @@ export async function insertWalletIfNew(
       input.winRate ?? null,
       input.pnlMultiplier ?? null,
       input.tradeCount ?? null,
+      input.avgHoldingSec ?? null,
     ],
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+/** Ποια από τα addresses υπάρχουν ήδη στο watchlist (οποιοδήποτε source/active) — ώστε το
+ * discovery να μην ξοδεύει `portfolio stats` (weight 3) σε wallets που ήδη ξέρουμε. */
+export async function listKnownAddresses(addresses: readonly string[], conn?: Queryable): Promise<Set<string>> {
+  if (addresses.length === 0) return new Set();
+  const { rows } = await db(conn).query<{ address: string }>(
+    'SELECT address FROM watchlist_wallets WHERE address = ANY($1::text[])',
+    [addresses],
+  );
+  return new Set(rows.map((r) => r.address));
 }

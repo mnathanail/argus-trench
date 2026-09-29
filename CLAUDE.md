@@ -830,6 +830,14 @@ tests specifically covering the profit floor.
 - Copying a sniper loses structurally: we buy after them and sell after their dump.
 - Now recorded on every scoring (migration 0021): `watchlist_wallets.avg_holding_sec` / `wallet_score_history.avg_holding_sec` from `pnl_stat.avg_holding_period` (same `portfolio stats` call, no extra cost). NOT a filter yet — pick the threshold with `npm run wallet-holding-report` (distribution + our copy results per bucket and per candidate threshold).
 
+## Wallet discovery source: top traders (2026-09-29)
+
+- Explicit user decision ("θέλω το 3"): `collectors/walletDiscovery.ts` no longer uses `token holders --tag smart_degen` (it mostly found snipers). Now: `token traders --order-by profit --limit 50` (weight 5) on the ~10 most recently graduated Pump.fun tokens (`gmgn/traders.ts`).
+- Free filter on the same response (`traderRejectReason`): addr_type 0; no `sniper`/`bundler`/`rat_trader`/`dev`/`fresh_wallet`/`transfer_in` in `tags` or `maker_token_tags`; realized ≥ 2x on that token; buy ≥ $50; held that token ≥ 2′.
+- Already-known addresses are skipped BEFORE scoring (`listKnownAddresses`); ≤ 40 `portfolio stats` per cycle; wallets rejected at scoring are not re-scored for 24h (in-memory).
+- Admission (`passesTopTraderThreshold`): the existing floor AND `avg_holding_period` ≥ 2′. Inserted as `source='top_trader'` with `avg_holding_sec` — measured separately in `npm run wallet-holding-report` ("Ανά πηγή").
+- The response shape comes from SKILL.md; the fixture `token.traders.doc.json` is doc-based. Verify with `npm run top-traders-check` (`-- <mint> --raw` for a real fixture). A missing field means the trader is rejected (`missing_data`), never admitted.
+
 ## Native GMGN strategies — what really happens (2026-09-29)
 
 - `swap --condition-orders` ALWAYS answers `status: submitted` without `strategy_order_id` (20/20 live trades). The strategy IS created right after (smart_trade / mix_trade, visible in `order strategy list`). We treated it as missing → `native_order_active=false` → the reconciler never looked → when GMGN's stop-loss sold, the trade stayed "open" in our DB (8 such trades on 2026-09-28; 5 native loss_stops at ~−50…−59%).
