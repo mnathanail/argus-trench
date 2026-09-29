@@ -227,6 +227,8 @@ export interface WalletScoreUpdate {
   winRate: number | null;
   pnlMultiplier: number | null;
   tradeCount: number | null;
+  /** pnl_stat.avg_holding_period (δευτερόλεπτα) — migration 0021. null/απόν = κρατάμε την προηγούμενη τιμή. */
+  avgHoldingSec?: number | null;
 }
 
 /** Ενημερώνει το τρέχον score και σφραγίζει το `last_reviewed_at`. */
@@ -237,10 +239,11 @@ export async function updateWalletScore(
 ): Promise<WatchlistWallet | null> {
   const { rows } = await db(conn).query<WalletRow>(
     `UPDATE watchlist_wallets
-        SET win_rate = $2, pnl_multiplier = $3, trade_count = $4, last_reviewed_at = now()
+        SET win_rate = $2, pnl_multiplier = $3, trade_count = $4, last_reviewed_at = now(),
+            avg_holding_sec = COALESCE($5, avg_holding_sec)
       WHERE address = $1
       RETURNING ${COLUMNS}`,
-    [address, score.winRate, score.pnlMultiplier, score.tradeCount],
+    [address, score.winRate, score.pnlMultiplier, score.tradeCount, score.avgHoldingSec ?? null],
   );
   const row = rows[0];
   return row === undefined ? null : mapWallet(row);

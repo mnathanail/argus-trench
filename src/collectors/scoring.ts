@@ -58,6 +58,7 @@ export async function runWalletScoringCycle(): Promise<ScoringResult> {
     winRate: number | null;
     pnlMultiplier: number | null;
     tradeCount: number | null;
+    avgHoldingSec: number | null;
   }[] = [];
   const alerts: string[] = [];
   let failures = 0;
@@ -74,6 +75,8 @@ export async function runWalletScoringCycle(): Promise<ScoringResult> {
           pnlMultiplier: stats.realizedPnlRatio,
           // token_num: ο παρονομαστής του winRate, ΟΧΙ buy+sell.
           tradeCount: stats.tokenCount,
+          // 2026-09-29 (migration 0021): μέσος χρόνος κρατήματος — snipers vs traders.
+          avgHoldingSec: stats.avgHoldingPeriodSec,
         };
         scores.push(score);
         await updateWalletScore(wallet.address, score);

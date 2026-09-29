@@ -35,6 +35,8 @@ export interface NewWalletScore {
   winRate: number | null;
   pnlMultiplier: number | null;
   tradeCount: number | null;
+  /** migration 0021 — βλ. WalletScoreUpdate.avgHoldingSec. */
+  avgHoldingSec?: number | null;
 }
 
 /**
@@ -46,9 +48,9 @@ export async function insertScore(
   conn?: Queryable,
 ): Promise<void> {
   await db(conn).query(
-    `INSERT INTO wallet_score_history (wallet_address, win_rate, pnl_multiplier, trade_count)
-     VALUES ($1,$2,$3,$4)`,
-    [input.walletAddress, input.winRate, input.pnlMultiplier, input.tradeCount],
+    `INSERT INTO wallet_score_history (wallet_address, win_rate, pnl_multiplier, trade_count, avg_holding_sec)
+     VALUES ($1,$2,$3,$4,$5)`,
+    [input.walletAddress, input.winRate, input.pnlMultiplier, input.tradeCount, input.avgHoldingSec ?? null],
   );
 }
 
@@ -59,13 +61,14 @@ export async function insertScores(
 ): Promise<void> {
   if (inputs.length === 0) return;
   await db(conn).query(
-    `INSERT INTO wallet_score_history (wallet_address, win_rate, pnl_multiplier, trade_count)
-     SELECT * FROM UNNEST($1::text[], $2::numeric[], $3::numeric[], $4::integer[])`,
+    `INSERT INTO wallet_score_history (wallet_address, win_rate, pnl_multiplier, trade_count, avg_holding_sec)
+     SELECT * FROM UNNEST($1::text[], $2::numeric[], $3::numeric[], $4::integer[], $5::numeric[])`,
     [
       inputs.map((i) => i.walletAddress),
       inputs.map((i) => i.winRate),
       inputs.map((i) => i.pnlMultiplier),
       inputs.map((i) => i.tradeCount),
+      inputs.map((i) => i.avgHoldingSec ?? null),
     ],
   );
 }

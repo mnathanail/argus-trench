@@ -824,6 +824,12 @@ tests specifically covering the profit floor.
 - 4B trailing shadow keeps running a few more days (no GMGN cost) before it is removed.
 - Second shadow, **"no exit_signal"** (migration 0020, `nosig_*` columns, `NO_EXIT_SIGNAL_RULES` + `ignoreExitSignal` in `realtime/shadowExit.ts`): today's exits (trailing +50%/−25%, floor +10%, stop-loss −50%, 24h timeout) but NOT selling when the copied wallet sells. Question it answers: would letting trailing work beat following the wallet's exit? Data 2026-09-29: 27/34 on-demand trades exited via exit_signal within ~30″ (avg −7.2%), only 1 had reached ×1.5. Compare with `npm run no-exit-signal-report` (split on_demand / discovery). Shadow repository functions take a `ShadowVariant` ('4b' | 'nosig'); column names come only from a fixed map.
 
+## Wallet quality: snipers vs holders (2026-09-29)
+
+- Per-wallet copy results (26 wallets, 229 trades since 09-27): wallets whose own sell comes < 2′ after their buy (exit_signal) → −0.34 SOL over 187 copies; ≥ 2′ (or no early sell) → +0.09 SOL over 42. GMGN win rate (our admission criterion) did not predict our result at all (≥50%: −0.15 SOL, <50%: −0.11). One sniper wallet (DJze9rks…) alone: 57 trades, −0.18 SOL — unwatched.
+- Copying a sniper loses structurally: we buy after them and sell after their dump.
+- Now recorded on every scoring (migration 0021): `watchlist_wallets.avg_holding_sec` / `wallet_score_history.avg_holding_sec` from `pnl_stat.avg_holding_period` (same `portfolio stats` call, no extra cost). NOT a filter yet — pick the threshold with `npm run wallet-holding-report` (distribution + our copy results per bucket and per candidate threshold).
+
 ## Native GMGN strategies — what really happens (2026-09-29)
 
 - `swap --condition-orders` ALWAYS answers `status: submitted` without `strategy_order_id` (20/20 live trades). The strategy IS created right after (smart_trade / mix_trade, visible in `order strategy list`). We treated it as missing → `native_order_active=false` → the reconciler never looked → when GMGN's stop-loss sold, the trade stayed "open" in our DB (8 such trades on 2026-09-28; 5 native loss_stops at ~−50…−59%).

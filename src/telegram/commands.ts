@@ -84,13 +84,14 @@ export interface CommandDeps {
   setWalletActive(address: string, active: boolean): Promise<boolean>;
   updateWalletScore(
     address: string,
-    score: { winRate: number | null; pnlMultiplier: number | null; tradeCount: number | null },
+    score: { winRate: number | null; pnlMultiplier: number | null; tradeCount: number | null; avgHoldingSec?: number | null },
   ): Promise<WatchlistWallet | null>;
   insertScore(input: {
     walletAddress: string;
     winRate: number | null;
     pnlMultiplier: number | null;
     tradeCount: number | null;
+    avgHoldingSec?: number | null;
   }): Promise<void>;
   recentScores(address: string, limit: number): Promise<WalletScoreEntry[]>;
   listActiveWallets(): Promise<WatchlistWallet[]>;
@@ -359,6 +360,7 @@ async function persistScore(address: string, stats: WalletStats, deps: CommandDe
     pnlMultiplier: stats.realizedPnlRatio,
     // token_num, ΟΧΙ buy+sell — είναι ο παρονομαστής του winRate.
     tradeCount: stats.tokenCount,
+    avgHoldingSec: stats.avgHoldingPeriodSec,
   };
   await deps.updateWalletScore(address, score);
   await deps.insertScore({ walletAddress: address, ...score });

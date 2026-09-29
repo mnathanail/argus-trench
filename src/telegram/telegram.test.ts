@@ -162,7 +162,8 @@ test('/watch persists the score using token_num and the realized PnL ratio', asy
   };
   const reply = await handleCommand(`/watch ${ADDRESS}`, deps);
   assert.deepEqual(captured, [
-    { walletAddress: ADDRESS, winRate: 0.6, pnlMultiplier: 0.33, tradeCount: 40 },
+    // avgHoldingSec: 2026-09-29, migration 0021 — ίδιο portfolio stats call.
+    { walletAddress: ADDRESS, winRate: 0.6, pnlMultiplier: 0.33, tradeCount: 40, avgHoldingSec: 2702 },
   ]);
   assert.match(reply, /win rate: 60\.0%/);
 });
