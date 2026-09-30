@@ -102,6 +102,9 @@ export interface SignatureInfo {
   err: unknown;
 }
 
-export async function getSignaturesForAddress(url: string, address: string, limit: number): Promise<SignatureInfo[]> {
-  return rpcCall<SignatureInfo[]>(url, 'getSignaturesForAddress', [address, { limit, commitment: 'confirmed' }]);
+export async function getSignaturesForAddress(url: string, address: string, limit: number, before?: string): Promise<SignatureInfo[]> {
+  return rpcCall<SignatureInfo[]>(url, 'getSignaturesForAddress', [
+    address,
+    { limit, commitment: 'confirmed', ...(before !== undefined ? { before } : {}) },
+  ]);
 }
