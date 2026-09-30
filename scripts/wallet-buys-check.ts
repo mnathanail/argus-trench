@@ -183,6 +183,42 @@ try {
     for (const [k, n] of [...verdicts.entries()].sort((a, b) => b[1] - a[1])) console.log(`    ${String(n).padStart(3)}  ${k}`);
     console.log('  Σημ.: «πέρασε» = πρώτη εμφάνιση ενός row που ΣΗΜΕΡΑ περνάει το gate — αν πέρασε αργότερα από την πρώτη εμφάνιση, δεν το ξέρουμε (προσέγγιση).');
   }
+
+  // --- 2026-09-30: realtime απορρίψεις (migration 0022) — ο ΑΚΡΙΒΗΣ λόγος ανά token ---------
+  const { rows: startRows } = await pool.query<{ start: Date | null }>('SELECT min(skipped_at) AS start FROM realtime_entry_skips');
+  const trackingStart = startRows[0]?.start ?? null;
+  if (trackingStart === null) {
+    console.log('\n(Καταγραφή realtime απορρίψεων: δεν υπάρχει ακόμα καμία εγγραφή — ξανατρέξε σε λίγες ώρες.)');
+  } else {
+    const { rows: skipRows } = await pool.query<{ token_address: string; reasons: string; pools: string; curve: boolean; n: string }>(
+      `SELECT token_address,
+              string_agg(DISTINCT reason, ',')                     AS reasons,
+              string_agg(DISTINCT COALESCE(pool, '∅'), ',')        AS pools,
+              bool_or(has_curve_data)                              AS curve,
+              count(*)                                             AS n
+         FROM realtime_entry_skips
+        WHERE wallet_address = $1 AND skipped_at >= $2
+        GROUP BY 1`,
+      [wallet, trackingStart],
+    );
+    const skipsByToken = new Map(skipRows.map((r) => [r.token_address, r]));
+    const tracked = [...firstBuy.values()].filter((b) => b.timestamp * 1000 >= trackingStart.getTime());
+    const counts = new Map<string, number>();
+    console.log(`\n=== Realtime: τι έγινε με κάθε αγορά του από ${hhmm(trackingStart)} (έναρξη καταγραφής) — ${tracked.length} tokens ===`);
+    for (const b of tracked.sort((x, y) => x.timestamp - y.timestamp)) {
+      const r = byToken.get(b.tokenAddress);
+      const sk = skipsByToken.get(b.tokenAddress);
+      let what: string;
+      if (r?.ours || r?.any_trade) what = 'trade';
+      else if (sk !== undefined) what = `απορρίφθηκε: ${sk.reasons} [pool=${sk.pools}${sk.curve ? '' : ', χωρίς bonding-curve πεδία'}]`;
+      else what = 'κανένα event — το PumpPortal δεν μας έστειλε την αγορά';
+      const key = what.replace(/ \[.*\]$/, '');
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      console.log(`  ${(b.tokenSymbol ?? '?').slice(0, 10).padEnd(10)} ${b.tokenAddress.slice(0, 8)} ${hhmm(new Date(b.timestamp * 1000))} mcap ${mcapAt(b).padEnd(7)} → ${what}`);
+    }
+    console.log('\n  Σύνοψη:');
+    for (const [k, n] of [...counts.entries()].sort((a, b) => b[1] - a[1])) console.log(`    ${String(n).padStart(3)}  ${k}`);
+  }
 } finally {
   await closePool();
 }

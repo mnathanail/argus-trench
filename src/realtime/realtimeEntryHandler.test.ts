@@ -210,3 +210,30 @@ test('holderRiskJson: stable names for the report; null risk is never "high"', (
   assert.equal(isHighHolderRisk(0.49), false);
   assert.equal(isHighHolderRisk(null), false);
 });
+
+// --- recordEntrySkip (2026-09-30, migration 0022) ---------------------------------------
+import { recordEntrySkip } from './realtimeEntryHandler.js';
+import type { RealtimeEntrySkip } from '../db/repositories/realtimeEntrySkips.js';
+
+test('recordEntrySkip stores wallet, token, reason, pool and whether bonding-curve data was present', async () => {
+  const saved: RealtimeEntrySkip[] = [];
+  const insert = async (s: RealtimeEntrySkip): Promise<void> => {
+    saved.push(s);
+  };
+  recordEntrySkip(buyEvent(), 'gate_not_passed', { on_demand: 'failed' }, insert);
+  recordEntrySkip(buyEvent({ pool: 'pump-amm', vTokensInBondingCurve: undefined }), 'graduated_off', null, insert);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(saved.length, 2);
+  assert.equal(saved[0]?.reason, 'gate_not_passed');
+  assert.equal(saved[0]?.hasCurveData, true);
+  assert.deepEqual(saved[0]?.detail, { on_demand: 'failed' });
+  assert.equal(saved[1]?.pool, 'pump-amm');
+  assert.equal(saved[1]?.hasCurveData, false);
+});
+
+test('recordEntrySkip never throws when the insert fails', async () => {
+  recordEntrySkip(buyEvent(), 'x', null, async () => {
+    throw new Error('db down');
+  });
+  await new Promise((r) => setImmediate(r));
+});

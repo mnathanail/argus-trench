@@ -1,4 +1,4 @@
-import { hasAnyGateEvaluation, insertOnDemandGateDecision } from '../db/repositories/decisionLog.js';
+import { hasBlockingGateEvaluation, insertOnDemandGateDecision } from '../db/repositories/decisionLog.js';
 import { evaluateOnDemandGate } from '../decision/onDemandGate.js';
 import {
   ON_DEMAND_GATE_ENABLED,
@@ -14,6 +14,7 @@ import { fetchTokenInfo, fetchTokenSecurity, type TokenInfo, type TokenSecurity 
  *
  *  - Ένας έλεγχος ανά token: ταυτόχρονα events για το ίδιο token περιμένουν τον ίδιο
  *    έλεγχο· μετά, το row στη βάση (πέρασε ή όχι) σημαίνει «ήδη αξιολογημένο».
+ *    Εξαίρεση (2026-09-30): απόρριψη του discovery ΜΟΝΟ για smart_degen_count δεν μετράει.
  *  - Όριο ON_DEMAND_GATE_MAX_PER_MINUTE, ώστε ένα burst σημάτων να μη φάει το κοινό GMGN
  *    budget των άλλων loops.
  */
@@ -24,7 +25,8 @@ export interface OnDemandGateDeps {
   enabled: boolean;
   maxPerMinute: number;
   now: () => number;
-  hasAnyGateEvaluation: (mint: string, version: string) => Promise<boolean>;
+  /** true = υπάρχει ήδη αξιολόγηση που αποκλείει νέο έλεγχο (βλ. hasBlockingGateEvaluation). */
+  hasBlockingGateEvaluation: (mint: string, version: string) => Promise<boolean>;
   fetchInfo: (mint: string) => Promise<TokenInfo>;
   fetchSecurity: (mint: string) => Promise<TokenSecurity>;
   insert: typeof insertOnDemandGateDecision;
@@ -35,7 +37,7 @@ const defaultDeps: OnDemandGateDeps = {
   enabled: ON_DEMAND_GATE_ENABLED,
   maxPerMinute: ON_DEMAND_GATE_MAX_PER_MINUTE,
   now: () => Date.now(),
-  hasAnyGateEvaluation: (mint, version) => hasAnyGateEvaluation(mint, version),
+  hasBlockingGateEvaluation: (mint, version) => hasBlockingGateEvaluation(mint, version),
   fetchInfo: (mint) => fetchTokenInfo(mint, { priority: ON_DEMAND_GATE_PRIORITY }),
   fetchSecurity: (mint) => fetchTokenSecurity(mint, { priority: ON_DEMAND_GATE_PRIORITY }),
   insert: insertOnDemandGateDecision,
@@ -67,7 +69,7 @@ export function tryOnDemandGate(
 async function runOnce(mint: string, version: string, deps: OnDemandGateDeps): Promise<OnDemandOutcome> {
   const tag = `[on-demand-gate] mint=${mint.slice(0, 8)}`;
   try {
-    if (await deps.hasAnyGateEvaluation(mint, version)) return 'skipped';
+    if (await deps.hasBlockingGateEvaluation(mint, version)) return 'skipped';
 
     const now = deps.now();
     recentChecks = recentChecks.filter((t) => now - t < 60_000);

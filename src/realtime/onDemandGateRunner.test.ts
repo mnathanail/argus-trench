@@ -17,7 +17,7 @@ function deps(overrides: Partial<OnDemandGateDeps> = {}) {
     enabled: true,
     maxPerMinute: 2,
     now: () => 1_000_000,
-    hasAnyGateEvaluation: async () => false,
+    hasBlockingGateEvaluation: async () => false,
     fetchInfo: async () => {
       infoCalls += 1;
       return INFO;
@@ -45,7 +45,7 @@ test('passes the real sample and records the evaluation with created_timestamp',
 });
 
 test('already evaluated (by discovery or earlier on-demand) → skipped, no GMGN call', async () => {
-  const t = deps({ hasAnyGateEvaluation: async () => true });
+  const t = deps({ hasBlockingGateEvaluation: async () => true });
   assert.equal(await tryOnDemandGate('MintA', 'v', t.d), 'skipped');
   assert.equal(t.infoCalls(), 0);
 });

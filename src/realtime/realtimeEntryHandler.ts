@@ -6,6 +6,7 @@ import {
   setNativeOrderState,
 } from '../db/repositories/paperTrades.js';
 import { getWallet, type WatchlistWallet } from '../db/repositories/watchlistWallets.js';
+import { insertRealtimeEntrySkip } from '../db/repositories/realtimeEntrySkips.js';
 import { logicVersion, PHASE1_THRESHOLDS } from '../decision/gateConfig.js';
 import { applyEntrySlippage } from '../decision/pnl.js';
 import {
@@ -166,6 +167,31 @@ export async function withTokenEntryLock<T>(mint: string, fn: () => Promise<T>):
   }
 }
 
+/**
+ * 2026-09-30 (migration 0022): κάθε αγορά ΔΙΚΟΥ ΜΑΣ wallet που δεν έγινε trade γράφεται στη
+ * βάση με τον λόγο (πριν: μόνο console, χανόταν σε κάθε deploy). Best-effort, ποτέ δεν
+ * καθυστερεί/σπάει το entry path. Αγορές τρίτων (token subscriptions) δεν γράφονται.
+ */
+export function recordEntrySkip(
+  event: PumpPortalTradeEvent,
+  reason: string,
+  detail: Record<string, unknown> | null = null,
+  insert: typeof insertRealtimeEntrySkip = insertRealtimeEntrySkip,
+): void {
+  void insert({
+    walletAddress: event.traderPublicKey,
+    tokenAddress: event.mint,
+    reason,
+    pool: event.pool ?? null,
+    hasCurveData: event.vTokensInBondingCurve !== undefined && event.vSolInBondingCurve !== undefined,
+    solAmount: Number.isFinite(event.solAmount) ? event.solAmount : null,
+    marketCapSol: event.marketCapSol ?? null,
+    detail,
+  }).catch((error: unknown) => {
+    console.error(`[realtime-entry-skip] αποθήκευση απέτυχε: ${error instanceof Error ? error.message : String(error)}`);
+  });
+}
+
 export async function handleRealtimeEntryEvent(
   event: PumpPortalTradeEvent,
   connection: PumpPortalConnection,
@@ -185,6 +211,7 @@ export async function handleRealtimeEntryEvent(
   // (συνήθως πρώτη και φτηνότερη) αγορά του wallet. ΜΟΝΟ σε bonding-curve tokens: τα
   // graduated είναι εξ ορισμού ήδη «αργά». Βλ. decision/onDemandGate.ts.
   let gateSource: GateSource = 'discovery';
+  let onDemandOutcome: string = 'not_run';
   if (
     !gateSnapshotExists &&
     !isGraduatedEvent(event) &&
@@ -192,6 +219,7 @@ export async function handleRealtimeEntryEvent(
   ) {
     const onDemandStartedAt = Date.now();
     const outcome = await tryOnDemandGate(event.mint, version);
+    onDemandOutcome = outcome;
     timeline.onDemandGateMs = Date.now() - onDemandStartedAt;
     if (outcome === 'passed') {
       gateSnapshotExists = true;
@@ -222,6 +250,9 @@ export async function handleRealtimeEntryEvent(
       `[realtime-entry-skip] reason=${reason} mint=${event.mint.slice(0, 8)} ` +
         `wallet=${event.traderPublicKey.slice(0, 8)}`,
     );
+    if (wallet !== null) {
+      recordEntrySkip(event, reason, { on_demand: onDemandOutcome, graduated_event: isGraduatedEvent(event) });
+    }
     return null;
   }
   // TS δε στενεύει το `wallet` μέσω του decideEntry (ξεχωριστή function) — αλλά
@@ -231,6 +262,7 @@ export async function handleRealtimeEntryEvent(
   // 2026-09-29 (ρητή απόφαση χρήστη): graduated tokens → τίποτα, ούτε paper.
   if (decision.graduated && !LIVE_ON_GRADUATED_TOKENS) {
     console.log(`[realtime-entry-skip] reason=graduated_off mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`);
+    recordEntrySkip(event, 'graduated_off', { gate_source: gateSource });
     return null;
   }
 
@@ -239,12 +271,14 @@ export async function handleRealtimeEntryEvent(
   const result = await withTokenEntryLock(event.mint, async () => {
     if ((await countOpenTradesForToken(event.mint)) > 0) {
       console.log(`[realtime-entry-skip] reason=token_already_open mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`);
+      recordEntrySkip(event, 'token_already_open');
       return null;
     }
     return enterClaimedSignal(event, connection, wallet, decision, version, gateSource, timeline);
   });
   if (result === IN_FLIGHT) {
     console.log(`[realtime-entry-skip] reason=entry_in_flight mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`);
+    recordEntrySkip(event, 'entry_in_flight');
     return null;
   }
   return result;
@@ -274,6 +308,7 @@ async function enterClaimedSignal(
         `[realtime-entry-skip] reason=holder_risk_high gate=${gateSource} risk=${(hr.snapshot.riskPct ?? 0).toFixed(2)} ` +
           `mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`,
       );
+      recordEntrySkip(event, 'holder_risk_high', { gate_source: gateSource, risk_pct: hr.snapshot.riskPct });
       return null;
     }
   }
@@ -307,7 +342,11 @@ async function enterClaimedSignal(
       `${wallet.source} wallet ${wallet.address} αγόρασε (realtime) — gate είχε περάσει` +
       (decision.graduated ? ' — graduated token' : ''),
   });
-  if (decisionLogId === null) return null; // π.χ. race με ήδη υπάρχον ανοιχτό trade στο ίδιο ζευγάρι
+  if (decisionLogId === null) {
+    // π.χ. race με ήδη υπάρχον ανοιχτό trade στο ίδιο ζευγάρι
+    recordEntrySkip(event, 'claim_failed', { gate_source: gateSource });
+    return null;
+  }
 
   // 2026-09-27: σε graduated token, live ΜΟΝΟ αν LIVE_ON_GRADUATED_TOKENS — αλλιώς
   // κατευθείαν paper, χωρίς καν να αγγίξουμε κεφάλαιο/risk gate/swap.

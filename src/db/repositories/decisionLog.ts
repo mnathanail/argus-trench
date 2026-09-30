@@ -267,15 +267,32 @@ export async function findPassedTokens(
   return new Map(rows.map((row) => [row.token_address, row.gate_snapshot_json]));
 }
 
-/** Υπάρχει ΟΠΟΙΑΔΗΠΟΤΕ αξιολόγηση gate (πέρασε ή όχι, οποιαδήποτε προέλευση) για το token;
- * Το on-demand gate τρέχει ΜΟΝΟ όταν δεν υπάρχει καμία — ένα token που το discovery ήδη
- * απέρριψε μένει απορριμμένο. */
-export async function hasAnyGateEvaluation(tokenAddress: string, logicVersion: string, conn?: Queryable): Promise<boolean> {
-  const { rows } = await db(conn).query<{ exists: boolean }>(
-    `SELECT EXISTS (SELECT 1 FROM decision_log WHERE token_address = $1 AND logic_version = $2) AS exists`,
+/**
+ * Αξιολόγηση που ΑΠΟΚΛΕΙΕΙ νέο on-demand έλεγχο. 2026-09-30 (ρητή απόφαση χρήστη): ένα token
+ * που το discovery απέρριψε ΜΟΝΟ για `smart_degen_count` (κανένα smart wallet ακόμα) ΔΕΝ
+ * αποκλείεται — όταν αγοράζει δικό μας wallet, αυτό το ίδιο είναι το smart wallet (το
+ * on-demand gate το μετράει ήδη έτσι). wallet-buys-check (chriskogias, 7 μέρες): 7 tokens
+ * απορρίφθηκαν μόνο γι' αυτό. Κάθε άλλη αξιολόγηση (πέρασε, ή απέτυχε για οτιδήποτε άλλο,
+ * ή προηγούμενος on-demand έλεγχος) αποκλείει — ένας έλεγχος ανά token όπως πριν.
+ */
+export async function hasBlockingGateEvaluation(tokenAddress: string, logicVersion: string, conn?: Queryable): Promise<boolean> {
+  const { rows } = await db(conn).query<{ blocked: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM decision_log d
+        WHERE d.token_address = $1 AND d.logic_version = $2
+          AND NOT (
+            NOT d.gate_passed
+            AND d.candidate_source <> 'on_demand'
+            AND d.gate_fail_reason IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM unnest(string_to_array(d.gate_fail_reason, '; ')) AS r(reason)
+               WHERE r.reason NOT LIKE 'smart_degen_count%'
+            )
+          )
+     ) AS blocked`,
     [tokenAddress, logicVersion],
   );
-  return rows[0]?.exists === true;
+  return rows[0]?.blocked === true;
 }
 
 /** Γράφει το αποτέλεσμα ενός on-demand gate (migration 0018). ON CONFLICT DO NOTHING: αν
