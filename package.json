@@ -41,7 +41,8 @@
     "db:down": "docker compose down",
     "db:reset": "docker compose down -v && docker compose up -d --wait db",
     "db:psql": "docker compose exec db psql -U argus -d argus_trench_dev",
-    "top-traders-check": "tsx scripts/top-traders-check.ts"
+    "top-traders-check": "tsx scripts/top-traders-check.ts",
+    "wallet-buys-check": "tsx scripts/wallet-buys-check.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.0",
