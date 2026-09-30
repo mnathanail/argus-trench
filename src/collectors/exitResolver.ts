@@ -109,7 +109,7 @@ async function resolveOneTrade(
   // Για αυτά τα trades το realtime tick path (checkTick) είναι ο μόνος σωστός κριτής όσο
   // είναι ζωντανά· το resolver τα αγγίζει ΜΟΝΟ στο 24ωρο timeout (το decideForTick
   // αγνοεί τα paper trades μετά από αυτό), με τα candles μετατραπέντα σε SOL.
-  const solPriced = isSolPricedTrade(decision?.sourceChannel ?? null);
+  const solPriced = isSolPricedTrade(decision?.sourceChannel ?? null, trade.hasEntryTiming === true);
   if (solPriced && Date.now() - trade.entryAt.getTime() < EXIT_TIMEOUT_MS) return false;
 
   const fromSeconds = Math.floor(trade.entryAt.getTime() / 1000);
@@ -169,9 +169,12 @@ async function resolveOneTrade(
   return true;
 }
 
-/** Το trade ανοίχτηκε από το realtime κανάλι → οι τιμές του είναι σε SOL, όχι USD. */
-export function isSolPricedTrade(sourceChannel: string | null): boolean {
-  return sourceChannel === REALTIME_SOURCE_CHANNEL;
+/** Το trade ανοίχτηκε από το realtime κανάλι → οι τιμές του είναι σε SOL, όχι USD.
+ * 2026-09-30 (#6779, "+7555%"): ένας discovery κύκλος είχε σβήσει το source_channel του
+ * decision_log πριν συνδεθεί το trade → το resolver το έκλεισε με USD candles. Γι' αυτό
+ * μετράει ΚΑΙ το `entry_timing_json` (το γράφει μόνο το realtime path). */
+export function isSolPricedTrade(sourceChannel: string | null, hasEntryTiming = false): boolean {
+  return sourceChannel === REALTIME_SOURCE_CHANNEL || hasEntryTiming;
 }
 
 /**

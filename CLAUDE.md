@@ -830,10 +830,19 @@ tests specifically covering the profit floor.
 - Copying a sniper loses structurally: we buy after them and sell after their dump.
 - Now recorded on every scoring (migration 0021): `watchlist_wallets.avg_holding_sec` / `wallet_score_history.avg_holding_sec` from `pnl_stat.avg_holding_period` (same `portfolio stats` call, no extra cost). NOT a filter yet — pick the threshold with `npm run wallet-holding-report` (distribution + our copy results per bucket and per candidate threshold).
 
+## Exit & signal changes (2026-09-30, explicit user decisions)
+
+- **No exit on the copied wallet's sell** (`EXIT_ON_COPIED_WALLET_SELL = false`, `decideForTick`): both early (on_demand) and discovery entries, live and paper. Exits = trailing (+50% / −25%, floor +10%), stop-loss −50%, 24h timeout. Evidence (`no-exit-signal-report`, same ticks): on_demand 28 trades median −2.1% → +17.6%, +0.17 SOL; discovery median −3.0% → +14.0%, +0.19 SOL (excluding the bogus #6779). The wallet's sell is now just a price tick.
+- `LIVE_ON_DEMAND_GATE = false` again (report: 100 trades, −0.39 SOL, median −7.0%) — re-evaluate with the new exits.
+- Shadows: new trades no longer open 4B / nosig shadows (4B worse: 28 worse vs 17 better, median −2.6%; nosig is now the real logic). Open shadows finish within 24h; reports stay for history.
+- `holder-risk-report` verdict compares **per trade** (SOL/trade and mean %), not bucket totals — the ≥50% bucket is the largest, so its total always looked worse. On 2026-09-30 per trade it was the same (−0.0041 vs −0.0047 SOL) → stays `record`.
+- Wallet-discovery trending widened to 24h volume, age 1h–3d, ATH ≥ $250k, limit 100 (the 6h/≤24h/$300k query gave ~8 tokens → `tokens=0` cycles overnight).
+- **Bug #6779 (fake +7555%)**: `recordTrigger` claims the decision_log row, the trade is linked seconds later; a discovery `upsertDecisions` in that gap wiped the trigger snapshot (`source_channel`, wallet) → the exit resolver treated the SOL-priced trade as USD and closed it with USD candles (same failure as #6451). Fixed twice: the upsert never rewrites a row claimed by a realtime signal, and `isSolPricedTrade` also trusts `paper_trades.entry_timing_json` (written only by the realtime path; `PaperTrade.hasEntryTiming`). `repair-usd-priced-exits` now finds these too — run dry, then `-- --apply`.
+
 ## Wallet discovery source: top traders (2026-09-29)
 
 - Explicit user decision ("θέλω το 3"): `collectors/walletDiscovery.ts` no longer uses `token holders --tag smart_degen` (it mostly found snipers). Now: `token traders --order-by profit --limit 50` (weight 5, `gmgn/traders.ts`) on ~10 tokens that ALREADY ran.
-- Token source = `market trending` (weight 1, `gmgn/trending.ts`): Pump.fun, 6h, age 1h–24h, ATH market cap ≥ $300k, bundler/insider ≤ 30%, by volume; a token scanned once is skipped for 24h (in-memory). NOT the recently graduated tokens: the first real check (token ~1′ old) returned 50 traders who were all dev_team/bundler/sniper/fresh_wallet or had held < 2′ — nobody passed, and many "completed" tokens graduate within 0–1s of creation (bundled launches).
+- Token source = `market trending` (weight 1, `gmgn/trending.ts`): Pump.fun, 24h, age 1h–3d, ATH market cap ≥ $250k (was 6h / ≤24h / $300k until 2026-09-30), bundler/insider ≤ 30%, by volume; a token scanned once is skipped for 24h (in-memory). NOT the recently graduated tokens: the first real check (token ~1′ old) returned 50 traders who were all dev_team/bundler/sniper/fresh_wallet or had held < 2′ — nobody passed, and many "completed" tokens graduate within 0–1s of creation (bundled launches).
 - Real `token traders` response confirmed (2026-09-29): all fields we read exist (`address`, `addr_type`, `tags`, `maker_token_tags`, `realized_profit`, `realized_pnl`, `history_bought_cost`, `start_holding_at`, `end_holding_at`). Tags also seen: `dev_team`, `creator`, `axiom`, `gmgn`, `paper_hands`, `fomo`, `sandwich_bot`. `realized_pnl` is empty for wallets that never sold → `not_sold`.
 - Free filter on the same response (`traderRejectReason`): addr_type 0; no `sniper`/`bundler`/`rat_trader`/`dev`/`fresh_wallet`/`transfer_in` in `tags` or `maker_token_tags`; realized ≥ 2x on that token; buy ≥ $50; held that token ≥ 2′.
 - Already-known addresses are skipped BEFORE scoring (`listKnownAddresses`); ≤ 40 `portfolio stats` per cycle; wallets rejected at scoring are not re-scored for 24h (in-memory).
@@ -848,7 +857,7 @@ tests specifically covering the profit floor.
 - Exit result for sells outside our path: `live/ownSellRatio.ts` — our wallet's own buy/sell in `portfolio activity`, ratio = sell cost_usd / buy cost_usd (not check_price/usdt_profit — see incident #1225). The reconciler closes with it (`closeFromOwnSell`, real sell time as exit_at); falls back to needs_manual_exit only if no sell is found.
 - One-off / repair: `npm run reconcile-native-exits` (dry run) → `-- --apply`.
 - Swap status polling is 15×1s (was 3×5s — every live entry waited ≥5″ before the trade existed in the DB).
-- LIVE_ON_DEMAND_GATE = true (explicit user decision, 2026-09-29).
+- LIVE_ON_DEMAND_GATE = true (explicit user decision, 2026-09-29) — back to false on 2026-09-30.
 
 ## Entry speed measurement (2026-09-28)
 

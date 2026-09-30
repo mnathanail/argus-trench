@@ -30,16 +30,18 @@ export interface FetchTrendingOptions extends RunOptions {
   limit?: number;
 }
 
-/** Tokens για discovery: Pump.fun, 1h–24h, ATH ≥ $300k, bundler/insider ≤ 30%, κατά volume 6h. */
+/** Tokens για discovery: Pump.fun, 1h–3d, ATH ≥ $250k, bundler/insider ≤ 30%, κατά volume 24h.
+ * 2026-09-30: ήταν 6h / ≤24h / $300k / 30 — έδινε μόνο ~8 tokens, και αφού σαρώνονταν
+ * όλα (24h cache) οι κύκλοι έβγαιναν `tokens=0` μέσα στη νύχτα. */
 export const DISCOVERY_TRENDING: Required<Omit<FetchTrendingOptions, keyof RunOptions>> = {
-  interval: '6h',
+  interval: '24h',
   platform: 'Pump.fun',
   minCreated: '1h',
-  maxCreated: '24h',
-  minHistoryHighestMarketCap: 300_000,
+  maxCreated: '3d',
+  minHistoryHighestMarketCap: 250_000,
   maxBundlerRate: 0.3,
   maxInsiderRate: 0.3,
-  limit: 30,
+  limit: 100,
 };
 
 export function buildTrendingArgs(options: FetchTrendingOptions = {}): string[] {

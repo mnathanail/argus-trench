@@ -73,15 +73,24 @@ try {
     const rest = all.filter((r) => !r.bucket.startsWith('4'));
     const restClosed = rest.reduce((s, r) => s + Number(r.closed), 0);
     const restSum = rest.reduce((s, r) => s + (num(r.sum_pnl_sol) ?? 0), 0);
-    console.log('\n=== Ετυμηγορία ===');
+    const restAvgPct = restClosed > 0 ? rest.reduce((s, r) => s + (num(r.avg_net) ?? 0) * Number(r.closed), 0) / restClosed : null;
+    // 2026-09-30: η σύγκριση είναι ΑΝΑ TRADE, όχι σε σύνολα — το ≥50% είναι το μεγαλύτερο
+    // bucket, άρα το σύνολό του βγαίνει πάντα «χειρότερο» ακόμα κι αν κάθε trade χάνει το ίδιο.
+    console.log('\n=== Ετυμηγορία (ανά trade) ===');
     if (high === undefined || Number(high.closed) < MIN_CLOSED_HIGH_RISK) {
       console.log(`  ⏳ Ανεπαρκές δείγμα: ${high?.closed ?? 0} κλειστά με risk ≥ 50% (χρειάζονται ≥ ${MIN_CLOSED_HIGH_RISK}).`);
-    } else if ((num(high.sum_pnl_sol) ?? 0) < 0 && (num(high.median_net) ?? 0) < 0) {
-      console.log(`  ✅ Επιβεβαιώνεται: τα ≥ 50% χάνουν (σύνολο ${num(high.sum_pnl_sol)?.toFixed(4)} SOL, διάμεσο ${pct(num(high.median_net))}).`);
-      console.log(`     Χωρίς αυτά, τα υπόλοιπα ${restClosed} κλειστά: σύνολο ${restSum.toFixed(4)} SOL.`);
-      console.log("     → HOLDER_RISK_ENTRY_MODE.on_demand = 'block' στο src/decision/paperTradingConfig.ts");
     } else {
-      console.log('  ❌ Στα δικά μας σήματα τα ≥ 50% ΔΕΝ χάνουν καθαρά — μένουμε σε record.');
+      const highClosed = Number(high.closed);
+      const highPerTrade = (num(high.sum_pnl_sol) ?? 0) / highClosed;
+      const restPerTrade = restClosed > 0 ? restSum / restClosed : null;
+      const highAvgPct = num(high.avg_net);
+      console.log(`  ≥ 50%:     ${highClosed} κλειστά, ${highPerTrade.toFixed(4)} SOL/trade, μέσο ${pct(highAvgPct)}`);
+      console.log(`  υπόλοιπα:  ${restClosed} κλειστά, ${restPerTrade?.toFixed(4) ?? '—'} SOL/trade, μέσο ${pct(restAvgPct)}`);
+      if (restPerTrade !== null && restAvgPct !== null && highAvgPct !== null && highPerTrade < restPerTrade && highAvgPct < restAvgPct) {
+        console.log('  ✅ Τα ≥ 50% χάνουν περισσότερα ανά trade → HOLDER_RISK_ENTRY_MODE.on_demand = \'block\' στο src/decision/paperTradingConfig.ts');
+      } else {
+        console.log('  ❌ Ανά trade τα ≥ 50% ΔΕΝ είναι χειρότερα από τα υπόλοιπα — μένουμε σε record.');
+      }
     }
   }
 } finally {

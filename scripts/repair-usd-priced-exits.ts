@@ -41,7 +41,8 @@ const SELECT_SUSPECTS = `
     JOIN decision_log d ON d.id = pt.decision_log_id
    WHERE pt.mode = 'paper'
      AND pt.status = 'closed'
-     AND d.trigger_wallet_snapshot_json->>'source_channel' = 'pumpportal_websocket'
+     AND (d.trigger_wallet_snapshot_json->>'source_channel' = 'pumpportal_websocket'
+          OR pt.entry_timing_json IS NOT NULL)  -- 2026-09-30: #6779, σβησμένο source_channel
      AND pt.simulated_entry_price > 0
      AND pt.simulated_exit_price IS NOT NULL
      AND pt.simulated_exit_price >

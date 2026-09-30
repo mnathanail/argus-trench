@@ -71,6 +71,10 @@ export interface PaperTrade {
   exitAttemptStartedAt: Date | null;
   liveStrategyOrderId: string | null;
   nativeOrderActive: boolean;
+  /** 2026-09-30: `entry_timing_json IS NOT NULL` — γράφεται ΜΟΝΟ από το realtime path
+   * (από 28/9), άρα οι τιμές είναι σε SOL. Δεύτερη, ανεξάρτητη ένδειξη πέρα από το
+   * `source_channel` του decision_log (που ένας discovery κύκλος μπορούσε να σβήσει — #6779). */
+  hasEntryTiming?: boolean;
 }
 
 interface TradeRow {
@@ -97,6 +101,7 @@ interface TradeRow {
   exit_attempt_started_at: Date | null;
   live_strategy_order_id: string | null;
   native_order_active: boolean;
+  has_entry_timing?: boolean;
 }
 
 const COLUMNS = `id, decision_log_id, token_address, chain, mode, intended_size_pct,
@@ -104,7 +109,7 @@ const COLUMNS = `id, decision_log_id, token_address, chain, mode, intended_size_
                  simulated_exit_price, exit_at, pnl_sol, pnl_pct, pnl_net_pct,
                  last_checked_at, actual_entry_amount_sol, actual_exit_amount_sol,
                  needs_manual_exit, exit_attempt_started_at, live_strategy_order_id,
-                 native_order_active`;
+                 native_order_active, (entry_timing_json IS NOT NULL) AS has_entry_timing`;
 
 function toJsonParam(value: unknown): string | null {
   return value === null || value === undefined ? null : JSON.stringify(value);
@@ -135,6 +140,7 @@ function mapTrade(row: TradeRow): PaperTrade {
     exitAttemptStartedAt: row.exit_attempt_started_at,
     liveStrategyOrderId: row.live_strategy_order_id,
     nativeOrderActive: row.native_order_active,
+    hasEntryTiming: row.has_entry_timing === true,
   };
 }
 

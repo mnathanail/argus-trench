@@ -17,7 +17,7 @@ import { withTransaction } from '../db/tx.js';
 import type { Queryable } from '../db/tx.js';
 import type { ExitReason } from '../db/types.js';
 import { computePnl } from '../decision/pnl.js';
-import { EXIT_TIMEOUT_MS, PAPER_ASSUMED_FEES_PCT } from '../decision/paperTradingConfig.js';
+import { EXIT_ON_COPIED_WALLET_SELL, EXIT_TIMEOUT_MS, PAPER_ASSUMED_FEES_PCT } from '../decision/paperTradingConfig.js';
 import { fetchLiveSolWallet, getLiveSolBalance } from '../gmgn/portfolio.js';
 import { executeLiveSell, INSUFFICIENT_TOKEN_BALANCE_ERROR_CODE, SwapFailedError } from '../gmgn/swap.js';
 import { cancelStrategyOrderBestEffort, estimateExitAmountSol, getStrategyOrder, inferExitReason } from '../gmgn/strategyOrders.js';
@@ -121,10 +121,17 @@ export function shouldSkipLiveExitCheck(
  * liveStrategyReconciler.ts) παραμένει το watchdog που ενεργοποιεί πλήρες fallback
  * (`native_order_active=false`) αν το native order αποτύχει/σταματήσει.
  */
-export function decideForTick(trade: TickDecisionInput, event: PumpPortalTradeEvent, now: Date): TickDecision {
+export function decideForTick(
+  trade: TickDecisionInput,
+  event: PumpPortalTradeEvent,
+  now: Date,
+  exitOnWalletSell: boolean = EXIT_ON_COPIED_WALLET_SELL,
+): TickDecision {
   if (now.getTime() - trade.entryAt.getTime() >= EXIT_TIMEOUT_MS) return { type: 'ignore' };
 
-  if (event.txType === 'sell' && event.traderPublicKey === trade.triggerWalletAddress) {
+  // 2026-09-30: off by default (EXIT_ON_COPIED_WALLET_SELL) — το sell του wallet περνά
+  // παρακάτω ως κανονικό price tick.
+  if (exitOnWalletSell && event.txType === 'sell' && event.traderPublicKey === trade.triggerWalletAddress) {
     const price = priceFromTradeEvent(event) ?? trade.simulatedEntryPrice;
     return {
       type: 'close',

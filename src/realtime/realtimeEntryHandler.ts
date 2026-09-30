@@ -3,7 +3,6 @@ import {
   openTrade,
   countOpenLiveOrPaperTrades,
   countOpenTradesForToken,
-  enableShadowTracking,
   setNativeOrderState,
 } from '../db/repositories/paperTrades.js';
 import { getWallet, type WatchlistWallet } from '../db/repositories/watchlistWallets.js';
@@ -355,11 +354,10 @@ async function enterClaimedSignal(
     entryTiming,
   });
   await linkTrade(decisionLogId, tradeId);
-  // 2026-09-28: κάθε νέο trade καταγράφει ΚΑΙ πού θα είχε βγει το 4B trailing (shadow) —
-  // βλ. realtime/shadowExit.ts. Best-effort: ένα σφάλμα εδώ δεν ακυρώνει το trade.
-  await enableShadowTracking(tradeId).catch((error: unknown) => {
-    console.error(`[shadow] enableShadowTracking(${tradeId}) απέτυχε: ${error instanceof Error ? error.message : String(error)}`);
-  });
+  // 2026-09-30 (ρητή απόφαση χρήστη): νέα trades ΔΕΝ ανοίγουν πια shadows. Το 4B βγήκε
+  // χειρότερο (trailing-shadow-report) και το «χωρίς exit_signal» είναι πλέον η πραγματική
+  // λογική (EXIT_ON_COPIED_WALLET_SELL=false). Όσα shadows είναι ήδη ανοιχτά τελειώνουν
+  // κανονικά (≤ 24h) — τα reports μένουν για το ιστορικό.
   if (live.mode === 'live') {
     await setNativeOrderState(tradeId, {
       liveStrategyOrderId: live.liveStrategyOrderId,

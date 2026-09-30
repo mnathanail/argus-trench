@@ -10,6 +10,7 @@ import {
   type TickDecisionInput,
 } from './realtimeExitHandler.js';
 import type { PumpPortalTradeEvent } from './pumpportalEvents.js';
+import { EXIT_ON_COPIED_WALLET_SELL } from '../decision/paperTradingConfig.js';
 
 const ENTRY_AT = new Date('2026-09-09T00:00:00Z');
 const WALLET = 'WalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1';
@@ -70,9 +71,9 @@ test('ΕΥΡΗΜΑ #1 (variant): a wallet-sell arriving after the 24h boundary i
   assert.deepEqual(decision, { type: 'ignore' });
 });
 
-test('exit_signal: a sell BY the trigger wallet closes immediately, regardless of price', () => {
+test('exit_signal (when enabled): a sell BY the trigger wallet closes immediately, regardless of price', () => {
   const sellEvent = eventAtPrice(0.5, { txType: 'sell', traderPublicKey: WALLET }); // τιμή θα ήταν ζημιά
-  const decision = decideForTick(trade(), sellEvent, ENTRY_AT);
+  const decision = decideForTick(trade(), sellEvent, ENTRY_AT, true);
   assert.equal(decision.type, 'close');
   if (decision.type === 'close') {
     assert.equal(decision.exitReason, 'exit_signal');
@@ -193,9 +194,17 @@ test('nativeOrderActive=true: a price tick that would only update the peak still
 
 test('nativeOrderActive=true: exit_signal still fires normally — the native order never knew about trigger wallets anyway', () => {
   const sellEvent = eventAtPrice(0.5, { txType: 'sell', traderPublicKey: WALLET });
-  const decision = decideForTick(trade({ nativeOrderActive: true }), sellEvent, ENTRY_AT);
+  const decision = decideForTick(trade({ nativeOrderActive: true }), sellEvent, ENTRY_AT, true);
   assert.equal(decision.type, 'close');
   if (decision.type === 'close') assert.equal(decision.exitReason, 'exit_signal');
+});
+
+test('2026-09-30 default (EXIT_ON_COPIED_WALLET_SELL=false): the trigger wallet selling is just a price tick', () => {
+  assert.equal(EXIT_ON_COPIED_WALLET_SELL, false);
+  const smallDip = decideForTick(trade(), eventAtPrice(0.9, { txType: 'sell', traderPublicKey: WALLET }), ENTRY_AT);
+  assert.notEqual(smallDip.type, 'close', '−10% on the wallet sell: no exit, stop-loss is at −50%');
+  const crash = decideForTick(trade(), eventAtPrice(0.4, { txType: 'sell', traderPublicKey: WALLET }), ENTRY_AT);
+  assert.ok(crash.type === 'close' && crash.exitReason === 'stop_loss', 'a wallet sell below −50% still hits stop-loss');
 });
 
 test('nativeOrderActive=false: identical tier/trailing/stop_loss behavior — the flag makes no difference to the decision', () => {

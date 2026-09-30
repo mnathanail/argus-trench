@@ -259,9 +259,21 @@ export function liveExitConditionOrders(): Record<string, unknown>[] {
  * ΑΛΛΑΓΗ 2026-09-29, ρητή απόφαση χρήστη: LIVE_ON_DEMAND_GATE = true. Report εκείνης της
  * μέρας (42 on-demand vs 36 κανονικά, ίδια περίοδος): είσοδος 0.7′ vs 12.9′ μετά τη
  * δημιουργία, market cap 43 vs 98 SOL, διάμεσο −5.5% vs −5.9%, μέσο +1.7% vs +10.4%.
+ * ΑΛΛΑΓΗ 2026-09-30, ρητή απόφαση χρήστη: πίσω σε paper (false). on-demand-gate-report:
+ * 100 trades, −0.39 SOL, διάμεσο −7.0% — ξανακρίνεται με το exit_signal εκτός.
  */
 export const ON_DEMAND_GATE_ENABLED = true;
-export const LIVE_ON_DEMAND_GATE = true;
+export const LIVE_ON_DEMAND_GATE = false;
+
+/**
+ * 2026-09-30, ρητή απόφαση χρήστη: ΔΕΝ πουλάμε όταν πουλάει το wallet που αντιγράφουμε
+ * (exit_signal) — ούτε σε πρώιμες ούτε σε κανονικές αγορές, live και paper. Η έξοδος
+ * γίνεται μόνο από trailing (+50% / −25%, floor +10%), stop-loss −50% και 24h timeout.
+ * Τεκμηρίωση (no-exit-signal-report, shadow με τα ίδια ticks): πρώιμες 28 trades — διάμεσο
+ * −2.1% → +17.6%, +0.17 SOL· κανονικές 24 trades — διάμεσο −3.0% → +14.0%, +0.19 SOL (χωρίς
+ * το ψεύτικο #6779). Το πούλημα του wallet περνά πλέον ως απλό price tick.
+ */
+export const EXIT_ON_COPIED_WALLET_SELL = false;
 /** Ανώτατο όριο on-demand ελέγχων/λεπτό (κάθε έλεγχος = 2 GMGN calls, weight 1+1). */
 export const ON_DEMAND_GATE_MAX_PER_MINUTE = 20;
 /** Προτεραιότητα στον κοινό GMGN limiter: πάνω από όλα τα collectors, κάτω από τα swaps (1000). */

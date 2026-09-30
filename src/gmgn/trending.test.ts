@@ -8,14 +8,14 @@ import { buildTrendingArgs, parseTrendingResponse } from './trending.js';
 // `npm run top-traders-check` (τυπώνει την αρχή του response αν το σχήμα δεν ταιριάζει).
 const item = { address: 'TokA', history_highest_market_cap: '812000.5', creation_timestamp: 1759140000, symbol: 'A' };
 
-test('buildTrendingArgs: Pump.fun tokens 1h–24h old that already ran, by 6h volume', () => {
+test('buildTrendingArgs: Pump.fun tokens 1h–3d old that already ran, by 24h volume', () => {
   const args = buildTrendingArgs();
   const flag = (f: string): string | undefined => args[args.indexOf(f) + 1];
-  assert.equal(flag('--interval'), '6h');
+  assert.equal(flag('--interval'), '24h');
   assert.equal(flag('--platform'), 'Pump.fun');
   assert.equal(flag('--min-created'), '1h');
-  assert.equal(flag('--max-created'), '24h');
-  assert.equal(flag('--min-history-highest-marketcap'), '300000');
+  assert.equal(flag('--max-created'), '3d');
+  assert.equal(flag('--min-history-highest-marketcap'), '250000');
   assert.equal(flag('--order-by'), 'volume');
 });
 

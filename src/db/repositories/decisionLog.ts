@@ -152,6 +152,12 @@ export interface UpsertedDecision {
  *    συνδεδεμένο, το row είναι πλέον ιστορικό αρχείο, όχι κάτι που το discovery πρέπει
  *    να ξαναγράφει.
  *
+ * 5. ΔΙΟΡΘΩΣΗ 2026-09-30 (trade #6779, ψεύτικο "+7555%"): το realtime path κάνει πρώτα
+ *    `recordTrigger` και συνδέει το trade (linked_trade_id) δευτερόλεπτα αργότερα (live
+ *    attempt, holder risk). Ένας discovery κύκλος σε αυτό το κενό έσβηνε το trigger
+ *    snapshot (μαζί το `source_channel`) → το exit resolver νόμιζε USD τιμές. Rows που
+ *    κλείδωσε realtime σήμα δεν ξαναγράφονται ποτέ από το discovery.
+ *
  * Σημείωση 2026-09-15: το ξεχωριστό ζήτημα «δύο σήματα, δύο ξεχωριστά trades στο ίδιο
  * token» (μέσω διαφορετικών candidate_source rows) ΔΕΝ διορθώνεται εδώ — διορθώνεται στο
  * recordTrigger (βλ. εκεί), που είναι το σημείο όπου ένα σήμα πραγματικά «κλειδώνει» ένα
@@ -209,6 +215,7 @@ export async function upsertDecisions(
       evaluation_count             = decision_log.evaluation_count + 1
     WHERE decision_log.decision <> 'entered'
       AND decision_log.linked_trade_id IS NULL
+      AND decision_log.trigger_wallet_snapshot_json->>'source_channel' IS DISTINCT FROM 'pumpportal_websocket'
     RETURNING id, token_address, evaluation_count
     `,
     [
