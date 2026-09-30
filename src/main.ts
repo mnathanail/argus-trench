@@ -37,12 +37,13 @@ import { logicVersion } from './decision/gateConfig.js';
 import { LIVE_KILL_SWITCH_CONSEC_LOSSES } from './decision/paperTradingConfig.js';
 import { msUntilNextAthensTime } from './util/athensTime.js';
 import { PumpPortalConnection } from './realtime/pumpportalConnection.js';
-import { subscribeAllActiveWallets, subscribeOpenTrades } from './realtime/subscriptionManager.js';
+import { subscribeAllActiveWallets, subscribeOpenTrades, unsubscribeIfNoLongerNeeded } from './realtime/subscriptionManager.js';
 import { handleRealtimeTradeEvent } from './realtime/realtimeExitHandler.js';
 import { handleRealtimeEntryEvent } from './realtime/realtimeEntryHandler.js';
 import { handleMirrorEvent, setMirrorSubscriber, type MirrorOutcome } from './mirror/mirrorHandler.js';
 import { MIRROR_POLL_INTERVAL_MS, runMirrorPollCycle } from './mirror/mirrorPoller.js';
 import { startHeliusMirrorSource } from './mirror/heliusMirrorSource.js';
+import { expireMirrorShadows, handleMirrorShadowTick, hasActiveShadow, refreshMirrorShadows } from './mirror/mirrorShadow.js';
 import { runScheduler, SharedCooldown, type LoopDefinition } from './scheduler.js';
 import { createBotFromEnv, runBot } from './telegram/bot.js';
 import { formatPercent, short } from './telegram/commands.js';
@@ -101,6 +102,9 @@ const pumpportalApiKey = config.pumpportalApiKey();
 async function notifyMirrorOutcome(m: MirrorOutcome | null): Promise<void> {
   if (m === null) return;
   if (m.kind === 'opened') {
+    // Σκιά trailing: τιμές του token σε πραγματικό χρόνο (PumpPortal token ticks).
+    realtimeConnection?.subscribeToken(m.token);
+    await refreshMirrorShadows().catch((error) => console.error(`[mirror-shadow] refresh: ${String(error)}`));
     await notify(`🪞 MIRROR paper — άνοιξε ${short(m.token)} ακολουθώντας ${m.walletName ?? short(m.wallet)} (${m.ourSol} SOL)`);
   } else if (m.kind === 'closed') {
     const emoji = m.pnlSol > 0 ? '🟢' : '🔴';
@@ -168,6 +172,21 @@ realtimeConnection = pumpportalApiKey
 
         // 2026-09-30 — MIRROR route: ανεξάρτητη τρίτη αλυσίδα (paper). Ειδοποίηση μόνο σε
         // άνοιγμα/κλείσιμο θέσης — οι ενδιάμεσες αγορές/πωλήσεις γράφονται στο mirror_events.
+        // Σκιά trailing των mirror θέσεων — μόνο καταγραφή, ποτέ πραγματική έξοδος.
+        handleMirrorShadowTick(event)
+          .then(async (closed) => {
+            for (const c of closed) {
+              console.log(
+                `[mirror-shadow] #${c.positionId} ${c.token.slice(0, 8)} έξοδος σκιάς: ${c.reason} ` +
+                  `${c.pnlPct === null ? '' : `${(c.pnlPct * 100).toFixed(1)}%`}`,
+              );
+              if (!hasActiveShadow(c.token) && realtimeConnection) await unsubscribeIfNoLongerNeeded(realtimeConnection, c.token);
+            }
+          })
+          .catch((error) => {
+            console.error(`[mirror-shadow] σφάλμα: ${error instanceof Error ? error.message : String(error)}`);
+          });
+
         handleMirrorEvent(event, 'pumpportal')
           .then(notifyMirrorOutcome)
           .catch((error) => {
@@ -247,6 +266,9 @@ setMirrorSubscriber((address) => {
 
 if (realtimeConnection) {
   realtimeConnection.connect();
+  // Σκιές trailing που τρέχουν ακόμα (μετά από restart) → ξανά token ticks.
+  const shadowTokens = await refreshMirrorShadows().catch(() => [] as string[]);
+  for (const token of shadowTokens) realtimeConnection.subscribeToken(token);
   const openTargets = await listOpenTradesWithWallet();
   subscribeOpenTrades(realtimeConnection, openTargets);
   const activeWallets = await listActiveWallets();
@@ -383,6 +405,7 @@ const loops: LoopDefinition[] = [
     intervalMs: MIRROR_POLL_INTERVAL_MS,
     initialDelayMs: 20_000,
     run: async () => {
+      await expireMirrorShadows().catch((error) => console.error(`[mirror-shadow] expire: ${String(error)}`));
       const result = await runMirrorPollCycle();
       if (result.newActivities === 0 && result.failures === 0) return;
       const counts = new Map<string, number>();

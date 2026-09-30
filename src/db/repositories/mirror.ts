@@ -204,3 +204,84 @@ export async function listWalletsWithOpenMirrorPositions(conn?: Queryable): Prom
   );
   return rows.map((r) => r.wallet_address);
 }
+
+// ── Σκιά trailing (migration 0024) ───────────────────────────────────────────────
+
+export interface MirrorShadowState {
+  positionId: number;
+  tokenAddress: string;
+  openedAt: Date;
+  entryPrice: number;
+  peakPrice: number | null;
+  trailingActive: boolean;
+}
+
+/** Στο άνοιγμα της θέσης: η τιμή της πρώτης αγοράς γίνεται η είσοδος της σκιάς. */
+export async function startMirrorShadow(positionId: number, entryPrice: number, conn?: Queryable): Promise<void> {
+  await db(conn).query(
+    `UPDATE mirror_positions SET shadow_entry_price = $2, shadow_peak_price = $2, shadow_last_price = $2
+      WHERE id = $1 AND shadow_entry_price IS NULL`,
+    [positionId, entryPrice],
+  );
+}
+
+/** Όλες οι σκιές που τρέχουν ακόμα (ανεξάρτητα αν η πραγματική θέση έκλεισε). */
+export async function listActiveMirrorShadows(conn?: Queryable): Promise<MirrorShadowState[]> {
+  const { rows } = await db(conn).query<{
+    id: string; token_address: string; opened_at: Date; shadow_entry_price: string; shadow_peak_price: string | null; shadow_trailing_active: boolean;
+  }>(
+    `SELECT id, token_address, opened_at, shadow_entry_price, shadow_peak_price, shadow_trailing_active
+       FROM mirror_positions
+      WHERE shadow_entry_price IS NOT NULL AND shadow_exit_reason IS NULL`,
+  );
+  return rows.map((r) => ({
+    positionId: toNum(r.id),
+    tokenAddress: r.token_address,
+    openedAt: r.opened_at,
+    entryPrice: toNum(r.shadow_entry_price),
+    peakPrice: toNumOrNull(r.shadow_peak_price),
+    trailingActive: r.shadow_trailing_active,
+  }));
+}
+
+export async function updateMirrorShadow(
+  input: { positionId: number; peakPrice: number; lastPrice: number; trailingActive: boolean },
+  conn?: Queryable,
+): Promise<void> {
+  await db(conn).query(
+    `UPDATE mirror_positions SET shadow_peak_price = $2, shadow_last_price = $3, shadow_trailing_active = $4
+      WHERE id = $1 AND shadow_exit_reason IS NULL`,
+    [input.positionId, input.peakPrice, input.lastPrice, input.trailingActive],
+  );
+}
+
+export async function closeMirrorShadow(
+  input: { positionId: number; exitPrice: number; reason: string; pnlSol: number; pnlPct: number | null; peakPrice: number },
+  conn?: Queryable,
+): Promise<void> {
+  await db(conn).query(
+    `UPDATE mirror_positions
+        SET shadow_exit_price = $2, shadow_exit_reason = $3, shadow_exit_at = now(),
+            shadow_pnl_sol = $4, shadow_pnl_pct = $5, shadow_peak_price = $6, shadow_last_price = $2
+      WHERE id = $1 AND shadow_exit_reason IS NULL`,
+    [input.positionId, input.exitPrice, input.reason, input.pnlSol, input.pnlPct, input.peakPrice],
+  );
+}
+
+/** Σκιές πέρα από τις 24 ώρες χωρίς έξοδο (π.χ. κανένα tick) → timeout στην τελευταία τιμή. */
+export async function listExpiredMirrorShadows(
+  conn?: Queryable,
+): Promise<{ positionId: number; tokenAddress: string; entryPrice: number; lastPrice: number | null; peakPrice: number | null }[]> {
+  const { rows } = await db(conn).query<{ id: string; token_address: string; shadow_entry_price: string; shadow_last_price: string | null; shadow_peak_price: string | null }>(
+    `SELECT id, token_address, shadow_entry_price, shadow_last_price, shadow_peak_price
+       FROM mirror_positions
+      WHERE shadow_entry_price IS NOT NULL AND shadow_exit_reason IS NULL AND opened_at < now() - interval '24 hours'`,
+  );
+  return rows.map((r) => ({
+    positionId: toNum(r.id),
+    tokenAddress: r.token_address,
+    entryPrice: toNum(r.shadow_entry_price),
+    lastPrice: toNumOrNull(r.shadow_last_price),
+    peakPrice: toNumOrNull(r.shadow_peak_price),
+  }));
+}

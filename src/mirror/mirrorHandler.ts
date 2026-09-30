@@ -6,6 +6,7 @@ import {
   listWalletsWithOpenMirrorPositions,
   mirrorEventExists,
   openMirrorPosition,
+  startMirrorShadow,
   type MirrorEventInsert,
 } from '../db/repositories/mirror.js';
 import { listMirrorWallets } from '../db/repositories/watchlistWallets.js';
@@ -155,6 +156,8 @@ export async function handleMirrorEvent(
           },
           tx,
         );
+        // Σκιά trailing (migration 0024): είσοδος = η τιμή της ΠΡΩΤΗΣ αγοράς μας.
+        if (decision.open) await startMirrorShadow(positionId, decision.fillPrice, tx);
         await record(
           {
             ...base,

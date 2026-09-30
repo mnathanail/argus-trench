@@ -83,6 +83,41 @@ try {
     }
   }
 
+  // Σκιά trailing (migration 0024): ίδιες θέσεις, είσοδος στην 1η αγορά, κανόνες argus.
+  const { rows: shadow } = await pool.query<{
+    name: string | null; n: string; done: string; wins: string; shadow_pnl: string | null; wallet_pnl: string | null; wallet_closed: string;
+    by_reason: Record<string, number> | null;
+  }>(
+    `SELECT w.name,
+            count(*)                                                        AS n,
+            count(*) FILTER (WHERE p.shadow_exit_reason IS NOT NULL)        AS done,
+            count(*) FILTER (WHERE p.shadow_pnl_sol > 0)                    AS wins,
+            sum(p.shadow_pnl_sol)                                           AS shadow_pnl,
+            sum(p.pnl_sol) FILTER (WHERE p.status = 'closed' AND p.shadow_exit_reason IS NOT NULL) AS wallet_pnl,
+            count(*) FILTER (WHERE p.status = 'closed' AND p.shadow_exit_reason IS NOT NULL)      AS wallet_closed,
+            (SELECT jsonb_object_agg(r, c) FROM (
+               SELECT p2.shadow_exit_reason AS r, count(*) AS c FROM mirror_positions p2
+                WHERE p2.wallet_address = p.wallet_address AND p2.shadow_exit_reason IS NOT NULL
+                  AND p2.opened_at >= ${since} GROUP BY 1) x)            AS by_reason
+       FROM mirror_positions p
+       LEFT JOIN watchlist_wallets w ON w.address = p.wallet_address
+      WHERE p.shadow_entry_price IS NOT NULL AND p.opened_at >= ${since}
+      GROUP BY w.name, p.wallet_address`,
+    [days],
+  );
+  if (shadow.length > 0) {
+    console.log('\n=== Σκιά trailing (1η αγορά, trailing +50%/−25%, stop −50%, 24h) vs ακολουθώντας το wallet ===');
+    for (const s of shadow) {
+      const sp = Number(s.shadow_pnl ?? 0);
+      const wp = Number(s.wallet_pnl ?? 0);
+      console.log(
+        `  ${(s.name ?? '?').padEnd(14)} σκιές ${s.n} (έκλεισαν ${s.done}, wins ${s.wins}) → ${sol(sp)}` +
+          `  | ίδιες θέσεις ακολουθώντας το wallet (κλειστές ${s.wallet_closed}): ${sol(wp)}` +
+          `  | έξοδοι: ${JSON.stringify(s.by_reason ?? {})}`,
+      );
+    }
+  }
+
   const { rows: open } = await pool.query<{
     name: string | null; token_address: string; opened_at: Date; sol_in: string; sol_out: string; buy_count: number; sell_count: number;
     tokens_held: string; last_price_sol: string | null;
