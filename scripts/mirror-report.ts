@@ -62,6 +62,23 @@ try {
     console.log(`    ${String(a.n).padStart(5)}  ${a.action}`);
   }
 
+  // Κάθε event γράφεται μία φορά, από όποια πηγή το έφερε πρώτη. Το PumpPortal είναι realtime και
+  // το GMGN poll κάθε 15″ — άρα ένα event "gmgn" σημαίνει σχεδόν σίγουρα ότι το PumpPortal το έχασε.
+  const { rows: sources } = await pool.query<{ name: string | null; address: string; source: string; n: string }>(
+    `SELECT w.name, e.wallet_address AS address,
+            COALESCE(e.detail_json->>'source', 'pumpportal') AS source, count(*) AS n
+       FROM mirror_events e
+       LEFT JOIN watchlist_wallets w ON w.address = e.wallet_address
+      WHERE e.received_at >= ${since}
+      GROUP BY 1, 2, 3
+      ORDER BY 2, 3`,
+    [days],
+  );
+  if (sources.length > 0) {
+    console.log('\n=== Από πού ήρθαν (gmgn = το PumpPortal δεν το έστειλε) ===');
+    for (const s of sources) console.log(`  ${(s.name ?? s.address.slice(0, 8)).padEnd(14)} ${s.source.padEnd(11)} ${s.n}`);
+  }
+
   const { rows: open } = await pool.query<{
     name: string | null; token_address: string; opened_at: Date; sol_in: string; sol_out: string; buy_count: number; sell_count: number;
     tokens_held: string; last_price_sol: string | null;

@@ -40,7 +40,8 @@ import { PumpPortalConnection } from './realtime/pumpportalConnection.js';
 import { subscribeAllActiveWallets, subscribeOpenTrades } from './realtime/subscriptionManager.js';
 import { handleRealtimeTradeEvent } from './realtime/realtimeExitHandler.js';
 import { handleRealtimeEntryEvent } from './realtime/realtimeEntryHandler.js';
-import { handleMirrorEvent, setMirrorSubscriber } from './mirror/mirrorHandler.js';
+import { handleMirrorEvent, setMirrorSubscriber, type MirrorOutcome } from './mirror/mirrorHandler.js';
+import { MIRROR_POLL_INTERVAL_MS, runMirrorPollCycle } from './mirror/mirrorPoller.js';
 import { runScheduler, SharedCooldown, type LoopDefinition } from './scheduler.js';
 import { createBotFromEnv, runBot } from './telegram/bot.js';
 import { formatPercent, short } from './telegram/commands.js';
@@ -95,6 +96,20 @@ let successfulDiscoveryNewCreationCycles = 0;
  * λείπει — καθαρό polling fallback, καμία αλλαγή συμπεριφοράς.
  */
 const pumpportalApiKey = config.pumpportalApiKey();
+/** 2026-09-30 — MIRROR: ειδοποίηση μόνο σε άνοιγμα/κλείσιμο θέσης (και από τις δύο πηγές). */
+async function notifyMirrorOutcome(m: MirrorOutcome | null): Promise<void> {
+  if (m === null) return;
+  if (m.kind === 'opened') {
+    await notify(`🪞 MIRROR paper — άνοιξε ${short(m.token)} ακολουθώντας ${m.walletName ?? short(m.wallet)} (${m.ourSol} SOL)`);
+  } else if (m.kind === 'closed') {
+    const emoji = m.pnlSol > 0 ? '🟢' : '🔴';
+    await notify(
+      `🪞 ${emoji} MIRROR paper — έκλεισε ${short(m.token)} (${m.walletName ?? short(m.wallet)}): ` +
+        `${m.pnlPct === null ? '—' : formatPercent(m.pnlPct, true)}, ${m.pnlSol >= 0 ? '+' : ''}${m.pnlSol.toFixed(4)} SOL ` +
+        `· αγορές ${m.buyCount}, πωλήσεις ${m.sellCount}`,
+    );
+  }
+}
 // `let`, όχι `const` — το onTradeEvent callback χρειάζεται να αναφέρεται στο ίδιο το
 // realtimeConnection (για unsubscribe μετά από κλείσιμο), αλλά δημιουργείται μέσα στην
 // ίδια του τη δήλωση. Δουλεύει σωστά χάρη σε closure: το callback καλείται ΜΟΝΟ αργότερα
@@ -152,20 +167,8 @@ realtimeConnection = pumpportalApiKey
 
         // 2026-09-30 — MIRROR route: ανεξάρτητη τρίτη αλυσίδα (paper). Ειδοποίηση μόνο σε
         // άνοιγμα/κλείσιμο θέσης — οι ενδιάμεσες αγορές/πωλήσεις γράφονται στο mirror_events.
-        handleMirrorEvent(event)
-          .then(async (m) => {
-            if (m === null) return;
-            if (m.kind === 'opened') {
-              await notify(`🪞 MIRROR paper — άνοιξε ${short(m.token)} ακολουθώντας ${m.walletName ?? short(m.wallet)} (${m.ourSol} SOL)`);
-            } else if (m.kind === 'closed') {
-              const emoji = m.pnlSol > 0 ? '🟢' : '🔴';
-              await notify(
-                `🪞 ${emoji} MIRROR paper — έκλεισε ${short(m.token)} (${m.walletName ?? short(m.wallet)}): ` +
-                  `${m.pnlPct === null ? '—' : formatPercent(m.pnlPct, true)}, ${m.pnlSol >= 0 ? '+' : ''}${m.pnlSol.toFixed(4)} SOL ` +
-                  `· αγορές ${m.buyCount}, πωλήσεις ${m.sellCount}`,
-              );
-            }
-          })
+        handleMirrorEvent(event, 'pumpportal')
+          .then(notifyMirrorOutcome)
           .catch((error) => {
             console.error(`[mirror] σφάλμα: ${error instanceof Error ? error.message : String(error)}`);
           });
@@ -353,6 +356,23 @@ const loops: LoopDefinition[] = [
           `fallback=${result.fallbackActivated} failures=${result.failures}`,
       );
       for (const alert of result.alerts) await notify(alert);
+    },
+  },
+  // 2026-09-30 — MIRROR: δεύτερη πηγή από το GMGN για τα mirror wallets (βλ. mirrorPoller.ts).
+  {
+    name: 'mirror-poll',
+    intervalMs: MIRROR_POLL_INTERVAL_MS,
+    initialDelayMs: 20_000,
+    run: async () => {
+      const result = await runMirrorPollCycle();
+      if (result.newActivities === 0 && result.failures === 0) return;
+      const counts = new Map<string, number>();
+      for (const o of result.outcomes) counts.set(o.kind, (counts.get(o.kind) ?? 0) + 1);
+      console.log(
+        `[mirror-poll] wallets=${result.wallets} new=${result.newActivities} ` +
+          `outcomes=${JSON.stringify(Object.fromEntries(counts))} failures=${result.failures}`,
+      );
+      for (const o of result.outcomes) await notifyMirrorOutcome(o);
     },
   },
   {

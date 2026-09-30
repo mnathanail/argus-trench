@@ -28,6 +28,12 @@ export interface WalletActivity {
   /** Unix seconds (number, σε αντίθεση με τα ποσά που είναι strings). */
   timestamp: number;
   launchpadPlatform: string | null;
+  /** 2026-09-30 (mirror): ποσό στο quote token (SOL) — επιβεβαιωμένο στο fixture (`quote_amount`). */
+  quoteAmount?: number | null;
+  /** `quote_address` — το GMGN γράφει native SOL ως So111…111 (όχι wrapped So111…112). */
+  quoteAddress?: string | null;
+  /** `is_open_or_close`: 1 = άνοιγμα θέσης (πρώτη αγορά) / κλείσιμο (πλήρης πώληση). */
+  isOpenOrClose?: number | null;
 }
 
 export interface WalletActivityPage {
@@ -184,6 +190,9 @@ function parseActivity(item: unknown, path: string): WalletActivity {
     priceUsd: toNumberOrNull(row['price_usd'], `${path}.price_usd`),
     timestamp: toNumber(row['timestamp'], `${path}.timestamp`),
     launchpadPlatform: toStringOrNull(row['launchpad_platform']),
+    quoteAmount: toNumberOrNull(row['quote_amount'], `${path}.quote_amount`),
+    quoteAddress: toStringOrNull(row['quote_address']),
+    isOpenOrClose: typeof row['is_open_or_close'] === 'number' ? row['is_open_or_close'] : null,
   };
 }
 

@@ -6,6 +6,7 @@ import {
   listWalletsWithOpenMirrorPositions,
   mirrorEventExists,
   openMirrorPosition,
+  type MirrorEventInsert,
 } from '../db/repositories/mirror.js';
 import { listMirrorWallets } from '../db/repositories/watchlistWallets.js';
 import { withTransaction } from '../db/tx.js';
@@ -88,7 +89,13 @@ function serializeByToken<T>(mint: string, fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
-export async function handleMirrorEvent(event: PumpPortalTradeEvent): Promise<MirrorOutcome | null> {
+/** Από πού ήρθε το event — καταγράφεται σε κάθε mirror_events row (detail_json.source). */
+export type MirrorEventSource = 'pumpportal' | 'gmgn';
+
+export async function handleMirrorEvent(
+  event: PumpPortalTradeEvent,
+  source: MirrorEventSource = 'pumpportal',
+): Promise<MirrorOutcome | null> {
   const role = await mirrorRole(event.traderPublicKey);
   if (role === null) return null;
   // Πρώην mirror wallet (/unmirror) με ανοιχτή θέση: οι αγορές του πάνε πια στο κανονικό argus.
@@ -97,6 +104,8 @@ export async function handleMirrorEvent(event: PumpPortalTradeEvent): Promise<Mi
   return serializeByToken(event.mint, () =>
     withTransaction(async (tx) => {
       if (await mirrorEventExists(event.signature, event.traderPublicKey, tx)) return { kind: 'duplicate' as const };
+      const record = (e: MirrorEventInsert): Promise<boolean> =>
+        insertMirrorEvent({ ...e, detail: { ...(e.detail ?? {}), source } }, tx);
 
       const position = await getOpenMirrorPositionForUpdate(event.mint, tx);
       const decision = decideMirror(event, position, {
@@ -115,7 +124,7 @@ export async function handleMirrorEvent(event: PumpPortalTradeEvent): Promise<Mi
       };
 
       if (decision.action === 'ignored') {
-        await insertMirrorEvent(
+        await record(
           {
             ...base,
             priceSol: decision.priceSol,
@@ -126,7 +135,6 @@ export async function handleMirrorEvent(event: PumpPortalTradeEvent): Promise<Mi
             sellPct: null,
             detail: position !== null && decision.reason === 'other_wallet_position' ? { position_wallet: position.walletAddress } : null,
           },
-          tx,
         );
         return { kind: 'ignored' as const, wallet: event.traderPublicKey, token: event.mint, reason: decision.reason };
       }
@@ -145,7 +153,7 @@ export async function handleMirrorEvent(event: PumpPortalTradeEvent): Promise<Mi
           },
           tx,
         );
-        await insertMirrorEvent(
+        await record(
           {
             ...base,
             priceSol: decision.priceSol,
@@ -156,7 +164,6 @@ export async function handleMirrorEvent(event: PumpPortalTradeEvent): Promise<Mi
             sellPct: null,
             detail: { fill_price: decision.fillPrice, mode: MIRROR_MODE },
           },
-          tx,
         );
         return decision.open
           ? { kind: 'opened' as const, wallet: event.traderPublicKey, walletName, token: event.mint, ourSol: decision.ourSol }
@@ -176,7 +183,7 @@ export async function handleMirrorEvent(event: PumpPortalTradeEvent): Promise<Mi
         },
         tx,
       );
-      await insertMirrorEvent(
+      await record(
         {
           ...base,
           priceSol: decision.priceSol,
@@ -187,7 +194,6 @@ export async function handleMirrorEvent(event: PumpPortalTradeEvent): Promise<Mi
           sellPct: decision.pct,
           detail: { pct_source: decision.pctSource, mode: MIRROR_MODE },
         },
-        tx,
       );
       if (!decision.close) return { kind: 'reduced' as const, wallet: event.traderPublicKey, token: event.mint };
 
