@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { fetchWalletActivity, type WalletActivity } from '../src/gmgn/activity.js';
-import { parseWalletTrade } from '../src/mirror/heliusTrade.js';
+import { describeWalletChanges, parseWalletTrade } from '../src/mirror/heliusTrade.js';
 import { HeliusLogsListener } from '../src/solana/heliusLogsListener.js';
 import {
   getParsedTransaction,
@@ -88,6 +88,7 @@ for (const s of sigs) {
   if (!p.ok) {
     skips.set(p.reason, (skips.get(p.reason) ?? 0) + 1);
     if (g) console.log(`  ${when} ${s.signature.slice(0, 8)}  εμείς: ΤΙΠΟΤΑ (${p.reason})  ← GMGN: ${g.eventType} ${g.tokenAddress.slice(0, 8)} sol=${g.quoteAmount}`);
+    if (g || p.reason === 'multi_token') console.log(`      αλλαγές wallet: ${describeWalletChanges(tx, wallet)}${g ? `  · GMGN quote=${g.quoteAddress?.slice(0, 8) ?? '?'}` : ''}`);
     continue;
   }
   trades += 1;

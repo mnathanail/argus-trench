@@ -139,3 +139,25 @@ export function parseWalletTrade(tx: ParsedTransaction, wallet: string): WalletT
     solSource: plausible ? 'pool' : 'wallet',
   };
 }
+
+/** Διαγνωστικό (helius-mirror-probe): όλες οι αλλαγές token του wallet (και wSOL) + native SOL. */
+export function describeWalletChanges(tx: ParsedTransaction, wallet: string): string {
+  const meta = tx.meta;
+  if (!meta) return 'no meta';
+  const keys = tx.transaction.message.accountKeys.map((k) => k.pubkey);
+  const idx = keys.indexOf(wallet);
+  const byMint = new Map<string, { pre: bigint; post: bigint; decimals: number }>();
+  for (const [side, list] of [['pre', meta.preTokenBalances], ['post', meta.postTokenBalances]] as const) {
+    for (const b of ownedBalances(list, wallet)) {
+      const d = byMint.get(b.mint) ?? { pre: 0n, post: 0n, decimals: b.uiTokenAmount.decimals };
+      if (side === 'pre') d.pre += BigInt(b.uiTokenAmount.amount);
+      else d.post += BigInt(b.uiTokenAmount.amount);
+      byMint.set(b.mint, d);
+    }
+  }
+  const parts = [...byMint.entries()]
+    .filter(([, d]) => d.pre !== d.post)
+    .map(([m, d]) => `${m === WSOL_MINT ? 'wSOL' : m.slice(0, 8)} ${toUi(d.pre, d.decimals).toPrecision(6)}→${toUi(d.post, d.decimals).toPrecision(6)}`);
+  const native = idx < 0 ? 'wallet εκτός tx' : `SOL ${(((meta.postBalances[idx] ?? 0) - (meta.preBalances[idx] ?? 0)) / LAMPORTS).toFixed(4)}`;
+  return `${native} | ${parts.join(' | ') || 'καμία αλλαγή token'}`;
+}
