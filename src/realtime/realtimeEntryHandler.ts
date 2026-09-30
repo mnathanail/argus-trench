@@ -200,6 +200,9 @@ export async function handleRealtimeEntryEvent(
   const receivedAt = Date.now();
 
   const wallet = await getWallet(event.traderPublicKey);
+  // 2026-09-30 (ρητή απόφαση χρήστη): τα mirror wallets τα χειρίζεται ΜΟΝΟ το mirror route
+  // (src/mirror/) — καμία κανονική θέση argus από τα σήματά τους, ούτε καταγραφή skip.
+  if (wallet?.copyMode === 'mirror') return null;
   const version = logicVersion(PHASE1_THRESHOLDS);
   let gateSnapshotExists = (await findPassedTokens([event.mint], version)).has(event.mint);
   // ΜΟΝΟ live/paper — τα παλιά log_only δεν πρέπει να κόβουν live entries (βλ. countOpenLiveOrPaperTrades).

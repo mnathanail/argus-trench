@@ -157,3 +157,11 @@ test('parseTradeEvent: rejects a present-but-wrong-typed optional bonding-curve 
   const wrongType = { ...GRADUATED_TOKEN_EVENT, pool: 12345 };
   assert.equal(parseTradeEvent(wrongType), null);
 });
+
+test('parseTradeEvent keeps newTokenBalance from the real event (mirror route needs it for sell %)', () => {
+  assert.equal(parseTradeEvent(REAL_BUY_EVENT)?.newTokenBalance, 30589322.786086);
+  const without = { ...REAL_BUY_EVENT } as Record<string, unknown>;
+  delete without['newTokenBalance'];
+  assert.equal(parseTradeEvent(without)?.newTokenBalance, undefined);
+  assert.equal(parseTradeEvent({ ...REAL_BUY_EVENT, newTokenBalance: 'x' })?.newTokenBalance, undefined, 'wrong type is ignored, event still parses');
+});

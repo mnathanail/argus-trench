@@ -40,6 +40,7 @@ import { PumpPortalConnection } from './realtime/pumpportalConnection.js';
 import { subscribeAllActiveWallets, subscribeOpenTrades } from './realtime/subscriptionManager.js';
 import { handleRealtimeTradeEvent } from './realtime/realtimeExitHandler.js';
 import { handleRealtimeEntryEvent } from './realtime/realtimeEntryHandler.js';
+import { handleMirrorEvent, setMirrorSubscriber } from './mirror/mirrorHandler.js';
 import { runScheduler, SharedCooldown, type LoopDefinition } from './scheduler.js';
 import { createBotFromEnv, runBot } from './telegram/bot.js';
 import { formatPercent, short } from './telegram/commands.js';
@@ -149,6 +150,26 @@ realtimeConnection = pumpportalApiKey
             );
           });
 
+        // 2026-09-30 — MIRROR route: ανεξάρτητη τρίτη αλυσίδα (paper). Ειδοποίηση μόνο σε
+        // άνοιγμα/κλείσιμο θέσης — οι ενδιάμεσες αγορές/πωλήσεις γράφονται στο mirror_events.
+        handleMirrorEvent(event)
+          .then(async (m) => {
+            if (m === null) return;
+            if (m.kind === 'opened') {
+              await notify(`🪞 MIRROR paper — άνοιξε ${short(m.token)} ακολουθώντας ${m.walletName ?? short(m.wallet)} (${m.ourSol} SOL)`);
+            } else if (m.kind === 'closed') {
+              const emoji = m.pnlSol > 0 ? '🟢' : '🔴';
+              await notify(
+                `🪞 ${emoji} MIRROR paper — έκλεισε ${short(m.token)} (${m.walletName ?? short(m.wallet)}): ` +
+                  `${m.pnlPct === null ? '—' : formatPercent(m.pnlPct, true)}, ${m.pnlSol >= 0 ? '+' : ''}${m.pnlSol.toFixed(4)} SOL ` +
+                  `· αγορές ${m.buyCount}, πωλήσεις ${m.sellCount}`,
+              );
+            }
+          })
+          .catch((error) => {
+            console.error(`[mirror] σφάλμα: ${error instanceof Error ? error.message : String(error)}`);
+          });
+
         handleRealtimeEntryEvent(event, realtimeConnection)
           .then(async (entry) => {
             if (entry === null) return;
@@ -201,6 +222,8 @@ realtimeConnection = pumpportalApiKey
   : undefined;
 
 if (realtimeConnection) {
+  const connectionForMirror = realtimeConnection;
+  setMirrorSubscriber((address) => connectionForMirror.subscribeWallet(address));
   realtimeConnection.connect();
   const openTargets = await listOpenTradesWithWallet();
   subscribeOpenTrades(realtimeConnection, openTargets);

@@ -1,3 +1,4 @@
+import type { MirrorWalletSummary } from '../db/repositories/mirror.js';
 import type { WalletStats } from '../gmgn/walletStats.js';
 import type { WatchlistWallet } from '../db/repositories/watchlistWallets.js';
 import type { WalletScoreEntry } from '../db/repositories/walletScoreHistory.js';
@@ -102,6 +103,11 @@ export interface CommandDeps {
   /** Ίδιο μήνυμα με τη βραδινή αναφορά (00:05 Αθήνας) — χειροκίνητο trigger, ώστε να
    * μη χρειάζεται να περιμένεις την προγραμματισμένη ώρα για να το ξαναδείς. */
   runDigest(): Promise<string>;
+  /** 2026-09-30 — MIRROR route (src/mirror/). */
+  setCopyMode(address: string, mode: 'signal' | 'mirror'): Promise<boolean>;
+  onMirrorChanged(address: string, mode: 'signal' | 'mirror'): Promise<void>;
+  mirrorSummaries(): Promise<MirrorWalletSummary[]>;
+  mirrorBuySol(): number;
 }
 
 const HELP = [
@@ -117,6 +123,9 @@ const HELP = [
   '/live_status          kill-switch state για live trading',
   '/resume_live          χειροκίνητο reset του kill-switch (μόνο αφού το ελέγξεις)',
   '/digest               ξαναστείλε τη live βραδινή αναφορά τώρα, εκτός προγράμματος',
+  '/mirror <address> [name]  ακριβής αντιγραφή θέσεων αυτού του wallet (paper, εκτός κανονικού argus)',
+  '/unmirror <address>   σταματά η αντιγραφή — ανοιχτές θέσεις κλείνουν όταν πουλήσει',
+  '/mirrors              mirror wallets + αποτελέσματα',
   '/help                αυτό το μήνυμα',
 ].join('\n');
 
@@ -159,9 +168,62 @@ export async function handleCommand(text: string, deps: CommandDeps): Promise<st
       return resumeLive(deps);
     case '/digest':
       return deps.runDigest();
+    case '/mirror':
+      return withAddress(argument, (address) => mirror(address, rest, deps));
+    case '/unmirror':
+      return withAddress(argument, (address) => unmirror(address, deps));
+    case '/mirrors':
+      return mirrors(deps);
     default:
       return `Άγνωστη εντολή: ${command || '(κενό)'}\n\n${HELP}`;
   }
+}
+
+/**
+ * 2026-09-30 — MIRROR route. Αν το wallet δεν υπάρχει, μπαίνει ως manual (όπως το /watch)·
+ * αν υπάρχει, κρατάει source/όνομα (όνομα αλλάζει μόνο αν δοθεί). Mirror = ενεργό, εκτός
+ * κανονικού argus, ποτέ αυτόματη απενεργοποίηση.
+ */
+async function mirror(address: string, name: string, deps: CommandDeps): Promise<string> {
+  const trimmedName = name.trim();
+  const existing = await deps.getWallet(address);
+  if (existing === null || trimmedName !== '') {
+    await deps.upsertWallet({
+      address,
+      source: 'manual',
+      active: true,
+      ...(trimmedName === '' ? {} : { name: trimmedName }),
+    });
+  }
+  await deps.setCopyMode(address, 'mirror');
+  await deps.onMirrorChanged(address, 'mirror');
+  const label = trimmedName !== '' ? trimmedName : (existing?.name ?? address);
+  return [
+    `🪞 Mirror ενεργό: ${label}${label === address ? '' : ` (${address})`}`,
+    `Κάθε αγορά του = ${deps.mirrorBuySol()} SOL δική μας, κάθε πώληση στο ίδιο %. Μόνο Pump.fun/PumpSwap, χωρίς gate, χωρίς stop-loss.`,
+    'PAPER μόνο προς το παρόν. Τα σήματά του δεν ανοίγουν πια κανονικά argus trades.',
+  ].join('\n');
+}
+
+async function unmirror(address: string, deps: CommandDeps): Promise<string> {
+  const found = await deps.setCopyMode(address, 'signal');
+  if (!found) return `Δεν βρέθηκε wallet ${address}.`;
+  await deps.onMirrorChanged(address, 'signal');
+  return [
+    `Mirror σταμάτησε για ${address} — γύρισε στο κανονικό argus.`,
+    'Όποια mirror θέση είναι ανοιχτή κλείνει όταν πουλήσει εκείνος (οι πωλήσεις του συνεχίζουν να αντιγράφονται).',
+  ].join('\n');
+}
+
+async function mirrors(deps: CommandDeps): Promise<string> {
+  const list = await deps.mirrorSummaries();
+  if (list.length === 0) return 'Κανένα mirror wallet. Πρόσθεσε με /mirror <address> [name].';
+  const lines = list.map((w) => {
+    const label = w.name ?? short(w.address);
+    const winRate = w.closedPositions > 0 ? ` · win ${Math.round((w.wins / w.closedPositions) * 100)}%` : '';
+    return `• ${label} — ανοιχτές ${w.openPositions}, κλειστές ${w.closedPositions}${winRate}, pnl ${w.pnlSol >= 0 ? '+' : ''}${w.pnlSol.toFixed(4)} SOL`;
+  });
+  return [`🪞 Mirror wallets (paper, ${deps.mirrorBuySol()} SOL/αγορά)`, ...lines].join('\n');
 }
 
 async function withAddress(

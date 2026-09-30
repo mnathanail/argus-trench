@@ -1,6 +1,6 @@
 import { db, type Queryable } from '../tx.js';
 import { requireRow, toNum, toNumOrNull } from '../rows.js';
-import type { Chain, WalletSource } from '../types.js';
+import type { Chain, CopyMode, WalletSource } from '../types.js';
 
 export interface WatchlistWallet {
   id: number;
@@ -26,6 +26,8 @@ export interface WatchlistWallet {
   /** Προαιρετικό, γνωστό όνομα/alias του κατόχου (π.χ. δημόσιο GMGN nickname) — ΜΟΝΟ αν
    * το ξέρει ο χρήστης, ποτέ αυτόματο. NULL για τα περισσότερα, ειδικά auto-discovered. */
   name: string | null;
+  /** migration 0023 — 'mirror' = ακριβής αντιγραφή θέσεων, εκτός κανονικού argus. */
+  copyMode?: CopyMode;
 }
 
 interface WalletRow {
@@ -44,11 +46,12 @@ interface WalletRow {
   last_activity_checked_at: Date | null;
   deactivated_reason: string | null;
   name: string | null;
+  copy_mode?: CopyMode;
 }
 
 const COLUMNS = `id, address, chain, source, win_rate, pnl_multiplier, trade_count,
                  active, added_at, last_reviewed_at, last_seen_tx_hash,
-                 last_seen_activity_at, last_activity_checked_at, deactivated_reason, name`;
+                 last_seen_activity_at, last_activity_checked_at, deactivated_reason, name, copy_mode`;
 
 function mapWallet(row: WalletRow): WatchlistWallet {
   return {
@@ -68,6 +71,7 @@ function mapWallet(row: WalletRow): WatchlistWallet {
     lastActivityCheckedAt: row.last_activity_checked_at,
     deactivatedReason: row.deactivated_reason,
     name: row.name,
+    copyMode: row.copy_mode ?? 'signal',
   };
 }
 
@@ -354,4 +358,25 @@ export async function listKnownAddresses(addresses: readonly string[], conn?: Qu
     [addresses],
   );
   return new Set(rows.map((r) => r.address));
+}
+
+/** migration 0023: ορίζει signal/mirror. Το mirror ενεργοποιεί ΚΑΙ το wallet (χρειάζεται
+ * realtime συνδρομή). false = δεν υπάρχει τέτοιο wallet. */
+export async function setCopyMode(address: string, mode: CopyMode, conn?: Queryable): Promise<boolean> {
+  const result = await db(conn).query(
+    `UPDATE watchlist_wallets
+        SET copy_mode = $2,
+            active = CASE WHEN $2 = 'mirror' THEN true ELSE active END,
+            deactivated_reason = CASE WHEN $2 = 'mirror' THEN NULL ELSE deactivated_reason END
+      WHERE address = $1`,
+    [address, mode],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function listMirrorWallets(conn?: Queryable): Promise<{ address: string; name: string | null; active: boolean }[]> {
+  const { rows } = await db(conn).query<{ address: string; name: string | null; active: boolean }>(
+    `SELECT address, name, active FROM watchlist_wallets WHERE copy_mode = 'mirror' ORDER BY added_at`,
+  );
+  return rows;
 }

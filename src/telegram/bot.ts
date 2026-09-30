@@ -7,10 +7,14 @@ import { runDailyDigestCycle } from '../collectors/dailyDigest.js';
 import {
   getWallet,
   listActiveWallets,
+  setCopyMode,
   setWalletActive,
   updateWalletScore,
   upsertWallet,
 } from '../db/repositories/watchlistWallets.js';
+import { mirrorWalletSummaries } from '../db/repositories/mirror.js';
+import { onMirrorWalletChanged } from '../mirror/mirrorHandler.js';
+import { mirrorBuySol } from '../mirror/mirrorConfig.js';
 import { TelegramClient, type TelegramUpdate } from './api.js';
 import { handleCommand, type CommandDeps } from './commands.js';
 
@@ -29,6 +33,10 @@ export function createCommandDeps(): CommandDeps {
     getLiveHaltState: () => getLiveHaltState(),
     clearLiveHalt: () => clearLiveHalt(),
     runDigest: () => runDailyDigestCycle(),
+    setCopyMode: (address, mode) => setCopyMode(address, mode),
+    onMirrorChanged: (address, mode) => onMirrorWalletChanged(address, mode),
+    mirrorSummaries: () => mirrorWalletSummaries(),
+    mirrorBuySol: () => mirrorBuySol(),
   };
 }
 

@@ -77,3 +77,13 @@ test('decideLifecycleTransition: a healthy active wallet staying healthy trigger
   );
   assert.equal(result, null);
 });
+
+test('decideLifecycleTransition: a mirror wallet is never auto-deactivated (2026-09-30)', () => {
+  assert.equal(
+    decideLifecycleTransition(
+      { active: true, winRate: 0.1, tradeCount: 50, deactivatedReason: null, copyMode: 'mirror' },
+      { winRate: 0.1, tradeCount: 50 },
+    ),
+    null,
+  );
+});

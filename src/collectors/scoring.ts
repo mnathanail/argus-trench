@@ -122,9 +122,12 @@ export type LifecycleTransition = 'deactivate' | 'reactivate' | null;
  * `deactivatedReason='manual'` — το `/unwatch` παραμένει τελικό veto.
  */
 export function decideLifecycleTransition(
-  wallet: Pick<WatchlistWallet, 'active' | 'winRate' | 'tradeCount' | 'deactivatedReason'>,
+  wallet: Pick<WatchlistWallet, 'active' | 'winRate' | 'tradeCount' | 'deactivatedReason' | 'copyMode'>,
   score: { winRate: number | null; tradeCount: number | null },
 ): LifecycleTransition {
+  // 2026-09-30: τα mirror wallets τα διάλεξε ο χρήστης για ακριβή αντιγραφή — ποτέ αυτόματη
+  // απενεργοποίηση (θα έκοβε τη realtime συνδρομή και θα έμεναν ανοιχτές θέσεις χωρίς έξοδο).
+  if (wallet.copyMode === 'mirror') return null;
   const wasPassing = passesThreshold(wallet.winRate, wallet.tradeCount);
   const isPassingNow = passesThreshold(score.winRate, score.tradeCount);
 

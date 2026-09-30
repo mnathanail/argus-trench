@@ -543,5 +543,60 @@ function stubDeps(statsOverride: Partial<WalletStats> = {}): CommandDeps {
     getLiveHaltState: () => Promise.resolve({ haltedAt: null, haltedReason: null }),
     clearLiveHalt: () => Promise.resolve(),
     runDigest: () => Promise.resolve('digest placeholder'),
+    setCopyMode: () => Promise.resolve(true),
+    onMirrorChanged: () => Promise.resolve(),
+    mirrorSummaries: () => Promise.resolve([]),
+    mirrorBuySol: () => 0.1,
   };
 }
+
+// --- /mirror, /unmirror, /mirrors (2026-09-30) -------------------------------------------
+
+test('/mirror on a new wallet adds it as manual, sets mirror mode and notifies the mirror route', async () => {
+  const calls: string[] = [];
+  const deps = {
+    ...stubDeps(),
+    upsertWallet: (input: { address: string; name?: string }) => {
+      calls.push(`upsert:${input.name ?? ''}`);
+      return Promise.resolve(wallet(input.address));
+    },
+    setCopyMode: (_a: string, mode: 'signal' | 'mirror') => {
+      calls.push(`mode:${mode}`);
+      return Promise.resolve(true);
+    },
+    onMirrorChanged: (_a: string, mode: 'signal' | 'mirror') => {
+      calls.push(`changed:${mode}`);
+      return Promise.resolve();
+    },
+  };
+  const reply = await handleCommand(`/mirror ${ADDRESS} chris kogias`, deps);
+  assert.deepEqual(calls, ['upsert:chris kogias', 'mode:mirror', 'changed:mirror']);
+  assert.match(reply, /Mirror ενεργό: chris kogias/);
+  assert.match(reply, /0\.1 SOL/);
+});
+
+test('/mirror on an existing wallet without a name does not overwrite it', async () => {
+  let upserts = 0;
+  const deps = {
+    ...stubDeps(),
+    getWallet: () => Promise.resolve({ ...wallet(ADDRESS), name: 'chriskogias' }),
+    upsertWallet: (input: { address: string }) => {
+      upserts += 1;
+      return Promise.resolve(wallet(input.address));
+    },
+  };
+  const reply = await handleCommand(`/mirror ${ADDRESS}`, deps);
+  assert.equal(upserts, 0);
+  assert.match(reply, /Mirror ενεργό: chriskogias/);
+});
+
+test('/unmirror unknown wallet → clear message; /mirrors lists results', async () => {
+  const notFound = await handleCommand(`/unmirror ${ADDRESS}`, { ...stubDeps(), setCopyMode: () => Promise.resolve(false) });
+  assert.match(notFound, /Δεν βρέθηκε/);
+  const list = await handleCommand('/mirrors', {
+    ...stubDeps(),
+    mirrorSummaries: () =>
+      Promise.resolve([{ address: ADDRESS, name: 'chriskogias', openPositions: 2, closedPositions: 4, wins: 3, pnlSol: 0.123 }]),
+  });
+  assert.match(list, /chriskogias — ανοιχτές 2, κλειστές 4 · win 75%, pnl \+0\.1230 SOL/);
+});

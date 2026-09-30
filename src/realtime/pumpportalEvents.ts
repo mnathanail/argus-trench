@@ -36,6 +36,9 @@ export interface PumpPortalTradeEvent {
   vSolInBondingCurve?: number;
   marketCapSol?: number;
   pool?: string;
+  /** Υπόλοιπο του trader σε αυτό το token ΜΕΤΑ το trade (επιβεβαιωμένο στο πραγματικό event,
+   * βλ. test fixture). 2026-09-30: το mirror route το χρειάζεται για το % μιας μερικής πώλησης. */
+  newTokenBalance?: number;
 }
 
 /**
@@ -73,6 +76,9 @@ export function parseTradeEvent(raw: unknown): PumpPortalTradeEvent | null {
   ) {
     return null;
   }
+  // newTokenBalance: προαιρετικό και ΔΕΝ απορρίπτει ποτέ το event (λάθος τύπος → αγνοείται).
+  const newTokenBalance =
+    typeof obj.newTokenBalance === 'number' && Number.isFinite(obj.newTokenBalance) ? obj.newTokenBalance : undefined;
 
   return {
     signature: obj.signature,
@@ -85,6 +91,7 @@ export function parseTradeEvent(raw: unknown): PumpPortalTradeEvent | null {
     vSolInBondingCurve: obj.vSolInBondingCurve as number | undefined,
     marketCapSol: obj.marketCapSol as number | undefined,
     pool: obj.pool as string | undefined,
+    ...(newTokenBalance !== undefined ? { newTokenBalance } : {}),
   };
 }
 

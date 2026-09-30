@@ -8,6 +8,9 @@ export type Chain = 'sol' | 'bsc' | 'base' | 'eth';
 /** 'top_trader' (2026-09-29): wallet discovery από `token traders` — βλ. collectors/walletDiscovery.ts. */
 export type WalletSource = 'smart_money' | 'kol' | 'manual' | 'top_trader';
 
+/** migration 0023: 'signal' = κανονικό argus, 'mirror' = ακριβής αντιγραφή θέσεων (src/mirror/). */
+export type CopyMode = 'signal' | 'mirror';
+
 /**
  * Πώς παρατηρήθηκε ο candidate. Βλ. migration 0003 και layer 1 στο CLAUDE.md — τα δύο
  * calls δεν έχουν την ίδια στατιστική σημασία και ΔΕΝ πρέπει να αναμειχθούν στην ανάλυση.
