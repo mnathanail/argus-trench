@@ -1,9 +1,13 @@
 import 'dotenv/config';
 import { closePool, getPool } from '../src/db/pool.js';
 import { fetchWalletActivity, type WalletActivity } from '../src/gmgn/activity.js';
+import { rethrowIfRateLimited } from '../src/gmgn/errors.js';
+import { runCli } from '../src/gmgn/exec.js';
 import { delay } from '../src/util/delay.js';
 
-// Χρήση: railway run npm run wallet-buys-check -- <wallet> [μέρες=3]
+// Χρήση: railway run npm run wallet-buys-check -- <wallet> [μέρες=3] [--launchpads]
+//   --launchpads: για κάθε token χωρίς κατάληξη "pump", `token info` (weight 1/token) →
+//   ομαδοποίηση ανά launchpad (2026-09-30: «τι είναι αυτά τα 125;»).
 //
 // 2026-09-30 (ρητό αίτημα χρήστη): πόσες αγορές έκανε ΠΡΑΓΜΑΤΙΚΑ ένα wallet (GMGN
 // `portfolio activity`, on-chain) και πόσες από αυτές πήραμε εμείς — και για όσες δεν
@@ -24,8 +28,10 @@ interface TokenRow {
   categories: string | null;
 }
 
-const wallet = process.argv[2];
-const days = Number(process.argv[3] ?? 3);
+const positional = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+const withLaunchpads = process.argv.includes('--launchpads');
+const wallet = positional[0];
+const days = Number(positional[1] ?? 3);
 if (wallet === undefined || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet)) {
   console.error('Χρήση: npm run wallet-buys-check -- <wallet> [μέρες]');
   process.exit(1);
@@ -107,6 +113,39 @@ try {
     console.log(`\n=== Δείγμα από τα ${nonPump.length} tokens χωρίς κατάληξη "pump" — άνοιξέ τα στο GMGN να δούμε το launchpad ===`);
     for (const b of nonPump.slice(0, 8)) {
       console.log(`  ${(b.tokenSymbol ?? '?').padEnd(10)} mcap ${mcapAt(b).padEnd(7)} https://gmgn.ai/sol/token/${b.tokenAddress}`);
+    }
+  }
+
+  if (withLaunchpads && nonPump.length > 0) {
+    const buysPerToken = new Map<string, number>();
+    for (const b of buys) buysPerToken.set(b.tokenAddress, (buysPerToken.get(b.tokenAddress) ?? 0) + 1);
+    const groups = new Map<string, { tokens: WalletActivity[]; buys: number }>();
+    let done = 0;
+    for (const b of nonPump) {
+      let platform: string;
+      try {
+        // Ωμό response: μόνο τα launchpad πεδία (το parseTokenInfo είναι αυστηρό στα αριθμητικά).
+        const raw = (await runCli('token info', ['token', 'info', '--chain', 'sol', '--address', b.tokenAddress], {})) as Record<string, unknown>;
+        const lp = typeof raw['launchpad_platform'] === 'string' && raw['launchpad_platform'] !== '' ? raw['launchpad_platform'] : null;
+        const lpRaw = typeof raw['launchpad'] === 'string' && raw['launchpad'] !== '' ? raw['launchpad'] : null;
+        platform = lp ?? lpRaw ?? '— (κανένα launchpad: DEX / xStocks / μεγάλα tokens)';
+      } catch (error) {
+        rethrowIfRateLimited(error);
+        platform = 'σφάλμα token info';
+      }
+      const g = groups.get(platform) ?? { tokens: [], buys: 0 };
+      g.tokens.push(b);
+      g.buys += buysPerToken.get(b.tokenAddress) ?? 0;
+      groups.set(platform, g);
+      done += 1;
+      if (done % 25 === 0) console.log(`  … ${done}/${nonPump.length}`);
+      await delay(300);
+    }
+    console.log(`\n=== Launchpad των ${nonPump.length} tokens χωρίς κατάληξη "pump" ===`);
+    for (const [platform, g] of [...groups.entries()].sort((a, b) => b[1].tokens.length - a[1].tokens.length)) {
+      const sample = g.tokens.slice(0, 6).map((t) => `${t.tokenSymbol ?? '?'}(${mcapAt(t)})`).join(', ');
+      console.log(`  ${String(g.tokens.length).padStart(3)} tokens, ${String(g.buys).padStart(4)} αγορές  ${platform}`);
+      console.log(`        π.χ. ${sample}`);
     }
   }
 
