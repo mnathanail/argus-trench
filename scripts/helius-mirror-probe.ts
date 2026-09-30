@@ -69,7 +69,15 @@ for (const s of sigs) {
     skips.set('failed', (skips.get('failed') ?? 0) + 1);
     continue;
   }
-  const tx = await getParsedTransaction(rpcUrl, s.signature);
+  let tx: Awaited<ReturnType<typeof getParsedTransaction>>;
+  try {
+    tx = await getParsedTransaction(rpcUrl, s.signature);
+  } catch (error) {
+    // Ένα σφάλμα σε μία συναλλαγή δεν σταματά τον έλεγχο — μετράει και φαίνεται.
+    skips.set('rpc_error', (skips.get('rpc_error') ?? 0) + 1);
+    console.log(`  ${s.signature.slice(0, 8)}  σφάλμα RPC: ${error instanceof Error ? error.message.slice(0, 160) : String(error)}`);
+    continue;
+  }
   const when = s.blockTime ? new Date(s.blockTime * 1000).toISOString().slice(5, 19).replace('T', ' ') : '?';
   if (tx === null) {
     console.log(`  ${when} ${s.signature.slice(0, 8)}  getTransaction=null`);

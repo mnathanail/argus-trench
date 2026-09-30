@@ -45,6 +45,8 @@ export interface ParsedTransaction {
 
 export class SolanaRpcError extends Error {}
 
+export const MAX_TX_VERSION = 1;
+
 export async function rpcCall<T>(url: string, method: string, params: unknown[], timeoutMs = 10_000): Promise<T> {
   const response = await fetch(url, {
     method: 'POST',
@@ -61,7 +63,9 @@ export async function rpcCall<T>(url: string, method: string, params: unknown[],
 export async function getParsedTransaction(url: string, signature: string): Promise<ParsedTransaction | null> {
   return rpcCall<ParsedTransaction | null>(url, 'getTransaction', [
     signature,
-    { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' },
+    // 2026-09-30: οι συναλλαγές του chriskogias είναι ήδη version 1 — με 0 το RPC απαντά
+    // -32015 "Transaction version (1) is not supported". Ζητάμε μέχρι 1 (legacy/0 επίσης).
+    { encoding: 'jsonParsed', maxSupportedTransactionVersion: MAX_TX_VERSION, commitment: 'confirmed' },
   ]);
 }
 
@@ -82,6 +86,9 @@ export async function getParsedTransactionWithRetry(
       const tx = await getParsedTransaction(url, signature);
       if (tx !== null) return tx;
     } catch (error) {
+      // Σφάλμα του ίδιου του RPC (π.χ. -32015) δεν διορθώνεται με αναμονή — όχι άσκοπα credits.
+      // Ξαναδοκιμάζουμε μόνο δικτυακά / HTTP 429 / 5xx.
+      if (error instanceof SolanaRpcError && !/HTTP (429|5\d\d)/.test(error.message)) throw error;
       lastError = error;
     }
   }
