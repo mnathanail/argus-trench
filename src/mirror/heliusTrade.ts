@@ -22,9 +22,17 @@ import type { ParsedTransaction, TokenBalance } from '../solana/heliusRpc.js';
 export const PUMP_PROGRAM = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 export const PUMP_AMM_PROGRAM = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpMNtHVfk3KnA';
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+/** 2026-09-30: ο chriskogias πληρώνει/εισπράττει σε USDC (το bot κάνει USDC→SOL→token στην ίδια
+ * συναλλαγή· το SOL του wallet δεν αλλάζει). Τα stablecoins μετράνε ως πληρωμή, όχι ως traded token. */
+export const STABLE_MINTS: ReadonlySet<string> = new Set([
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+]);
 const LAMPORTS = 1e9;
+const SOL_USD_SANE_MIN = 20;
+const SOL_USD_SANE_MAX = 2_000;
 
-export type WalletTradeSkip = 'no_meta' | 'failed' | 'wallet_not_in_tx' | 'no_token_change' | 'multi_token' | 'no_sol_change';
+export type WalletTradeSkip = 'no_meta' | 'failed' | 'wallet_not_in_tx' | 'no_token_change' | 'multi_token' | 'no_sol_change' | 'stable_pool';
 
 export type WalletTradeParse =
   | {
@@ -34,7 +42,9 @@ export type WalletTradeParse =
       program: 'pump' | 'pump-amm' | 'other';
       walletSol: number;
       poolSol: number | null;
-      solSource: 'pool' | 'wallet';
+      /** pool_stable = πλήρωσε σε stablecoin· SOL μόνο από την πλευρά του pool. */
+      solSource: 'pool' | 'wallet' | 'pool_stable';
+      paidStable: boolean;
     }
   | { ok: false; reason: WalletTradeSkip };
 
@@ -69,6 +79,7 @@ export function parseWalletTrade(tx: ParsedTransaction, wallet: string): WalletT
   const deltas = new Map<string, MintDelta>();
   const walletTokenAccounts = new Set<number>();
   let wsolDelta = 0n;
+  let stableDelta = 0n;
   for (const [side, list] of [
     ['pre', ownedBalances(meta.preTokenBalances, wallet)],
     ['post', ownedBalances(meta.postTokenBalances, wallet)],
@@ -78,6 +89,10 @@ export function parseWalletTrade(tx: ParsedTransaction, wallet: string): WalletT
       const amount = BigInt(b.uiTokenAmount.amount);
       if (b.mint === WSOL_MINT) {
         wsolDelta += side === 'post' ? amount : -amount;
+        continue;
+      }
+      if (STABLE_MINTS.has(b.mint)) {
+        stableDelta += side === 'post' ? amount : -amount;
         continue;
       }
       const d = deltas.get(b.mint) ?? { pre: 0n, post: 0n, decimals: b.uiTokenAmount.decimals, preIndex: null, postIndex: null };
@@ -104,7 +119,9 @@ export function parseWalletTrade(tx: ParsedTransaction, wallet: string): WalletT
   if (d.preIndex !== null && d.postIndex === null) native -= meta.preBalances[d.preIndex] ?? 0; // έκλεισε token account
   const walletLamports = native + Number(wsolDelta);
   const walletSol = (isBuy ? -walletLamports : walletLamports) / LAMPORTS;
-  if (!(walletSol > 0)) return { ok: false, reason: 'no_sol_change' };
+  // Πληρωμή σε stablecoin: αγορά = μειώθηκε, πώληση = αυξήθηκε. Τότε το SOL του wallet ~0.
+  const paidStable = isBuy ? stableDelta < 0n : stableDelta > 0n;
+  if (!(walletSol > 0) && !paidStable) return { ok: false, reason: 'no_sol_change' };
 
   // Αντισυμβαλλόμενος: η μεγαλύτερη αλλαγή lamports άλλου λογαριασμού στην αντίθετη κατεύθυνση.
   let best = 0;
@@ -116,7 +133,19 @@ export function parseWalletTrade(tx: ParsedTransaction, wallet: string): WalletT
   }
   const poolSol = best > 0 ? best / LAMPORTS : null;
   // Αγορά: το pool παίρνει λιγότερα από όσα έδωσε το wallet (fees)· πώληση: δίνει περισσότερα.
+  // Πλήρωσε σε stablecoin και η δική του κίνηση SOL είναι αμελητέα σε σχέση με τα USD (μόνο fee/
+  // rent) → το ποσό SOL το ξέρει μόνο το pool.
+  const stableUsd = Number(stableDelta < 0n ? -stableDelta : stableDelta) / 1e6;
+  const stableOnly = paidStable && (!(walletSol > 0) || stableUsd / walletSol > SOL_USD_SANE_MAX);
+  if (stableOnly) {
+    // Πόσα SOL πήγαν στο pool — αν η τιμή SOL που προκύπτει είναι παράλογη, το "poolSol" είναι
+    // άσχετη μικρο-κίνηση (rent, fee): pool σε USDC, χωρίς SOL → δεν αντιγράφεται.
+    if (poolSol === null) return { ok: false, reason: 'stable_pool' };
+    const impliedSolUsd = stableUsd / poolSol;
+    if (!(impliedSolUsd >= SOL_USD_SANE_MIN && impliedSolUsd <= SOL_USD_SANE_MAX)) return { ok: false, reason: 'stable_pool' };
+  }
   const plausible =
+    !stableOnly &&
     poolSol !== null && (isBuy ? poolSol >= walletSol * 0.5 && poolSol <= walletSol * 1.02 : poolSol >= walletSol * 0.98 && poolSol <= walletSol * 1.5);
 
   const event: PumpPortalTradeEvent = {
@@ -125,7 +154,7 @@ export function parseWalletTrade(tx: ParsedTransaction, wallet: string): WalletT
     traderPublicKey: wallet,
     txType: isBuy ? 'buy' : 'sell',
     tokenAmount: toUi(isBuy ? d.post - d.pre : d.pre - d.post, d.decimals),
-    solAmount: plausible ? poolSol! : walletSol,
+    solAmount: stableOnly || plausible ? poolSol! : walletSol,
     pool: program,
     newTokenBalance: toUi(d.post, d.decimals),
   };
@@ -136,7 +165,8 @@ export function parseWalletTrade(tx: ParsedTransaction, wallet: string): WalletT
     program,
     walletSol,
     poolSol,
-    solSource: plausible ? 'pool' : 'wallet',
+    solSource: stableOnly ? 'pool_stable' : plausible ? 'pool' : 'wallet',
+    paidStable,
   };
 }
 

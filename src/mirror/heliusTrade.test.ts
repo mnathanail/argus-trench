@@ -157,3 +157,59 @@ test('skip: αποτυχημένη, χωρίς wallet, χωρίς token αλλα
   assert.deepEqual(parseWalletTrade(two, W), { ok: false, reason: 'multi_token' });
   assert.deepEqual(parseWalletTrade({ ...base, meta: null }, W), { ok: false, reason: 'no_meta' });
 });
+
+// ── 2026-09-30: πραγματικό μοτίβο chriskogias — πληρώνει σε USDC, το bot κάνει USDC→SOL→token.
+const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+// keys: 0 wallet, 1 wallet USDC acc, 2 wallet token ATA, 3 SOL/USDC pool SOL vault, 4 bonding curve, 5 program
+const USDC_KEYS = [W, 'UsdcAcc', 'ATA', 'SolUsdcVault', 'Curve', PUMP_PROGRAM];
+
+test('USDC → SOL pool αγορά (GZt6ei9W): SOL από το pool, paidStable', () => {
+  const r = parseWalletTrade(
+    tx(
+      USDC_KEYS,
+      [1 * S, RENT, RENT, 5_000 * S, 50 * S, 1],
+      [1 * S - FEE, RENT, RENT, 5_000 * S - 3.3 * S, 50 * S + 3.289 * S, 1],
+      [tb(1, W, USDC, 92_378_000_000n, 6), tb(2, W, M, 0)],
+      [tb(1, W, USDC, 91_977_800_000n, 6), tb(2, W, M, 28_047_200_000_000n)],
+    ),
+    W,
+  );
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.equal(r.event.txType, 'buy');
+  assert.equal(r.event.mint, M);
+  assert.ok(Math.abs(r.event.solAmount - 3.289) < 1e-9);
+  assert.equal(r.solSource, 'pool_stable');
+  assert.equal(r.paidStable, true);
+  assert.equal(r.event.newTokenBalance, 28_047_200);
+});
+
+test('USDC πώληση μέσω SOL pool: SOL = αυτά που έδωσε το pool', () => {
+  const r = parseWalletTrade(
+    tx(
+      USDC_KEYS,
+      [1 * S, RENT, RENT, 5_000 * S, 50 * S, 1],
+      [1 * S - FEE + RENT, RENT, 0, 5_000 * S + 1.7 * S, 50 * S - 1.7166 * S, 1],
+      [tb(1, W, USDC, 91_906_200_000n, 6), tb(2, W, M, 37_187_900_000_000n)],
+      [tb(1, W, USDC, 92_108_200_000n, 6)],
+    ),
+    W,
+  );
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.equal(r.event.txType, 'sell');
+  assert.equal(r.event.newTokenBalance, 0);
+  assert.ok(Math.abs(r.event.solAmount - 1.7166) < 1e-9);
+});
+
+test('pool σε USDC (CiyydVkn): καμία κίνηση SOL πέρα από rent → stable_pool, δεν αντιγράφεται', () => {
+  const r = parseWalletTrade(
+    tx(
+      [W, 'UsdcAcc', 'ATA', 'NewPda', PUMP_PROGRAM],
+      [1 * S, RENT, 0, 0, 1],
+      [1 * S - FEE - RENT - 1_500_000, RENT, RENT, 1_500_000, 1],
+      [tb(1, W, USDC, 92_108_200_000n, 6)],
+      [tb(1, W, USDC, 91_908_000_000n, 6), tb(2, W, M, 38_138_400_000_000n)],
+    ),
+    W,
+  );
+  assert.deepEqual(r, { ok: false, reason: 'stable_pool' });
+});

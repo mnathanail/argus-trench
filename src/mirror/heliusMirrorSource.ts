@@ -50,6 +50,7 @@ export async function processHeliusSignature(wallet: string, signature: string, 
     lag_sec: lagSec,
     program: parsed.program,
     sol_source: parsed.solSource,
+    paid_stable: parsed.paidStable,
     wallet_sol: parsed.walletSol,
     pool_sol: parsed.poolSol,
   });
