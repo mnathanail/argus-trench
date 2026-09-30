@@ -40,43 +40,58 @@ for (;;) {
 const ok = sigs.filter((s) => s.err === null || s.err === undefined).slice(0, maxTx);
 console.log(`\n${wallet.slice(0, 8)}: ${sigs.length} συναλλαγές στις τελευταίες ${hours}h (${sigs.length - ok.length} αποτυχημένες) — διαβάζω ${ok.length}…`);
 
-// 2. Ανάγνωση (5 παράλληλα)
+// 2. Ανάγνωση — μία-μία, ~8/δευτ. (το δωρεάν πλάνο του Helius δίνει 429 σε ριπές), με
+// επανάληψη στο 429 (0.5 → 1 → 2 → 4 → 8″). Έτσι δεν "κλέβουμε" όριο από τον live listener.
 const trades: WalletTrade[] = [];
 const skips = new Map<string, number>();
 const bump = (k: string) => skips.set(k, (skips.get(k) ?? 0) + 1);
-for (let i = 0; i < ok.length; i += 5) {
-  const batch = ok.slice(i, i + 5);
-  const txs = await Promise.all(
-    batch.map((s) =>
-      getParsedTransaction(url, s.signature).catch((error) => {
-        bump('rpc_error');
-        if ((skips.get('rpc_error') ?? 0) <= 3) console.log(`  σφάλμα ${s.signature.slice(0, 8)}: ${error instanceof Error ? error.message.slice(0, 120) : String(error)}`);
-        return null;
-      }),
-    ),
-  );
-  for (const tx of txs) {
-    if (tx === null) continue;
-    const p = parseWalletTrade(tx, wallet);
-    if (!p.ok) {
-      bump(p.reason);
-      continue;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+async function fetchWithRetry(sig: string) {
+  for (const wait of [0, 500, 1_000, 2_000, 4_000, 8_000]) {
+    if (wait > 0) await sleep(wait);
+    try {
+      return await getParsedTransaction(url, sig);
+    } catch (error) {
+      if (error instanceof Error && /HTTP 429/.test(error.message)) continue;
+      throw error;
     }
-    if (p.program === 'other') {
-      bump('άλλο launchpad/DEX');
-      continue;
-    }
-    trades.push({
-      mint: p.event.mint,
-      txType: p.event.txType,
-      sol: p.event.solAmount,
-      tokens: p.event.tokenAmount,
-      balanceAfter: p.event.newTokenBalance ?? 0,
-      blockTime: p.blockTime ?? 0,
-      signature: p.event.signature,
-    });
   }
-  if ((i / 5) % 40 === 0 && i > 0) console.log(`  … ${i}/${ok.length}`);
+  throw new Error('HTTP 429 επίμονα');
+}
+for (let i = 0; i < ok.length; i += 1) {
+  const s = ok[i]!;
+  let tx;
+  try {
+    tx = await fetchWithRetry(s.signature);
+  } catch (error) {
+    bump('rpc_error');
+    if ((skips.get('rpc_error') ?? 0) <= 3) console.log(`  σφάλμα ${s.signature.slice(0, 8)}: ${error instanceof Error ? error.message.slice(0, 120) : String(error)}`);
+    continue;
+  }
+  await sleep(125);
+  if (tx === null) {
+    bump('δεν βρέθηκε');
+    continue;
+  }
+  const p = parseWalletTrade(tx, wallet);
+  if (!p.ok) {
+    bump(p.reason);
+    continue;
+  }
+  if (p.program === 'other') {
+    bump('άλλο launchpad/DEX');
+    continue;
+  }
+  trades.push({
+    mint: p.event.mint,
+    txType: p.event.txType,
+    sol: p.event.solAmount,
+    tokens: p.event.tokenAmount,
+    balanceAfter: p.event.newTokenBalance ?? 0,
+    blockTime: p.blockTime ?? 0,
+    signature: p.event.signature,
+  });
+  if (i > 0 && i % 100 === 0) console.log(`  … ${i}/${ok.length}`);
 }
 console.log(`  Pump.fun trades με SOL: ${trades.length} · όχι trade: ${JSON.stringify(Object.fromEntries(skips))}`);
 
