@@ -43,7 +43,8 @@
     "db:psql": "docker compose exec db psql -U argus -d argus_trench_dev",
     "top-traders-check": "tsx scripts/top-traders-check.ts",
     "wallet-buys-check": "tsx scripts/wallet-buys-check.ts",
-    "mirror-report": "tsx scripts/mirror-report.ts"
+    "mirror-report": "tsx scripts/mirror-report.ts",
+    "helius-mirror-probe": "tsx scripts/helius-mirror-probe.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.0",

@@ -90,11 +90,13 @@ function serializeByToken<T>(mint: string, fn: () => Promise<T>): Promise<T> {
 }
 
 /** Από πού ήρθε το event — καταγράφεται σε κάθε mirror_events row (detail_json.source). */
-export type MirrorEventSource = 'pumpportal' | 'gmgn';
+export type MirrorEventSource = 'pumpportal' | 'gmgn' | 'helius';
 
 export async function handleMirrorEvent(
   event: PumpPortalTradeEvent,
   source: MirrorEventSource = 'pumpportal',
+  /** Επιπλέον πεδία για το detail_json (π.χ. lag_sec — πόσο αργά είδαμε το trade). */
+  extraDetail: Record<string, unknown> = {},
 ): Promise<MirrorOutcome | null> {
   const role = await mirrorRole(event.traderPublicKey);
   if (role === null) return null;
@@ -105,7 +107,7 @@ export async function handleMirrorEvent(
     withTransaction(async (tx) => {
       if (await mirrorEventExists(event.signature, event.traderPublicKey, tx)) return { kind: 'duplicate' as const };
       const record = (e: MirrorEventInsert): Promise<boolean> =>
-        insertMirrorEvent({ ...e, detail: { ...(e.detail ?? {}), source } }, tx);
+        insertMirrorEvent({ ...e, detail: { ...(e.detail ?? {}), ...extraDetail, source } }, tx);
 
       const position = await getOpenMirrorPositionForUpdate(event.mint, tx);
       const decision = decideMirror(event, position, {

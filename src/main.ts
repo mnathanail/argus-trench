@@ -42,6 +42,7 @@ import { handleRealtimeTradeEvent } from './realtime/realtimeExitHandler.js';
 import { handleRealtimeEntryEvent } from './realtime/realtimeEntryHandler.js';
 import { handleMirrorEvent, setMirrorSubscriber, type MirrorOutcome } from './mirror/mirrorHandler.js';
 import { MIRROR_POLL_INTERVAL_MS, runMirrorPollCycle } from './mirror/mirrorPoller.js';
+import { startHeliusMirrorSource } from './mirror/heliusMirrorSource.js';
 import { runScheduler, SharedCooldown, type LoopDefinition } from './scheduler.js';
 import { createBotFromEnv, runBot } from './telegram/bot.js';
 import { formatPercent, short } from './telegram/commands.js';
@@ -224,9 +225,27 @@ realtimeConnection = pumpportalApiKey
     })
   : undefined;
 
+// 2026-09-30 — MIRROR γρήγορη πηγή (Helius logsSubscribe). Μόνο με MIRROR_HELIUS=on.
+const heliusApiKey = config.heliusApiKey();
+const heliusMirror =
+  heliusApiKey !== undefined && config.mirrorHeliusEnabled()
+    ? await startHeliusMirrorSource(heliusApiKey, notifyMirrorOutcome).catch((error) => {
+        console.error(`[mirror-helius] δεν ξεκίνησε: ${error instanceof Error ? error.message : String(error)}`);
+        return undefined;
+      })
+    : undefined;
+console.log(
+  `[main] mirror πηγές: pumpportal=${realtimeConnection ? 'ναι' : 'όχι'} gmgn=ναι ` +
+    `helius=${heliusMirror ? 'ναι' : heliusApiKey === undefined ? 'όχι (λείπει HELIUS_API_KEY)' : 'όχι (MIRROR_HELIUS≠on)'}`,
+);
+// Νέο /mirror wallet → συνδρομή αμέσως σε όσες realtime πηγές υπάρχουν.
+const connectionForMirror = realtimeConnection;
+setMirrorSubscriber((address) => {
+  connectionForMirror?.subscribeWallet(address);
+  heliusMirror?.addWallet(address);
+});
+
 if (realtimeConnection) {
-  const connectionForMirror = realtimeConnection;
-  setMirrorSubscriber((address) => connectionForMirror.subscribeWallet(address));
   realtimeConnection.connect();
   const openTargets = await listOpenTradesWithWallet();
   subscribeOpenTrades(realtimeConnection, openTargets);

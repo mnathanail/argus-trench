@@ -49,4 +49,10 @@ export const config = {
    * realtime σύνδεση).
    */
   pumpportalApiKey: () => optional('PUMPPORTAL_API_KEY'),
+
+  /** 2026-09-30 — MIRROR: γρήγορη πηγή (Solana logsSubscribe μέσω Helius). Optional. */
+  heliusApiKey: () => optional('HELIUS_API_KEY'),
+  /** Ο Helius listener του mirror τρέχει ΜΟΝΟ με MIRROR_HELIUS=on (μέχρι να επιβεβαιωθεί
+   * η ανάγνωση των συναλλαγών με το helius-mirror-probe σε πραγματικά δεδομένα). */
+  mirrorHeliusEnabled: () => process.env.MIRROR_HELIUS === 'on',
 } as const;

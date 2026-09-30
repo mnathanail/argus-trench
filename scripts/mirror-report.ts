@@ -62,11 +62,12 @@ try {
     console.log(`    ${String(a.n).padStart(5)}  ${a.action}`);
   }
 
-  // Κάθε event γράφεται μία φορά, από όποια πηγή το έφερε πρώτη. Το PumpPortal είναι realtime και
-  // το GMGN poll κάθε 15″ — άρα ένα event "gmgn" σημαίνει σχεδόν σίγουρα ότι το PumpPortal το έχασε.
-  const { rows: sources } = await pool.query<{ name: string | null; address: string; source: string; n: string }>(
+  // Κάθε event γράφεται μία φορά, από όποια πηγή το έφερε πρώτη (pumpportal / helius realtime,
+  // gmgn poll κάθε 15″). lag_sec = δευτερόλεπτα από το block του trade ως την επεξεργασία μας.
+  const { rows: sources } = await pool.query<{ name: string | null; address: string; source: string; n: string; lag: string | null }>(
     `SELECT w.name, e.wallet_address AS address,
-            COALESCE(e.detail_json->>'source', 'pumpportal') AS source, count(*) AS n
+            COALESCE(e.detail_json->>'source', 'pumpportal') AS source, count(*) AS n,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY (e.detail_json->>'lag_sec')::numeric) AS lag
        FROM mirror_events e
        LEFT JOIN watchlist_wallets w ON w.address = e.wallet_address
       WHERE e.received_at >= ${since}
@@ -75,8 +76,11 @@ try {
     [days],
   );
   if (sources.length > 0) {
-    console.log('\n=== Από πού ήρθαν (gmgn = το PumpPortal δεν το έστειλε) ===');
-    for (const s of sources) console.log(`  ${(s.name ?? s.address.slice(0, 8)).padEnd(14)} ${s.source.padEnd(11)} ${s.n}`);
+    console.log('\n=== Από πού ήρθαν (πρώτη πηγή που το είδε) — διάμεση καθυστέρηση από το trade του ===');
+    for (const s of sources) {
+      const lag = s.lag === null ? '' : `  καθυστέρηση ~${Number(s.lag).toFixed(1)}s`;
+      console.log(`  ${(s.name ?? s.address.slice(0, 8)).padEnd(14)} ${s.source.padEnd(11)} ${String(s.n).padStart(4)}${lag}`);
+    }
   }
 
   const { rows: open } = await pool.query<{

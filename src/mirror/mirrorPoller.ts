@@ -35,7 +35,7 @@ export interface MirrorPollDeps {
   listWallets: () => Promise<string[]>;
   fetchActivity: (wallet: string) => Promise<WalletActivity[]>;
   launchpadOf: (mint: string) => Promise<string | null>;
-  handle: (event: PumpPortalTradeEvent) => Promise<MirrorOutcome | null>;
+  handle: (event: PumpPortalTradeEvent, extraDetail: Record<string, unknown>) => Promise<MirrorOutcome | null>;
   nowSec: () => number;
 }
 
@@ -58,7 +58,7 @@ const defaultDeps: MirrorPollDeps = {
   fetchActivity: async (wallet) =>
     (await fetchWalletActivity({ wallet, types: ['buy', 'sell'], limit: 30, priority: MIRROR_POLL_PRIORITY })).activities,
   launchpadOf: launchpadFromGmgn,
-  handle: (event) => handleMirrorEvent(event, 'gmgn'),
+  handle: (event, extraDetail) => handleMirrorEvent(event, 'gmgn', extraDetail),
   nowSec: () => Math.floor(Date.now() / 1000),
 };
 
@@ -105,7 +105,8 @@ export async function runMirrorPollCycle(deps: MirrorPollDeps = defaultDeps): Pr
         const launchpad = !tradable ? null : (a.launchpadPlatform ?? (await deps.launchpadOf(a.tokenAddress)));
         const event = activityToEvent(a, launchpad);
         if (event !== null) {
-          const outcome = await deps.handle(event);
+          // lag_sec: πόσα δευτερόλεπτα μετά το trade του το είδαμε (μετράει για το live).
+          const outcome = await deps.handle(event, { lag_sec: deps.nowSec() - a.timestamp });
           if (outcome !== null) outcomes.push(outcome);
         }
         maxTs = Math.max(maxTs, a.timestamp);
