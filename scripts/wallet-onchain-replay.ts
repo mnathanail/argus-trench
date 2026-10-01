@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { closePool, getPool } from '../src/db/pool.js';
 import { PAPER_ASSUMED_FEES_PCT, PAPER_ASSUMED_SLIPPAGE_PCT } from '../src/decision/paperTradingConfig.js';
 import { copyResult, splitEpisodes, walletResult, type Episode, type WalletTrade } from '../src/mirror/copyReplay.js';
 import { parseWalletTrade } from '../src/mirror/heliusTrade.js';
@@ -114,35 +115,79 @@ const add = (a: Agg, ep: Episode) => {
   return { w, al, fi };
 };
 
+// 4. Διασταύρωση με το δικό μας mirror (ίδια βάση): αντιγράφηκε; απορρίφθηκε και γιατί; δεν το είδαμε;
+const pool = getPool();
+const mints = [...new Set(episodes.map((e) => e.mint))];
+const { rows: evRows } = await pool.query<{ token_address: string; action: string; received_at: Date }>(
+  `SELECT token_address, action, received_at FROM mirror_events WHERE wallet_address = $1 AND token_address = ANY($2::text[])`,
+  [wallet, mints],
+);
+const { rows: startRows } = await pool.query<{ first: Date | null }>(
+  `SELECT min(received_at) AS first FROM mirror_events WHERE wallet_address = $1`,
+  [wallet],
+);
+await closePool();
+const mirrorStart = startRows[0]?.first ? startRows[0].first.getTime() / 1000 : null;
+function mirrorLabel(ep: Episode): string {
+  const from = ep.startTime - 60;
+  const to = ep.closed ? ep.endTime + 600 : Date.now() / 1000;
+  const evs = evRows.filter((r) => r.token_address === ep.mint && r.received_at.getTime() / 1000 >= from && r.received_at.getTime() / 1000 <= to);
+  if (evs.some((r) => r.action === 'buy_open' || r.action === 'buy_add')) {
+    const buys = evs.filter((r) => r.action.startsWith('buy_')).length;
+    return `αντιγράφηκε (${buys} αγ.)`;
+  }
+  const ignored = evs.find((r) => r.action.startsWith('ignored_'));
+  if (ignored) return `απορρίφθηκε: ${ignored.action.replace('ignored_', '')}`;
+  if (mirrorStart === null || ep.startTime < mirrorStart) return 'πριν το mirror';
+  return 'ΧΑΘΗΚΕ (κανένα event)';
+}
+const labelKey = (l: string) => (l.startsWith('αντιγράφηκε') ? 'αντιγράφηκε' : l);
+
 const closed = episodes.filter((e) => e.closed);
 const open = episodes.filter((e) => !e.closed);
-console.log(`\n=== ${closed.length} κλειστές θέσεις του (ελλιπείς, αγορασμένες πριν το παράθυρο: ${incomplete}) ===`);
-console.log('  ώρα         token     αγορές  ΑΥΤΟΣ (SOL, %)     | ΑΝΤΙΓΡΑΦΗ ΟΛΩΝ (0.1/αγορά) | ΜΟΝΟ 1η (0.1)');
+const header = '  ώρα         token     αγορές  ΑΥΤΟΣ (SOL, %)       | ΟΛΕΣ (0.1/αγορά) | ΜΟΝΟ 1η (0.1)   | ΤΟ MIRROR ΜΑΣ';
 const total = agg();
 const byBuys = new Map<string, Agg>();
-for (const ep of closed) {
-  const { w, al, fi } = add(total, ep);
-  const bucket = w.buys === 1 ? '1 αγορά' : w.buys <= 3 ? '2-3 αγορές' : '4+ αγορές';
-  add(byBuys.get(bucket) ?? (byBuys.set(bucket, agg()), byBuys.get(bucket)!), ep);
+const byLabel = new Map<string, Agg>();
+const printEp = (ep: Episode, a: Agg) => {
+  const { w, al, fi } = add(a, ep);
+  const label = mirrorLabel(ep);
+  const k = labelKey(label);
+  add(byLabel.get(k) ?? (byLabel.set(k, agg()), byLabel.get(k)!), ep);
   const when = new Date(ep.startTime * 1000).toISOString().slice(5, 16).replace('T', ' ');
   const mins = ((ep.endTime - ep.startTime) / 60).toFixed(0);
   console.log(
     `  ${when} ${ep.mint.slice(0, 8)}  ${String(w.buys).padStart(3)}  ${f(w.pnlSol).padStart(8)} ${pc(w.pnlPct).padStart(6)} (${mins}′)` +
-      `  | ${f(al.pnlSol).padStart(7)} ${pc(al.pnlPct).padStart(6)}  | ${f(fi.pnlSol).padStart(7)} ${pc(fi.pnlPct).padStart(6)}`,
+      `  | ${f(al.pnlSol).padStart(7)} ${pc(al.pnlPct).padStart(6)} | ${f(fi.pnlSol).padStart(7)} ${pc(fi.pnlPct).padStart(6)} | ${label}`,
   );
+  return w;
+};
+
+console.log(`\n=== ${closed.length} κλειστές θέσεις του (ελλιπείς, αγορασμένες πριν το παράθυρο: ${incomplete}) ===`);
+console.log(header);
+for (const ep of closed) {
+  const w = printEp(ep, total);
+  const bucket = w.buys === 1 ? '1 αγορά' : w.buys <= 3 ? '2-3 αγορές' : '4+ αγορές';
+  add(byBuys.get(bucket) ?? (byBuys.set(bucket, agg()), byBuys.get(bucket)!), ep);
 }
 
 const line = (label: string, a: Agg) =>
-  `  ${label.padEnd(12)} θέσεις ${String(a.n).padStart(3)} | αυτός ${f(a.wallet)} SOL (${pc(a.walletIn > 0 ? a.wallet / a.walletIn : null)}, wins ${a.wWins})` +
-  ` | όλες ${f(a.all)} SOL (μέσα ${a.allIn.toFixed(1)}, wins ${a.aWins}) | μόνο 1η ${f(a.first)} SOL (μέσα ${a.firstIn.toFixed(1)}, wins ${a.fWins})`;
+  `  ${label.padEnd(22)} θέσεις ${String(a.n).padStart(3)} | αυτός ${f(a.wallet)} SOL (${pc(a.walletIn > 0 ? a.wallet / a.walletIn : null)}, wins ${a.wWins})` +
+  ` | όλες ${f(a.all)} SOL (μέσα ${a.allIn.toFixed(1)}) | μόνο 1η ${f(a.first)} SOL (μέσα ${a.firstIn.toFixed(1)})`;
 console.log('\n--- Σύνοψη κλειστών ---');
 console.log(line('ΣΥΝΟΛΟ', total));
 for (const k of ['1 αγορά', '2-3 αγορές', '4+ αγορές']) if (byBuys.has(k)) console.log(line(k, byBuys.get(k)!));
 
 if (open.length > 0) {
+  console.log(`\n=== ${open.length} ακόμα ανοιχτές (αποτίμηση στην τελευταία τιμή του) ===`);
+  console.log(header);
   const o = agg();
-  for (const ep of open) add(o, ep);
-  console.log(`\n  ακόμα ανοιχτές (αποτίμηση στην τελευταία τιμή του): ${line('ανοιχτές', o).trim()}`);
+  for (const ep of open) printEp(ep, o);
+  console.log(line('ΑΝΟΙΧΤΕΣ', o));
 }
+
+console.log('\n--- Το mirror μας σε αυτές τις θέσεις (κλειστές + ανοιχτές) ---');
+console.log(`  mirror ενεργό από: ${mirrorStart ? new Date(mirrorStart * 1000).toISOString().slice(5, 16).replace('T', ' ') : '—'} UTC`);
+for (const [k, a] of [...byLabel.entries()].sort((x, y) => y[1].wallet - x[1].wallet)) console.log(line(k, a));
 console.log('\nΣημ.: «αυτός» = SOL από/προς το pool, χωρίς τα δικά του fees. Αντιγραφή: +3% slippage στην αγορά, −2% fees.');
 process.exit(0);
