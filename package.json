@@ -47,6 +47,7 @@
     "helius-mirror-probe": "tsx scripts/helius-mirror-probe.ts",
     "mirror-trailing-backtest": "tsx scripts/mirror-trailing-backtest.ts",
     "wallet-onchain-replay": "tsx scripts/wallet-onchain-replay.ts",
+    "exit-path-analysis": "tsx scripts/exit-path-analysis.ts",
     "watchlist-helius-estimate": "tsx scripts/watchlist-helius-estimate.ts"
   },
   "dependencies": {

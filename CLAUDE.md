@@ -986,3 +986,9 @@ second, independent safeguard on top of `GMGN_ALLOW_AUTOMATED_TRADES`: even if
 something calls `swap`, there's no wallet to trade with. We keep it this way until Phase 4.
 Nothing else needs a manual click inside the GMGN UI — wallet curation lives
 entirely in our own Postgres.
+
+## Exit-path analysis (2026-10-04, explicit user request) — read-only
+
+- `railway run npm run exit-path-analysis [-- --since <ISO>] [--no-cache]` (`scripts/exit-path-analysis.ts`, pure logic + tests in `src/analysis/exitPath.ts`). Realtime paper trades with ≥25h of life; 1m GMGN candles for the 24h after entry, anchored to the SOL entry price (same as the exit-resolver). Candles cached in `/tmp/argus-exit-path-cache.json` (a rerun costs 0 GMGN calls).
+- Sections: A) simulation of today's rules vs the real paper result (sanity), B) price path — how fast winners reach +50%, how deep they dip before it (= which stop would cut them), what happens to trades flat at 15/30/60/120′, C) exit grid stop {20,25,30,40,50%} × time limit {15,30,60,120′, 24h} × mode {trail, half_tp, ladder} with REAL fees 4.5%/round trip, chosen on days 1–2 (train) and checked on days 3+ (test), D) entry filters (gate, mcap, wallet buy size, hour, holder risk, wallet trade_count / avg_holding_sec / win_rate / source), E) per trigger wallet with consistently negative (train AND test) → suggested `/unwatch` lines. Changes nothing.
+- Conservative candle rule: low before high in the same minute (stop counted first); stop fills at the threshold or the open if it gapped below.
