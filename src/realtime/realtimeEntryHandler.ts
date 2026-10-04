@@ -1,4 +1,5 @@
 import { findPassedTokens, recordTrigger, linkTrade } from '../db/repositories/decisionLog.js';
+import { isRealtimeSignalWallet } from './walletSubscriptionSync.js';
 import {
   openTrade,
   countOpenLiveOrPaperTrades,
@@ -210,6 +211,10 @@ export async function handleRealtimeEntryEvent(
   // (src/mirror/) — καμία κανονική θέση argus από τα σήματά τους, ούτε καταγραφή skip.
   if (wallet?.copyMode === 'mirror') return null;
   // 2026-10-04 — μικρή «δοκιμαστική» αγορά του wallet = όχι σήμα (βλ. MIN_WALLET_BUY_SOL).
+  if (wallet !== null && wallet.active && !isRealtimeSignalWallet(wallet)) {
+    recordEntrySkip(event, 'wallet_bot', { avg_holding_sec: wallet.avgHoldingSec ?? null });
+    return null;
+  }
   if (wallet !== null && wallet.active && isWalletBuyTooSmall(event)) {
     recordEntrySkip(event, 'wallet_buy_too_small', { min_sol: MIN_WALLET_BUY_SOL });
     return null;

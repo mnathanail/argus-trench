@@ -1003,3 +1003,9 @@ entirely in our own Postgres.
 - `PAPER_ASSUMED_FEES_PCT` 0.02 → **0.045** (pump.fun 1.25% × 2 + GMGN 1% × 2) — paper and mirror pnl now use real costs.
 - `LIVE_ON_DEMAND_GATE` → **true**. Live itself stays off until the user sets `GMGN_ALLOW_AUTOMATED_TRADES=1` after one paper day with the new rules.
 - Exit mode stays trailing (half-TP and ladder measured clearly worse). Kill-switch unchanged (10 consecutive losses), daily loss cap 0.5 SOL.
+
+## Realtime cost / GMGN load fix (2026-10-04, explicit user decision, after 4h of rejected PumpPortal subscriptions)
+
+- Logs 14:00–18:00 UTC: PumpPortal rejected every subscription (API-key wallet < 0.02 SOL — 0.01 SOL per 10k streamed trades with ~850 subscribed wallets incl. bots) → no entries and no fast exits; GMGN IP ban ~35×/hour, 72 of ~170 from the GMGN mirror poll that only produced `duplicate` (Helius is first).
+- `src/realtime/walletSubscriptionSync.ts`: wallets with `avg_holding_sec < 60` (`BOT_MAX_AVG_HOLDING_SEC`) are bots → not subscribed and no signal (entry skip `wallet_bot`); unknown hold time stays; mirror wallets always stay. New loop `realtime-wallet-sync` (every 10′, first after 5′): subscriptions = active non-bot wallets + mirror + wallets with an open trade; subscribes missing, unsubscribes extras (before, scoring/`/unwatch` deactivations stayed subscribed until restart). Wallet discovery also skips bots. `WatchlistWallet.avgHoldingSec` now loaded.
+- `mirror-poll` loop no longer calls GMGN while the Helius mirror source runs (shadow expiry still runs there).

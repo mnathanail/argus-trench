@@ -282,6 +282,11 @@ export class PumpPortalConnection {
     this.socket = null;
   }
 
+  /** Τα wallets που είναι αυτή τη στιγμή συνδρομημένα (για το περιοδικό sync). */
+  walletSubscriptions(): string[] {
+    return [...this.subscribedWallets];
+  }
+
   subscribeWallet(address: string): void {
     if (this.subscribedWallets.has(address)) return;
     this.subscribedWallets.add(address);

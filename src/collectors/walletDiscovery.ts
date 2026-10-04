@@ -1,4 +1,5 @@
 import { insertWalletIfNew, listKnownAddresses } from '../db/repositories/watchlistWallets.js';
+import { isRealtimeSignalWallet } from '../realtime/walletSubscriptionSync.js';
 import { rethrowIfRateLimited } from '../gmgn/errors.js';
 import { fetchTokenTraders, traderRejectReason, type TokenTrader, type TraderRejectReason } from '../gmgn/traders.js';
 import { type TrenchCandidate } from '../gmgn/trenches.js';
@@ -193,7 +194,10 @@ export async function runWalletDiscoveryCycle(
     });
     if (inserted) {
       discovered += 1;
-      options.realtimeConnection?.subscribeWallet(candidate.address);
+      // 2026-10-04: bots (μέσος χρόνος κράτησης < 60″) όχι στο realtime feed — walletSubscriptionSync.ts.
+      if (isRealtimeSignalWallet({ copyMode: 'signal', avgHoldingSec: stats.avgHoldingPeriodSec })) {
+        options.realtimeConnection?.subscribeWallet(candidate.address);
+      }
     } else alreadyKnown += 1;
   }
 

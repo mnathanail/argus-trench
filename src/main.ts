@@ -38,6 +38,7 @@ import { LIVE_KILL_SWITCH_CONSEC_LOSSES } from './decision/paperTradingConfig.js
 import { msUntilNextAthensTime } from './util/athensTime.js';
 import { PumpPortalConnection } from './realtime/pumpportalConnection.js';
 import { subscribeAllActiveWallets, subscribeOpenTrades, unsubscribeIfNoLongerNeeded } from './realtime/subscriptionManager.js';
+import { desiredWalletSubscriptions, isRealtimeSignalWallet, planWalletSubscriptions } from './realtime/walletSubscriptionSync.js';
 import { handleRealtimeTradeEvent } from './realtime/realtimeExitHandler.js';
 import { handleRealtimeEntryEvent } from './realtime/realtimeEntryHandler.js';
 import { handleMirrorEvent, setMirrorSubscriber, type MirrorOutcome } from './mirror/mirrorHandler.js';
@@ -254,7 +255,7 @@ const heliusMirror =
       })
     : undefined;
 console.log(
-  `[main] mirror πηγές: pumpportal=${realtimeConnection ? 'ναι' : 'όχι'} gmgn=ναι ` +
+  `[main] mirror πηγές: pumpportal=${realtimeConnection ? 'ναι' : 'όχι'} gmgn=${heliusMirror ? 'όχι (υπάρχει helius)' : 'ναι'} ` +
     `helius=${heliusMirror ? 'ναι' : heliusApiKey === undefined ? 'όχι (λείπει HELIUS_API_KEY)' : 'όχι (MIRROR_HELIUS≠on)'}`,
 );
 // Νέο /mirror wallet → συνδρομή αμέσως σε όσες realtime πηγές υπάρχουν.
@@ -272,13 +273,15 @@ if (realtimeConnection) {
   const openTargets = await listOpenTradesWithWallet();
   subscribeOpenTrades(realtimeConnection, openTargets);
   const activeWallets = await listActiveWallets();
+  // 2026-10-04: χωρίς τα bots (μέσος χρόνος κράτησης < 60″) — βλ. walletSubscriptionSync.ts.
+  const signalWallets = activeWallets.filter((w) => isRealtimeSignalWallet(w));
   subscribeAllActiveWallets(
     realtimeConnection,
-    activeWallets.map((w) => w.address),
+    signalWallets.map((w) => w.address),
   );
   console.log(
     `[main] realtime: συνδρομή σε ${openTargets.length} ήδη ανοιχτά trades και ` +
-      `${activeWallets.length} ενεργά wallets μετά το startup`,
+      `${signalWallets.length} ενεργά wallets μετά το startup (${activeWallets.length - signalWallets.length} bots εκτός)`,
   );
 } else {
   console.log('[main] realtime: PUMPPORTAL_API_KEY λείπει — μόνο polling, καμία websocket σύνδεση');
@@ -399,6 +402,23 @@ const loops: LoopDefinition[] = [
       for (const alert of result.alerts) await notify(alert);
     },
   },
+  // 2026-10-04 — συνδρομές wallets = βάση (ενεργά μη-bot + mirror + όσα έχουν ανοιχτό trade).
+  {
+    name: 'realtime-wallet-sync',
+    intervalMs: 10 * 60_000,
+    initialDelayMs: 5 * 60_000,
+    run: async () => {
+      if (!realtimeConnection) return;
+      const [active, open] = await Promise.all([listActiveWallets(), listOpenTradesWithWallet()]);
+      const desired = desiredWalletSubscriptions(active, open.map((t) => t.triggerWalletAddress));
+      const plan = planWalletSubscriptions(realtimeConnection.walletSubscriptions(), desired);
+      for (const a of plan.add) realtimeConnection.subscribeWallet(a);
+      for (const a of plan.remove) realtimeConnection.unsubscribeWallet(a);
+      if (plan.add.length > 0 || plan.remove.length > 0) {
+        console.log(`[realtime-wallet-sync] +${plan.add.length} −${plan.remove.length} → ${desired.length} wallets`);
+      }
+    },
+  },
   // 2026-09-30 — MIRROR: δεύτερη πηγή από το GMGN για τα mirror wallets (βλ. mirrorPoller.ts).
   {
     name: 'mirror-poll',
@@ -406,6 +426,9 @@ const loops: LoopDefinition[] = [
     initialDelayMs: 20_000,
     run: async () => {
       await expireMirrorShadows().catch((error) => console.error(`[mirror-shadow] expire: ${String(error)}`));
+      // 2026-10-04: με ενεργό Helius το GMGN poll έφερνε μόνο duplicates και ήταν η κύρια
+      // αιτία των GMGN IP bans (72/170 σε 4 ώρες) — δεν τρέχει πια όσο δουλεύει το Helius.
+      if (heliusMirror !== undefined) return;
       const result = await runMirrorPollCycle();
       if (result.newActivities === 0 && result.failures === 0) return;
       const counts = new Map<string, number>();

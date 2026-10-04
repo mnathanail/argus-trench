@@ -28,6 +28,8 @@ export interface WatchlistWallet {
   name: string | null;
   /** migration 0023 — 'mirror' = ακριβής αντιγραφή θέσεων, εκτός κανονικού argus. */
   copyMode?: CopyMode;
+  /** migration 0021 — GMGN pnl_stat.avg_holding_period (δευτερόλεπτα). null = άγνωστο. */
+  avgHoldingSec?: number | null;
 }
 
 interface WalletRow {
@@ -47,11 +49,12 @@ interface WalletRow {
   deactivated_reason: string | null;
   name: string | null;
   copy_mode?: CopyMode;
+  avg_holding_sec?: string | null;
 }
 
 const COLUMNS = `id, address, chain, source, win_rate, pnl_multiplier, trade_count,
                  active, added_at, last_reviewed_at, last_seen_tx_hash,
-                 last_seen_activity_at, last_activity_checked_at, deactivated_reason, name, copy_mode`;
+                 last_seen_activity_at, last_activity_checked_at, deactivated_reason, name, copy_mode, avg_holding_sec`;
 
 function mapWallet(row: WalletRow): WatchlistWallet {
   return {
@@ -72,6 +75,7 @@ function mapWallet(row: WalletRow): WatchlistWallet {
     deactivatedReason: row.deactivated_reason,
     name: row.name,
     copyMode: row.copy_mode ?? 'signal',
+    avgHoldingSec: toNumOrNull(row.avg_holding_sec ?? null),
   };
 }
 
