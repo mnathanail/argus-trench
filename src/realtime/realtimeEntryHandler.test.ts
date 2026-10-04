@@ -237,3 +237,13 @@ test('recordEntrySkip never throws when the insert fails', async () => {
   });
   await new Promise((r) => setImmediate(r));
 });
+
+// --- 2026-10-04: MIN_WALLET_BUY_SOL ---
+import { isWalletBuyTooSmall } from './realtimeEntryHandler.js';
+
+test('isWalletBuyTooSmall: < 0.3 SOL κόβεται, 0.3+ περνάει, άγνωστο ποσό δεν κόβεται', () => {
+  assert.equal(isWalletBuyTooSmall({ solAmount: 0.29 }), true);
+  assert.equal(isWalletBuyTooSmall({ solAmount: 0.3 }), false);
+  assert.equal(isWalletBuyTooSmall({ solAmount: 2 }), false);
+  assert.equal(isWalletBuyTooSmall({ solAmount: Number.NaN }), false);
+});

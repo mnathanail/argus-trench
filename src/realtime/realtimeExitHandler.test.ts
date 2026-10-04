@@ -10,7 +10,7 @@ import {
   type TickDecisionInput,
 } from './realtimeExitHandler.js';
 import type { PumpPortalTradeEvent } from './pumpportalEvents.js';
-import { EXIT_ON_COPIED_WALLET_SELL } from '../decision/paperTradingConfig.js';
+import { EXIT_ON_COPIED_WALLET_SELL, NO_PROGRESS_EXIT_MS } from '../decision/paperTradingConfig.js';
 
 const ENTRY_AT = new Date('2026-09-09T00:00:00Z');
 const WALLET = 'WalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1';
@@ -305,4 +305,36 @@ test('ΑΛΛΑΓΗ 2026-09-27: isUnpriceableNonSellEvent: false για το πρ
     pool: undefined,
   });
   assert.equal(isUnpriceableNonSellEvent(graduated), false);
+});
+
+// --- 2026-10-04: έξοδος 'time_limit' (NO_PROGRESS_EXIT_MS) ---
+
+test('time_limit: 30′ χωρίς ενεργό trailing → close στην τρέχουσα τιμή', () => {
+  const at = new Date(ENTRY_AT.getTime() + NO_PROGRESS_EXIT_MS);
+  assert.deepEqual(decideForTick(trade(), eventAtPrice(0.9), at), {
+    type: 'close',
+    exitReason: 'time_limit',
+    exitPrice: 0.9,
+    exitTriggerDetail: null,
+  });
+});
+
+test('time_limit: πριν τα 30′ τίποτα· με ενεργό trailing ποτέ', () => {
+  const before = new Date(ENTRY_AT.getTime() + NO_PROGRESS_EXIT_MS - 1);
+  assert.deepEqual(decideForTick(trade({ peakPriceSinceEntry: 1 }), eventAtPrice(0.9), before), { type: 'ignore' });
+  const after = new Date(ENTRY_AT.getTime() + 2 * NO_PROGRESS_EXIT_MS);
+  const d = decideForTick(trade({ trailingActive: true, peakPriceSinceEntry: 1.6 }), eventAtPrice(1.55), after);
+  assert.notEqual(d.type === 'close' && d.exitReason, 'time_limit');
+});
+
+test('time_limit: tick που ενεργοποιεί trailing μετά τα 30′ κρατάει τη θέση (update, όχι close)', () => {
+  const after = new Date(ENTRY_AT.getTime() + NO_PROGRESS_EXIT_MS + 60_000);
+  const d = decideForTick(trade(), eventAtPrice(1.6), after);
+  assert.equal(d.type, 'update');
+});
+
+test('time_limit: το stop-loss στο ίδιο tick έχει προτεραιότητα', () => {
+  const after = new Date(ENTRY_AT.getTime() + NO_PROGRESS_EXIT_MS + 60_000);
+  const d = decideForTick(trade(), eventAtPrice(0.5), after);
+  assert.ok(d.type === 'close' && d.exitReason === 'stop_loss');
 });

@@ -212,7 +212,7 @@ test('checkTick: a drop that stays above the stop-loss threshold does not trigge
     entryPrice: ENTRY_PRICE,
     peakPriceSinceEntry: null,
     trailingActive: false,
-    currentPrice: 0.51, // λίγο πάνω από το -50% όριο
+    currentPrice: 0.71, // λίγο πάνω από το −30% όριο (STOP_LOSS_PCT 2026-10-04)
   });
   assert.notEqual(result.exit?.exitReason, 'stop_loss');
 });

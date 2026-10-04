@@ -26,7 +26,9 @@ export const PAPER_ASSUMED_LATENCY_MS = 3_000;
  * round-trip fee από `actual_entry_amount_sol` έναντι του ονομαστικού μεγέθους θέσης.
  * Να αναθεωρηθεί όταν υπάρχουν αρκετά live δεδομένα.
  */
-export const PAPER_ASSUMED_FEES_PCT = 0.02;
+/** ΑΛΛΑΓΗ 2026-10-04, ρητή απόφαση χρήστη: 2% → 4.5% = πραγματικό κόστος ανά γύρο
+ * (pump.fun 1.25% × 2 + GMGN 1% × 2), ώστε το paper να δείχνει ό,τι θα δείξει το live. */
+export const PAPER_ASSUMED_FEES_PCT = 0.045;
 
 /**
  * Exit plan, ίδιο με το `condition_orders_json` που αποθηκεύεται στο entry — δύο
@@ -118,7 +120,30 @@ export const PROFIT_FLOOR_SCALE = 1.1; // +10% ελάχιστο κατοχυρω
  * δικό μας, ήδη δοκιμασμένο μηχανισμό (checkTick) — το native GMGN stop_loss είναι
  * σκόπιμα ένα ΕΠΟΜΕΝΟ, ξεχωριστό βήμα, όχι κάτι που τρέχουμε να προλάβουμε τώρα.
  */
-export const STOP_LOSS_PCT = 0.5;
+/**
+ * ΑΛΛΑΓΗ 2026-10-04, ρητή απόφαση χρήστη: −50% → −30%. exit-path-analysis (--active-only,
+ * 168 trades, 30″ candles, προσομοίωση επιβεβαιωμένη 93% με το paper): το −30% κόβει μόνο
+ * 9% των νικητών (το −20% 18%), και βγαίνει καλύτερο και στις μέρες train ΚΑΙ στις test.
+ * Δεν πήγαμε στο −20% γιατί στο live το stop εκτελείται 1–2″ αργότερα, σε χειρότερη τιμή.
+ */
+export const STOP_LOSS_PCT = 0.3;
+
+/**
+ * ΝΕΟ 2026-10-04, ρητή απόφαση χρήστη: θέση που σε 30′ ΔΕΝ έχει ενεργοποιήσει trailing
+ * κλείνει (exit_reason 'time_limit'). Μετρημένο: 9/10 νικητές πιάνουν +50% μέσα σε 15′,
+ * ενώ τα «νεκρά» trades έληγαν στις 24h στο −17% κατά μέσο όρο. Ελέγχεται σε κάθε tick
+ * (decideForTick). Token χωρίς κανένα trade δεν αλλάζει τιμή στη bonding curve — κλείνει
+ * στο επόμενο tick του, ή στο 24ωρο timeout όπως πριν.
+ */
+export const NO_PROGRESS_EXIT_MS = 30 * 60 * 1000;
+
+/**
+ * ΝΕΟ 2026-10-04, ρητή απόφαση χρήστη: αγορά wallet κάτω από 0.3 SOL ΔΕΝ δίνει σήμα
+ * (skip 'wallet_buy_too_small', πριν από το on-demand gate — γλιτώνει και τα GMGN calls).
+ * exit-path-analysis: αρνητικό και στις μέρες train ΚΑΙ στις test (−0.02 SOL/trade) — οι
+ * μικρές «δοκιμαστικές» αγορές είναι κακά σήματα.
+ */
+export const MIN_WALLET_BUY_SOL = 0.3;
 
 export const EXIT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
@@ -263,7 +288,9 @@ export function liveExitConditionOrders(): Record<string, unknown>[] {
  * 100 trades, −0.39 SOL, διάμεσο −7.0% — ξανακρίνεται με το exit_signal εκτός.
  */
 export const ON_DEMAND_GATE_ENABLED = true;
-export const LIVE_ON_DEMAND_GATE = false;
+// ΑΛΛΑΓΗ 2026-10-04, ρητή απόφαση χρήστη: ξανά true — με τα ενεργά wallets το on-demand
+// είναι το καλύτερο gate (+0.012 SOL/trade έναντι +0.005 του discovery, exit-path-analysis).
+export const LIVE_ON_DEMAND_GATE = true;
 
 /**
  * 2026-09-30, ρητή απόφαση χρήστη: ΔΕΝ πουλάμε όταν πουλάει το wallet που αντιγράφουμε

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { MirrorShadowState } from '../db/repositories/mirror.js';
+import { PAPER_ASSUMED_FEES_PCT } from '../decision/paperTradingConfig.js';
 import type { PumpPortalTradeEvent } from '../realtime/pumpportalEvents.js';
 import { advanceShadow, handleMirrorShadowTick, hasActiveShadow, setMirrorShadowsForTest, SHADOW_TIMEOUT_MS, shadowPnl, type ShadowDeps } from './mirrorShadow.js';
 
@@ -16,7 +17,7 @@ const st = (o: Partial<MirrorShadowState> = {}): MirrorShadowState => ({
   ...o,
 });
 
-test('advanceShadow: stop-loss −50%', () => {
+test('advanceShadow: stop-loss (STOP_LOSS_PCT)', () => {
   const r = advanceShadow(st(), 0.45, T0 + 1000);
   assert.equal(r.kind, 'exit');
   assert.equal(r.kind === 'exit' && r.reason, 'stop_loss');
@@ -41,9 +42,9 @@ test('advanceShadow: χωρίς αλλαγή peak/trailing → changed=false', (
   assert.ok(r.kind === 'update' && !r.changed);
 });
 
-test('shadowPnl: 0.1 SOL (default), ×2 → +0.1 − 2% fees', () => {
+test('shadowPnl: 0.1 SOL (default), ×2 → +0.1 − fees (PAPER_ASSUMED_FEES_PCT)', () => {
   const { pnlSol } = shadowPnl(1, 2);
-  assert.ok(Math.abs(pnlSol - (0.1 - 0.1 * 0.02)) < 1e-9, String(pnlSol));
+  assert.ok(Math.abs(pnlSol - (0.1 - 0.1 * PAPER_ASSUMED_FEES_PCT)) < 1e-9, String(pnlSol));
 });
 
 function ev(price: number, mint = 'Tok'): PumpPortalTradeEvent {

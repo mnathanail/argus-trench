@@ -117,7 +117,7 @@ test('resolveExit: stop_loss is checked from ENTRY, not from peak — even after
 });
 
 test('resolveExit: a candle.low that stays above the stop-loss threshold does not trigger it', () => {
-  const candles: Candle[] = [candle(60, 1.1, 0.51)]; // λίγο πάνω από το -50% όριο
+  const candles: Candle[] = [candle(60, 1.1, 0.71)]; // λίγο πάνω από το −30% όριο (STOP_LOSS_PCT 2026-10-04)
   const result = resolveExit({ entryPrice: ENTRY_PRICE, entryAt: ENTRY_AT, candles, walletSellAt: null, now: ENTRY_AT });
   assert.notEqual(result?.exitReason, 'stop_loss');
 });
@@ -238,7 +238,7 @@ test('resolveExit: a wallet-sell AFTER the 24h boundary is ignored — late chec
 test('resolveExit: real incident shape — checked ~73h late, a huge pump AFTER the boundary must not leak into the reported pnl', () => {
   const candles: Candle[] = [
     candle(1800, 0.95, 0.9, 0.92), // 30 λεπτά μετά: ελαφρώς κάτω
-    candle(85_000, 0.6, 0.55, 0.58), // ~23.6h μετά, ΑΚΟΜΑ μέσα στο παράθυρο: πιο κάτω
+    candle(85_000, 0.8, 0.75, 0.78), // ~23.6h μετά, ΑΚΟΜΑ μέσα στο παράθυρο: πιο κάτω (πάνω από το stop −30%)
     candle(200_000, 5.0, 4.5, 4.8), // ~55.5h μετά, ΠΟΛΥ έξω: τεράστιο pump, πρέπει να αγνοηθεί
   ];
   const result = resolveExit({
@@ -249,7 +249,7 @@ test('resolveExit: real incident shape — checked ~73h late, a huge pump AFTER 
     now: new Date(ENTRY_AT.getTime() + 73 * 3600 * 1000),
   });
   assert.equal(result?.exitReason, 'timeout');
-  assert.equal(result?.exitPrice, 0.58);
+  assert.equal(result?.exitPrice, 0.78);
   assert.ok((result?.exitPrice ?? 0) < ENTRY_PRICE, 'δεν πρέπει να δείχνει κέρδος από το μεταγενέστερο pump');
 });
 
@@ -259,7 +259,7 @@ const SOL_ENTRY = 0.000000400856; // SOL ανά token (PumpPortal)
 const SOL_USD = 75.3;
 function usdCandle(secondsAfterEntry: number, solPrice: number): Candle {
   const usd = solPrice * SOL_USD;
-  return { timestamp: ENTRY_AT.getTime() + secondsAfterEntry * 1000, open: usd, high: usd * 1.02, low: usd * 0.7, close: usd };
+  return { timestamp: ENTRY_AT.getTime() + secondsAfterEntry * 1000, open: usd, high: usd * 1.02, low: usd * 0.72, close: usd }; // −28%: πάνω από το stop −30%, κάτω από το trailing −25%
 }
 
 test('REGRESSION 6451: USD candles against a SOL entry fake a ×75 trailing exit; anchored candles do not', () => {

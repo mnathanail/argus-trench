@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { closePool, getPool } from '../src/db/pool.js';
+import { STOP_LOSS_PCT } from '../src/decision/paperTradingConfig.js';
 
 // Χρήση: railway run npm run mirror-report [-- <μέρες=7>]
 //
@@ -106,7 +107,7 @@ try {
     [days],
   );
   if (shadow.length > 0) {
-    console.log('\n=== Σκιά trailing (1η αγορά, trailing +50%/−25%, stop −50%, 24h) vs ακολουθώντας το wallet ===');
+    console.log(`\n=== Σκιά trailing (1η αγορά, trailing +50%/−25%, stop −${Math.round(STOP_LOSS_PCT * 100)}%, 24h) vs ακολουθώντας το wallet ===`);
     for (const s of shadow) {
       const sp = Number(s.shadow_pnl ?? 0);
       const wp = Number(s.wallet_pnl ?? 0);

@@ -17,7 +17,7 @@ import { withTransaction } from '../db/tx.js';
 import type { Queryable } from '../db/tx.js';
 import type { ExitReason } from '../db/types.js';
 import { computePnl } from '../decision/pnl.js';
-import { EXIT_ON_COPIED_WALLET_SELL, EXIT_TIMEOUT_MS, PAPER_ASSUMED_FEES_PCT } from '../decision/paperTradingConfig.js';
+import { EXIT_ON_COPIED_WALLET_SELL, EXIT_TIMEOUT_MS, NO_PROGRESS_EXIT_MS, PAPER_ASSUMED_FEES_PCT } from '../decision/paperTradingConfig.js';
 import { fetchLiveSolWallet, getLiveSolBalance } from '../gmgn/portfolio.js';
 import { executeLiveSell, INSUFFICIENT_TOKEN_BALANCE_ERROR_CODE, SwapFailedError } from '../gmgn/swap.js';
 import { cancelStrategyOrderBestEffort, estimateExitAmountSol, getStrategyOrder, inferExitReason } from '../gmgn/strategyOrders.js';
@@ -41,7 +41,7 @@ export type RealtimeTradeOutcome =
 export type TickDecision =
   | {
       type: 'close';
-      exitReason: 'tp_tier_1' | 'trailing_stop' | 'stop_loss' | 'exit_signal';
+      exitReason: 'tp_tier_1' | 'trailing_stop' | 'stop_loss' | 'exit_signal' | 'time_limit';
       exitPrice: number;
       exitTriggerDetail: Record<string, unknown> | null;
     }
@@ -162,6 +162,12 @@ export function decideForTick(
     };
   }
 
+  // 2026-10-04: 30′ χωρίς ενεργοποίηση trailing → έξοδος στην τρέχουσα τιμή (μετά τους
+  // ελέγχους τιμής: ένα stop/trailing στο ίδιο tick έχει προτεραιότητα).
+  if (!result.newTrailingActive && now.getTime() - trade.entryAt.getTime() >= NO_PROGRESS_EXIT_MS) {
+    return { type: 'close', exitReason: 'time_limit', exitPrice: price, exitTriggerDetail: null };
+  }
+
   if (
     result.newPeakPriceSinceEntry !== trade.peakPriceSinceEntry ||
     result.newTrailingActive !== trade.trailingActive
@@ -178,7 +184,7 @@ export function decideForTick(
 
 interface PendingLiveClose {
   tradeId: number;
-  exitReason: 'tp_tier_1' | 'trailing_stop' | 'stop_loss' | 'exit_signal' | 'timeout';
+  exitReason: 'tp_tier_1' | 'trailing_stop' | 'stop_loss' | 'exit_signal' | 'timeout' | 'time_limit';
   exitPrice: number;
   exitTriggerDetail: Record<string, unknown> | null;
   actualEntryAmountSol: number | null;

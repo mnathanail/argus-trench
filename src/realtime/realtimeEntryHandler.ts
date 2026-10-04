@@ -22,6 +22,7 @@ import {
   HOLDER_RISK_ENTRY_MODE,
   conditionOrdersJson,
   liveExitConditionOrders,
+  MIN_WALLET_BUY_SOL,
 } from '../decision/paperTradingConfig.js';
 import { WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE } from '../collectors/intervals.js';
 import {
@@ -192,6 +193,11 @@ export function recordEntrySkip(
   });
 }
 
+/** 2026-10-04: αγορά του wallet κάτω από MIN_WALLET_BUY_SOL (άγνωστο ποσό = δεν κόβεται). */
+export function isWalletBuyTooSmall(event: Pick<PumpPortalTradeEvent, 'solAmount'>, minSol: number = MIN_WALLET_BUY_SOL): boolean {
+  return Number.isFinite(event.solAmount) && event.solAmount < minSol;
+}
+
 export async function handleRealtimeEntryEvent(
   event: PumpPortalTradeEvent,
   connection: PumpPortalConnection,
@@ -203,6 +209,11 @@ export async function handleRealtimeEntryEvent(
   // 2026-09-30 (ρητή απόφαση χρήστη): τα mirror wallets τα χειρίζεται ΜΟΝΟ το mirror route
   // (src/mirror/) — καμία κανονική θέση argus από τα σήματά τους, ούτε καταγραφή skip.
   if (wallet?.copyMode === 'mirror') return null;
+  // 2026-10-04 — μικρή «δοκιμαστική» αγορά του wallet = όχι σήμα (βλ. MIN_WALLET_BUY_SOL).
+  if (wallet !== null && wallet.active && isWalletBuyTooSmall(event)) {
+    recordEntrySkip(event, 'wallet_buy_too_small', { min_sol: MIN_WALLET_BUY_SOL });
+    return null;
+  }
   const version = logicVersion(PHASE1_THRESHOLDS);
   let gateSnapshotExists = (await findPassedTokens([event.mint], version)).has(event.mint);
   // ΜΟΝΟ live/paper — τα παλιά log_only δεν πρέπει να κόβουν live entries (βλ. countOpenLiveOrPaperTrades).

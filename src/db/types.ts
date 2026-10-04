@@ -70,6 +70,8 @@ export type ExitReason =
    * όλων των άλλων ελέγχων στο checkTick, δεν χρειάζεται CHECK constraint στη βάση
    * (ίδιο μοτίβο με το `decision` column). */
   | 'stop_loss'
+  /** Νέο 2026-10-04 — 30′ χωρίς ενεργοποίηση trailing (NO_PROGRESS_EXIT_MS). */
+  | 'time_limit'
   /** GMGN kline επέστρεψε άδειο candles array για ΟΛΗ τη διάρκεια — πολύ πιθανό νεκρό/
    * χωρίς-liquidity token, όχι ότι η τιμή έμεινε ίδια. Άγνωστο αποτέλεσμα, pnl=null,
    * ΟΧΙ 0 — βλ. exitResolver.ts. Επιβεβαιώθηκε σε πραγματικό incident 2026-08-31 (η
