@@ -43,6 +43,11 @@ const args = process.argv.slice(2);
 const sinceIdx = args.indexOf('--since');
 const SINCE = new Date(sinceIdx >= 0 ? args[sinceIdx + 1]! : '2026-09-30T08:00:00Z');
 const USE_CACHE = !args.includes('--no-cache');
+/** Μόνο trades από wallets που είναι ΑΚΟΜΑ ενεργά στη watchlist — «πώς θα πήγαινε η σημερινή λίστα». */
+const ACTIVE_ONLY = args.includes('--active-only');
+const WSOL = 'So11111111111111111111111111111111111111112';
+/** Η πρώτη ώρα με candles 30″ (η λεπτότερη ανάλυση του GMGN): οι νικητές κινούνται στα πρώτα λεπτά. */
+const FINE_MS = 3600_000;
 const CACHE_FILE = '/tmp/argus-exit-path-cache.json';
 /** Πραγματικό κόστος ανά γύρο: pump.fun 1.25% × 2 + GMGN 1% × 2 (το paper βάζει 2%). */
 const REAL_FEES_PCT = 0.045;
@@ -126,48 +131,91 @@ try {
       ORDER BY t.entry_at`,
     [SINCE],
   );
-  console.log(`\n${rows.length} realtime paper trades από ${SINCE.toISOString().slice(0, 16)} (μόνο όσα έχουν ήδη ≥25h ζωής).`);
+  const selected = ACTIVE_ONLY ? rows.filter((r) => r.active === true) : rows;
+  console.log(
+    `\n${selected.length} realtime paper trades από ${SINCE.toISOString().slice(0, 16)} (μόνο όσα έχουν ήδη ≥25h ζωής)` +
+      (ACTIVE_ONLY ? ` — ΜΟΝΟ από wallets ακόμα ενεργά (${rows.length - selected.length} εκτός)` : '') + '.',
+  );
 
   // ── Candles ──────────────────────────────────────────────────────────────────
+  // 2026-10-04, διόρθωση μετά την 1η εκτέλεση: το «δέσιμο» των USD candles στο close του
+  // λεπτού της εισόδου υποτιμούσε κάθε pump που ξεκινούσε μέσα σε εκείνο το λεπτό (έλεγχος A:
+  // −8.2 vs −1.5 SOL). Τώρα: τιμή token σε SOL = USD τιμή token / USD τιμή SOL την ίδια στιγμή
+  // (candles wSOL 5′), χωρίς καμία υπόθεση για τη στιγμή της εισόδου, και 30″ candles την 1η ώρα.
   const cache = loadCache();
   let fetched = 0;
   let failed = 0;
+  const kline = async (key: string, tokenAddress: string, fromMs: number, toMs: number, resolution: string): Promise<Candle[] | undefined> => {
+    if (cache[key] !== undefined) return cache[key];
+    try {
+      const c = await fetchKline({ chain: 'sol', tokenAddress, from: Math.floor(fromMs / 1000), to: Math.floor(toMs / 1000), resolution });
+      cache[key] = c;
+      fetched += 1;
+      await delay(400);
+      if (fetched % 50 === 0 && USE_CACHE) fs.writeFileSync(CACHE_FILE, JSON.stringify(cache));
+      return c;
+    } catch (error) {
+      rethrowIfRateLimited(error);
+      failed += 1;
+      return undefined;
+    }
+  };
+  // SOL/USD: candles 5′ ανά μέρα, από την πρώτη είσοδο ως 24h μετά την τελευταία.
+  const solCandles: Candle[] = [];
+  if (selected.length > 0) {
+    const first = selected[0]!.entry_at.getTime() - 3600_000;
+    const last = selected.at(-1)!.entry_at.getTime() + DAY_MS + 3600_000;
+    for (let t = Math.floor(first / DAY_MS) * DAY_MS; t < last; t += DAY_MS) {
+      const c = await kline(`sol5m:${t}`, WSOL, t, t + DAY_MS, '5m');
+      if (c !== undefined) solCandles.push(...c);
+    }
+    solCandles.sort((a, b) => a.timestamp - b.timestamp);
+  }
+  const solUsdAt = (t: number): number | null => {
+    let lo = 0;
+    let hi = solCandles.length - 1;
+    let best: Candle | null = null;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (solCandles[mid]!.timestamp <= t) { best = solCandles[mid]!; lo = mid + 1; } else hi = mid - 1;
+    }
+    return best?.close ?? solCandles[0]?.open ?? null;
+  };
+  console.log(`  SOL/USD: ${solCandles.length} candles 5′${solCandles.length === 0 ? ' — ΔΕΝ βρέθηκαν, πέφτω στο παλιό δέσιμο στην είσοδο' : ''}`);
+  const toSol = (cs: Candle[]): Candle[] =>
+    cs.flatMap((c) => {
+      const s = solUsdAt(c.timestamp);
+      return s === null || !(s > 0) ? [] : [{ ...c, open: c.open / s, high: c.high / s, low: c.low / s, close: c.close / s }];
+    });
+  /** τιμή στην είσοδο κατά τα candles / τιμή του σήματος (η αγορά του wallet) — πρέπει να είναι ~1. */
+  const calibration: number[] = [];
   const trades: Trade[] = [];
-  for (const [i, r] of rows.entries()) {
+  for (const [i, r] of selected.entries()) {
     const entryAtMs = r.entry_at.getTime();
     const day = Math.floor((entryAtMs - SINCE.getTime()) / DAY_MS) + 1;
     const entry = Number(r.simulated_entry_price);
     const size = Number(r.simulated_entry_amount_sol ?? 0) > 0 ? Number(r.simulated_entry_amount_sol) : 0.1;
     const actualReal = r.status === 'closed' && r.pnl_sol !== null ? Number(r.pnl_sol) - size * (REAL_FEES_PCT - PAPER_ASSUMED_FEES_PCT) : null;
-    let raw = cache[r.id];
-    if (raw === undefined) {
-      try {
-        raw = await fetchKline({
-          chain: 'sol',
-          tokenAddress: r.token_address,
-          from: Math.floor(entryAtMs / 1000) - 120,
-          to: Math.floor((entryAtMs + DAY_MS) / 1000),
-          resolution: '1m',
-        });
-        cache[r.id] = raw;
-        fetched += 1;
-        await delay(400);
-      } catch (error) {
-        rethrowIfRateLimited(error);
-        failed += 1;
-        raw = undefined;
-      }
-      if (fetched > 0 && fetched % 50 === 0) {
-        console.log(`  … candles ${i + 1}/${rows.length}`);
-        if (USE_CACHE) fs.writeFileSync(CACHE_FILE, JSON.stringify(cache));
-      }
-    }
+    const coarse = await kline(r.id, r.token_address, entryAtMs - 120_000, entryAtMs + DAY_MS, '1m'); // ίδιο κλειδί με την 1η εκτέλεση
+    const fine = await kline(`${r.id}:30s`, r.token_address, entryAtMs - 60_000, entryAtMs + FINE_MS, '30s');
+    if (i > 0 && i % 50 === 0) console.log(`  … candles ${i}/${selected.length}`);
     let candles: Candle[] | null = null;
     let stats: PathStats | null = null;
-    if (raw !== undefined && raw.length > 0) {
-      const sorted = [...raw].sort((a, b) => a.timestamp - b.timestamp);
-      const anchored = anchorCandlesToEntryPrice(sorted, entry, r.entry_at);
-      const w = windowCandles(anchored, entryAtMs);
+    const fineSorted = [...(fine ?? [])].sort((a, b) => a.timestamp - b.timestamp);
+    const fineEnd = fineSorted.length > 0 ? fineSorted.at(-1)!.timestamp + 30_000 : entryAtMs;
+    // 30″ όπου υπάρχουν, 1′ μετά (χωρίς επικάλυψη).
+    const merged = [...fineSorted, ...[...(coarse ?? [])].filter((c) => c.timestamp >= fineEnd)].sort((a, b) => a.timestamp - b.timestamp);
+    if (merged.length > 0) {
+      let priced: Candle[];
+      if (solCandles.length > 0) {
+        priced = toSol(merged);
+        const signal = Number(r.entry_timing_json?.signal?.price ?? 0);
+        const at = priced.filter((c) => c.timestamp <= entryAtMs).at(-1) ?? priced.find((c) => c.timestamp > entryAtMs);
+        if (signal > 0 && at !== undefined) calibration.push(at.close / signal);
+      } else {
+        priced = anchorCandlesToEntryPrice(merged, entry, r.entry_at);
+      }
+      const w = windowCandles(priced, entryAtMs);
       if (w.length > 0) {
         candles = w;
         stats = pathStats(w, entry, entryAtMs);
@@ -177,7 +225,13 @@ try {
   }
   if (USE_CACHE) fs.writeFileSync(CACHE_FILE, JSON.stringify(cache));
   const withData = trades.filter((t) => t.candles !== null);
-  console.log(`  candles: ${withData.length} με δεδομένα · ${trades.length - withData.length} χωρίς (σφάλμα GMGN ${failed}) · νέα GMGN calls ${fetched}`);
+  console.log(`  candles: ${withData.length} με δεδομένα · ${trades.length - withData.length} χωρίς (σφάλματα GMGN ${failed}) · νέα GMGN calls ${fetched}`);
+  if (calibration.length > 0) {
+    console.log(
+      `  βαθμονόμηση (τιμή candles στην είσοδο ÷ τιμή αγοράς του wallet): διάμεσο ${median(calibration)!.toFixed(2)} · ` +
+        `p10 ${quantile(calibration, 0.1)!.toFixed(2)} · p90 ${quantile(calibration, 0.9)!.toFixed(2)}  (≈1.00 = σωστή μετατροπή)`,
+    );
+  }
 
   // ── A. Έλεγχος: η προσομοίωση με τους σημερινούς κανόνες ≈ το paper; ──────────
   const closedWithData = withData.filter((t) => t.row.status === 'closed' && t.row.pnl_sol !== null);
