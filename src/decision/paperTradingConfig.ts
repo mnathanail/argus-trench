@@ -293,6 +293,13 @@ export const ON_DEMAND_GATE_ENABLED = true;
 export const LIVE_ON_DEMAND_GATE = true;
 
 /**
+ * ΝΕΟ 2026-10-05, ρητή απόφαση χρήστη: live ΜΟΝΟ με on-demand — οι είσοδοι μέσω discovery
+ * μένουν paper. Πρώτη μέρα με τους νέους κανόνες: discovery 1/11 wins, −0.28 SOL (μπαίνει
+ * ~13′ μετά τη γέννηση, ~100 SOL mcap — η κίνηση έχει ήδη γίνει), on-demand 14/27, +0.18.
+ */
+export const LIVE_DISCOVERY_GATE = false;
+
+/**
  * 2026-09-30, ρητή απόφαση χρήστη: ΔΕΝ πουλάμε όταν πουλάει το wallet που αντιγράφουμε
  * (exit_signal) — ούτε σε πρώιμες ούτε σε κανονικές αγορές, live και paper. Η έξοδος
  * γίνεται μόνο από trailing (+50% / −25%, floor +10%), stop-loss −50% και 24h timeout.

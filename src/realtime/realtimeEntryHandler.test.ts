@@ -247,3 +247,18 @@ test('isWalletBuyTooSmall: < 0.3 SOL κόβεται, 0.3+ περνάει, άγν
   assert.equal(isWalletBuyTooSmall({ solAmount: 2 }), false);
   assert.equal(isWalletBuyTooSmall({ solAmount: Number.NaN }), false);
 });
+
+// --- 2026-10-05: live μόνο on-demand ---
+import { paperOnlyReason } from './realtimeEntryHandler.js';
+
+test('paperOnlyReason: σημερινές σημαίες → on-demand live, discovery paper, graduated paper', () => {
+  assert.equal(paperOnlyReason(false, 'on_demand'), null);
+  assert.equal(paperOnlyReason(false, 'discovery'), 'discovery_gate_paper_only');
+  assert.equal(paperOnlyReason(true, 'on_demand'), 'graduated_paper_only');
+});
+
+test('paperOnlyReason: κάθε σημαία ανεξάρτητη', () => {
+  const all = { graduated: true, onDemand: true, discovery: true };
+  assert.equal(paperOnlyReason(true, 'discovery', all), null);
+  assert.equal(paperOnlyReason(false, 'on_demand', { ...all, onDemand: false }), 'on_demand_gate_paper_only');
+});

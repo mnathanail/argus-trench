@@ -19,6 +19,7 @@ import {
   LIVE_POSITION_SIZE_PCT,
   LIVE_POSITION_SIZE_SOL,
   LIVE_ON_GRADUATED_TOKENS,
+  LIVE_DISCOVERY_GATE,
   LIVE_ON_DEMAND_GATE,
   HOLDER_RISK_ENTRY_MODE,
   conditionOrdersJson,
@@ -68,6 +69,25 @@ export interface RealtimeEntryResult {
 
 /** Από πού ήρθε το «πέρασε το gate» ενός σήματος. */
 export type GateSource = 'discovery' | 'on_demand';
+
+/**
+ * Γιατί ΔΕΝ επιχειρούμε καν live (null = επιχειρούμε). Graduated → LIVE_ON_GRADUATED_TOKENS,
+ * on-demand → LIVE_ON_DEMAND_GATE, discovery → LIVE_DISCOVERY_GATE (2026-10-05).
+ */
+export function paperOnlyReason(
+  graduated: boolean,
+  gateSource: GateSource,
+  flags: { graduated: boolean; onDemand: boolean; discovery: boolean } = {
+    graduated: LIVE_ON_GRADUATED_TOKENS,
+    onDemand: LIVE_ON_DEMAND_GATE,
+    discovery: LIVE_DISCOVERY_GATE,
+  },
+): 'graduated_paper_only' | 'on_demand_gate_paper_only' | 'discovery_gate_paper_only' | null {
+  if (graduated && !flags.graduated) return 'graduated_paper_only';
+  if (gateSource === 'on_demand' && !flags.onDemand) return 'on_demand_gate_paper_only';
+  if (gateSource === 'discovery' && !flags.discovery) return 'discovery_gate_paper_only';
+  return null;
+}
 
 /** 2026-09-28 — χρόνοι της διαδρομής σήμα → trade (βλ. entry_timing_json, migration 0019). */
 interface EntryTimeline {
@@ -371,12 +391,8 @@ async function enterClaimedSignal(
   // κατευθείαν paper, χωρίς καν να αγγίξουμε κεφάλαιο/risk gate/swap.
   const claimMs = Date.now() - claimStartedAt;
   const liveStartedAt = Date.now();
-  const live =
-    decision.graduated && !LIVE_ON_GRADUATED_TOKENS
-      ? fallbackOutcomeFor('graduated_paper_only')
-      : gateSource === 'on_demand' && !LIVE_ON_DEMAND_GATE
-        ? fallbackOutcomeFor('on_demand_gate_paper_only')
-        : await attemptLiveEntry(event.mint);
+  const paperOnly = paperOnlyReason(decision.graduated, gateSource);
+  const live = paperOnly !== null ? fallbackOutcomeFor(paperOnly) : await attemptLiveEntry(event.mint);
   // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #3): το live.entryPrice είναι ΗΔΗ η πραγματική,
   // εκτελεσμένη τιμή — καμία προσομοίωση δε χρειάζεται ή πρέπει να εφαρμοστεί εκεί. Η
   // ωμή, παρατηρημένη τιμή του σήματος (decision.entryPrice) εφαρμόζεται ΜΟΝΟ όταν η

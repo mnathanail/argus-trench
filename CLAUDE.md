@@ -1009,3 +1009,9 @@ entirely in our own Postgres.
 - Logs 14:00–18:00 UTC: PumpPortal rejected every subscription (API-key wallet < 0.02 SOL — 0.01 SOL per 10k streamed trades with ~850 subscribed wallets incl. bots) → no entries and no fast exits; GMGN IP ban ~35×/hour, 72 of ~170 from the GMGN mirror poll that only produced `duplicate` (Helius is first).
 - `src/realtime/walletSubscriptionSync.ts`: wallets with `avg_holding_sec < 60` (`BOT_MAX_AVG_HOLDING_SEC`) are bots → not subscribed and no signal (entry skip `wallet_bot`); unknown hold time stays; mirror wallets always stay. New loop `realtime-wallet-sync` (every 10′, first after 5′): subscriptions = active non-bot wallets + mirror + wallets with an open trade; subscribes missing, unsubscribes extras (before, scoring/`/unwatch` deactivations stayed subscribed until restart). Wallet discovery also skips bots. `WatchlistWallet.avgHoldingSec` now loaded.
 - `mirror-poll` loop no longer calls GMGN while the Helius mirror source runs (shadow expiry still runs there).
+
+## Live only via on-demand (2026-10-05, explicit user decision)
+
+- `LIVE_DISCOVERY_GATE = false`: discovery entries stay paper (fallback `discovery_gate_paper_only`); on-demand entries go live when `GMGN_ALLOW_AUTOMATED_TRADES=1`. First day of the new rules: discovery 1/11 wins, −0.28 SOL (enters ~13′ after creation at ~100 SOL mcap); on-demand 14/27, +0.18.
+- `paperOnlyReason(graduated, gateSource)` in `realtimeEntryHandler.ts` is the single place that decides "don't even try live" (graduated / on-demand / discovery flags), tested.
+- Plan: 0.05 SOL per position as a measurement run; after ~30 live trades compare live entry/exit prices with paper (`npm run entry-speed-report`: slippage vs signal). The open question is the live entry slippage (earlier 10 live trades: median +2.9%, mean +15.8%) against an on-demand paper edge of ~+6.6%/trade.
