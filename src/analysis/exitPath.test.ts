@@ -91,3 +91,26 @@ test('simulateExit: χωρίς candles → no_data, πολλαπλασιαστή
 test('simPnlSol: 0.1 SOL, ×2, 4.5% fees', () => {
   assert.ok(close(simPnlSol(2, 0.1, 0.045), 0.1 - 0.0045));
 });
+
+test('simulateExit trailDrawdown: −40% αντέχει μια διόρθωση −30% και πιάνει το μεγάλο μπαμ', () => {
+  // +60% → διόρθωση στο 1.2 (−25% από 1.6) → 5× → πτώση
+  const cs = series([[0.95, 1.6, 1.55], [1.2, 1.55, 1.25], [1.25, 5.0, 4.8], [2.0, 4.8, 2.1]]);
+  const base = simulateExit(cs, 1, T0, { stopPct: 0.3, timeLimitMin: null, mode: 'trail' });
+  assert.ok(close(base.multiple, 1.2), `σημερινό: βγαίνει στη διόρθωση (${base.multiple})`);
+  const wide = simulateExit(cs, 1, T0, { stopPct: 0.3, timeLimitMin: null, mode: 'trail', trailDrawdown: 0.4 });
+  assert.ok(close(wide.multiple, 3.0), `−40%: 5 × 0.6 = 3 (${wide.multiple})`);
+});
+
+test('simulateExit moonbag: 75% με το κανονικό trailing, 25% κρατιέται ως το μπαμ', () => {
+  const cs = series([[0.95, 1.6, 1.55], [1.2, 1.55, 1.25], [1.25, 5.0, 4.8], [2.0, 4.8, 2.1]]);
+  const r = simulateExit(cs, 1, T0, { stopPct: 0.3, timeLimitMin: null, mode: 'moonbag', bagFraction: 0.25, bagDrawdown: 0.5 });
+  // 0.75 × 1.2 (κανονικό trailing στη διόρθωση) + 0.25 × 2.5 (5 × 0.5)
+  assert.ok(close(r.multiple, 0.75 * 1.2 + 0.25 * 2.5), String(r.multiple));
+});
+
+test('simulateExit moonbag: πριν την ενεργοποίηση ισχύει το κοινό stop για όλη τη θέση', () => {
+  const cs = series([[0.95, 1.1, 1.0], [0.6, 1.0, 0.65]]);
+  const r = simulateExit(cs, 1, T0, { stopPct: 0.3, timeLimitMin: null, mode: 'moonbag', bagFraction: 0.25, bagDrawdown: 0.5 });
+  assert.equal(r.reason, 'stop');
+  assert.ok(close(r.multiple, 0.7));
+});

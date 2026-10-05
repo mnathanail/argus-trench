@@ -322,6 +322,55 @@ try {
     console.log(`    ${gate.padEnd(10)} ${String(ids.length).padStart(4)} trades: ${f(sum(base))} → ${f(sum(best))} SOL`);
   }
 
+  // ── C2. Μεγάλα μπαμ: πόσα υπήρχαν, πόσο πιάσαμε, και τι θα έπιανε φαρδύτερο trailing / moonbag ──
+  // 2026-10-05 (αίτημα χρήστη: «υπάρχουν ευκαιρίες κάθε μέρα αλλά δεν πιάνουμε το μεγάλο μπαμ»).
+  // Όλα με τους ΣΗΜΕΡΙΝΟΥΣ κανόνες εισόδου/stop: stop −30%, όριο 30′ χωρίς trailing.
+  const NOW: ExitParams = { stopPct: 0.3, timeLimitMin: 30, mode: 'trail' };
+  const variants: [string, ExitParams][] = [
+    ['ΣΗΜΕΡΙΝΟ trailing −25%', NOW],
+    ['trailing −35%', { ...NOW, trailDrawdown: 0.35 }],
+    ['trailing −45%', { ...NOW, trailDrawdown: 0.45 }],
+    ['moonbag 25% (−40%)', { ...NOW, mode: 'moonbag', bagFraction: 0.25, bagDrawdown: 0.4 }],
+    ['moonbag 25% (−50%)', { ...NOW, mode: 'moonbag', bagFraction: 0.25, bagDrawdown: 0.5 }],
+    ['moonbag 25% (−60%)', { ...NOW, mode: 'moonbag', bagFraction: 0.25, bagDrawdown: 0.6 }],
+    ['moonbag 33% (−50%)', { ...NOW, mode: 'moonbag', bagFraction: 0.33, bagDrawdown: 0.5 }],
+  ];
+  const maxOf = (t: Trade) => t.stats!.maxMultiple ?? 0;
+  console.log(`\n=== C2. Μεγάλα μπαμ (${withData.length} trades, κορυφή μέσα σε 24h από την είσοδό μας) ===`);
+  for (const m of [2, 3, 5, 10]) {
+    const n = withData.filter((t) => maxOf(t) >= m).length;
+    console.log(`  έφτασαν ${String(m).padStart(2)}×: ${String(n).padStart(4)} (${((100 * n) / Math.max(1, withData.length)).toFixed(1)}%)`);
+  }
+  const big = withData.filter((t) => maxOf(t) >= 5);
+  console.log('  τρόπος εξόδου                 train      test       όλα    | στα ≥5× πιάσαμε κατά μέσο (από μέσο κορυφής ' +
+    `${(mean(big.map(maxOf)) ?? 0).toFixed(1)}×)`);
+  const capture = new Map<string, Map<string, number>>();
+  for (const [label, p] of variants) {
+    let tr = 0;
+    let te = 0;
+    const per = new Map<string, number>();
+    for (const t of withData) {
+      const sim = simulateExit(t.candles!, t.entry, t.entryAtMs, p);
+      per.set(t.row.id, sim.multiple);
+      const pnl = simPnlSol(sim.multiple, t.size, REAL_FEES_PCT);
+      if (t.train) tr += pnl; else te += pnl;
+    }
+    capture.set(label, per);
+    const caught = mean(big.map((t) => per.get(t.row.id)!));
+    console.log(`  ${label.padEnd(26)} ${f(tr).padStart(8)}  ${f(te).padStart(8)}  ${f(tr + te).padStart(8)}  | ${caught === null ? '—' : `${caught.toFixed(2)}×`}`);
+  }
+  const top = [...withData].sort((a, b) => maxOf(b) - maxOf(a)).slice(0, 12);
+  const bestBag = 'moonbag 25% (−50%)';
+  console.log(`  Τα 12 μεγαλύτερα: κορυφή → τι πιάσαμε με το σημερινό | με «${bestBag}»`);
+  for (const t of top) {
+    const now = capture.get('ΣΗΜΕΡΙΝΟ trailing −25%')!.get(t.row.id)!;
+    const bag = capture.get(bestBag)!.get(t.row.id)!;
+    const mt = t.stats!.minutesToTrail;
+    console.log(
+      `    ${t.row.token_address.slice(0, 8)}  κορυφή ${maxOf(t).toFixed(1).padStart(5)}×  (+50% σε ${mt === null ? '—' : `${mt.toFixed(0)}′`})  →  ${now.toFixed(2)}× | ${bag.toFixed(2)}×`,
+    );
+  }
+
   // ── D. Φίλτρα εισόδου ────────────────────────────────────────────────────────
   // Μετράμε με δύο τρόπους: πραγματικό paper (διορθωμένο σε πραγματικά fees) και με το
   // καλύτερο σετ εξόδων του train — ένα φίλτρο αξίζει αν βοηθάει ΚΑΙ μετά τη διόρθωση εξόδων.

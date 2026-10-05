@@ -86,7 +86,10 @@ export type ExitMode =
   /** Μισή πώληση στο +50%, το υπόλοιπο σε trailing. */
   | 'half_tp'
   /** 25% στο +100%, 25% στο +200%, το υπόλοιπο με stop στην τιμή εισόδου (μετά το 1ο TP). */
-  | 'ladder';
+  | 'ladder'
+  /** 2026-10-05: το (1 − bagFraction) με το κανονικό trailing, το bagFraction («moonbag») με
+   * φαρδύ trailing (bagDrawdown) ως τις 24h — για να πιάνει τα μεγάλα μπαμ. */
+  | 'moonbag';
 
 export interface ExitParams {
   /** π.χ. 0.3 = stop στο −30% από την είσοδο. */
@@ -94,6 +97,12 @@ export interface ExitParams {
   /** Αν σε τόσα λεπτά η θέση δεν έχει «πιάσει» (trailing/1ο TP), κλείνει. null = μόνο 24h. */
   timeLimitMin: number | null;
   mode: ExitMode;
+  /** Πόσο πέφτει από το peak πριν βγει το trailing (default 0.25 = σημερινό). */
+  trailDrawdown?: number;
+  /** moonbag: μέρος της θέσης που κρατάμε με φαρδύ trailing (π.χ. 0.25). */
+  bagFraction?: number;
+  /** moonbag: drawdown από το peak για το moonbag (π.χ. 0.5). */
+  bagDrawdown?: number;
 }
 
 export interface SimResult {
@@ -113,12 +122,79 @@ export interface SimResult {
  */
 export function simulateExit(candles: readonly Candle[], entryPrice: number, entryAtMs: number, p: ExitParams): SimResult {
   if (candles.length === 0 || !(entryPrice > 0)) return { multiple: 1, reason: 'no_data', minutes: 0 };
+  if (p.mode === 'ladder') return simulateLadder(candles, entryPrice, entryAtMs, p);
   const stop = entryPrice * (1 - p.stopPct);
-  let remaining = 1; // μέρος της θέσης που μένει
-  let realized = 0; // άθροισμα (μέρος × πολλαπλασιαστής) όσων πουλήθηκαν
+  const floor = entryPrice * TRAIL_FLOOR;
+  const dd = p.trailDrawdown ?? TRAIL_DRAWDOWN;
+  // «Κομμάτια» της θέσης: το καθένα με το δικό του trailing μετά την ενεργοποίηση.
+  const tranches: { frac: number; dd: number; open: boolean }[] =
+    p.mode === 'moonbag'
+      ? [
+          { frac: 1 - (p.bagFraction ?? 0.25), dd, open: true },
+          { frac: p.bagFraction ?? 0.25, dd: p.bagDrawdown ?? 0.5, open: true },
+        ]
+      : [{ frac: 1, dd, open: true }];
+  let realized = 0;
   let peak = entryPrice;
-  let trailing = false; // trail/half_tp: ενεργό trailing στο υπόλοιπο
-  let ladderStep = 0; // ladder: πόσα TP έχουν γίνει
+  let trailing = false;
+  let lastReason: SimResult['reason'] = 'horizon';
+  let lastMinutes = 0;
+  const minutes = (c: Candle) => Math.max(0, (c.timestamp - entryAtMs) / MINUTE_MS);
+  const closeTranche = (t: (typeof tranches)[number], price: number, reason: SimResult['reason'], c: Candle) => {
+    realized += t.frac * (price / entryPrice);
+    t.open = false;
+    lastReason = reason;
+    lastMinutes = minutes(c);
+  };
+  const closeAll = (price: number, reason: SimResult['reason'], c: Candle): SimResult => {
+    for (const t of tranches) if (t.open) closeTranche(t, price, reason, c);
+    return { multiple: realized, reason, minutes: minutes(c) };
+  };
+  const allClosed = () => tranches.every((t) => !t.open);
+
+  for (const c of candles) {
+    // 1) χρονικό όριο: μόνο αν η θέση δεν έχει «πιάσει» ακόμα.
+    if (p.timeLimitMin !== null && !trailing && c.timestamp >= entryAtMs + p.timeLimitMin * MINUTE_MS) {
+      return closeAll(c.open, 'time_limit', c);
+    }
+    // 2) κάτω πλευρά πρώτα (συντηρητικά), με το peak ΠΡΙΝ από αυτό το candle.
+    if (!trailing) {
+      if (c.low <= stop) return closeAll(Math.min(stop, c.open), 'stop', c);
+    } else {
+      for (const t of tranches) {
+        if (!t.open) continue;
+        const ts = Math.max(peak * (1 - t.dd), floor);
+        if (c.low <= ts) closeTranche(t, Math.min(ts, c.open), 'trail', c);
+      }
+      if (allClosed()) return { multiple: realized, reason: lastReason, minutes: lastMinutes };
+    }
+    // 3) πάνω πλευρά.
+    peak = Math.max(peak, c.high);
+    if (!trailing && c.high >= entryPrice * TRAIL_ACTIVATION) {
+      trailing = true;
+      if (p.mode === 'half_tp') {
+        realized += 0.5 * TRAIL_ACTIVATION;
+        tranches[0]!.frac = 0.5;
+      }
+    }
+    // 4) αν μετά το νέο peak το close είναι ήδη κάτω από κάποιο trailing όριο, βγαίνει στο close.
+    if (trailing) {
+      for (const t of tranches) {
+        if (t.open && c.close <= Math.max(peak * (1 - t.dd), floor)) closeTranche(t, c.close, 'trail', c);
+      }
+      if (allClosed()) return { multiple: realized, reason: lastReason, minutes: lastMinutes };
+    }
+  }
+  const last = candles.at(-1)!;
+  for (const t of tranches) if (t.open) closeTranche(t, last.close, 'horizon', last);
+  return { multiple: realized, reason: lastReason, minutes: lastMinutes };
+}
+
+function simulateLadder(candles: readonly Candle[], entryPrice: number, entryAtMs: number, p: ExitParams): SimResult {
+  const stop = entryPrice * (1 - p.stopPct);
+  let remaining = 1;
+  let realized = 0;
+  let ladderStep = 0;
   const minutes = (c: Candle) => Math.max(0, (c.timestamp - entryAtMs) / MINUTE_MS);
   const sell = (fraction: number, price: number) => {
     realized += fraction * (price / entryPrice);
@@ -128,41 +204,22 @@ export function simulateExit(candles: readonly Candle[], entryPrice: number, ent
     sell(remaining, price);
     return { multiple: realized, reason, minutes: minutes(c) };
   };
-  const engaged = () => (p.mode === 'ladder' ? ladderStep > 0 : trailing);
-
   for (const c of candles) {
-    // 1) χρονικό όριο: μόνο αν η θέση δεν έχει «πιάσει» ακόμα.
-    if (p.timeLimitMin !== null && !engaged() && c.timestamp >= entryAtMs + p.timeLimitMin * MINUTE_MS) {
+    if (p.timeLimitMin !== null && ladderStep === 0 && c.timestamp >= entryAtMs + p.timeLimitMin * MINUTE_MS) {
       return done('time_limit', c, c.open);
     }
-    // 2) κάτω πλευρά πρώτα (συντηρητικά).
-    if (p.mode === 'ladder' && ladderStep > 0) {
+    if (ladderStep > 0) {
       if (c.low <= entryPrice) return done('breakeven', c, Math.min(entryPrice, c.open));
-    } else if (trailing) {
-      const trailStop = Math.max(peak * (1 - TRAIL_DRAWDOWN), entryPrice * TRAIL_FLOOR);
-      if (c.low <= trailStop) return done('trail', c, Math.min(trailStop, c.open));
     } else if (c.low <= stop) {
       return done('stop', c, Math.min(stop, c.open));
     }
-    // 3) πάνω πλευρά.
-    peak = Math.max(peak, c.high);
-    if (p.mode === 'ladder') {
-      if (ladderStep === 0 && c.high >= entryPrice * 2) {
-        sell(0.25, entryPrice * 2);
-        ladderStep = 1;
-      }
-      if (ladderStep === 1 && c.high >= entryPrice * 3) {
-        sell(0.25, entryPrice * 3);
-        ladderStep = 2;
-      }
-    } else if (!trailing && c.high >= entryPrice * TRAIL_ACTIVATION) {
-      trailing = true;
-      if (p.mode === 'half_tp') sell(0.5, entryPrice * TRAIL_ACTIVATION);
+    if (ladderStep === 0 && c.high >= entryPrice * 2) {
+      sell(0.25, entryPrice * 2);
+      ladderStep = 1;
     }
-    // 4) αν μετά το νέο peak το close είναι ήδη κάτω από το trailing όριο, βγαίνουμε στο close.
-    if (p.mode !== 'ladder' && trailing) {
-      const trailStop = Math.max(peak * (1 - TRAIL_DRAWDOWN), entryPrice * TRAIL_FLOOR);
-      if (c.close <= trailStop) return done('trail', c, c.close);
+    if (ladderStep === 1 && c.high >= entryPrice * 3) {
+      sell(0.25, entryPrice * 3);
+      ladderStep = 2;
     }
   }
   const last = candles.at(-1)!;
