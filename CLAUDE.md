@@ -1021,3 +1021,8 @@ entirely in our own Postgres.
 
 - Live buys use `--slippage 15` (`LIVE_BUY_SLIPPAGE_PCT`, `buySlippageArgs()` in `gmgn/swap.ts`) instead of `--auto-slippage`. entry-speed-report on 12 live buys: executed vs signal median +4.8%, mean +19.8%, p90 +57.7% — auto-slippage let buys fill after the price had already run. A buy that would move more than 15% between GMGN's quote and confirmation is rejected → `swap_failed` → the trade is paper. Sells stay `--auto-slippage` (always get out).
 - Limit: the 15% covers quote→confirmation, not the ~1s between the wallet's buy and our request. Re-check `entry-speed-report` (slippage vs signal) after ~20 live buys.
+
+## Winners report (2026-10-06, explicit user request) — read-only
+
+- `railway run npm run winners-report [-- --hours 48 --top 20 --min-ath 300000 --traders 15]` (`scripts/winners-report.ts`). GMGN `market trending` 24h, Pump.fun, created within N hours, ATH ≥ min, ordered by ATH market cap → top N. Per token: dev (`portfolio created-tokens`: total / graduated / best ATH) and `token traders --order-by profit --limit 100` (pools excluded): ×, $ profit, cost, entry minutes after creation, entry mcap (avg_cost × supply), % sold, GMGN tags, funding source (`native_transfer`), ★ if in our watchlist. Cross-section: wallets ≥2× in 2+ winners, shared funders, devs with 2+ winners, our watchlist hits, and when/at what mcap the ≥10× traders entered (= how catchable the winners were).
+- GMGN calls 1 + 2×top (traders weight 5, created-tokens weight 2), 1.5″ pacing, waits out bans. Nothing is stored.
