@@ -157,3 +157,12 @@ test('executeLiveSell: a CLI failure WITHOUT a swap API code stays a plain GmgnC
     });
   });
 });
+
+// --- 2026-10-06: σταθερή ανοχή slippage στις αγορές ---
+import { buySlippageArgs, LIVE_BUY_SLIPPAGE_PCT } from './swap.js';
+
+test('buySlippageArgs: σταθερό 15% (όχι auto) — null γυρνάει στο --auto-slippage', () => {
+  assert.equal(LIVE_BUY_SLIPPAGE_PCT, 15);
+  assert.deepEqual(buySlippageArgs(), ['--slippage', '15']);
+  assert.deepEqual(buySlippageArgs(null), ['--auto-slippage']);
+});

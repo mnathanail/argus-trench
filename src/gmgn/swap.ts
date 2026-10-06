@@ -228,6 +228,20 @@ export const CONDITION_ORDER_PRIORITY_FEE_SOL = '0.00002';
 export const CONDITION_ORDER_TIP_FEE_SOL = '0.00002';
 
 /**
+ * 2026-10-06, ρητή απόφαση χρήστη: σταθερή ανοχή slippage στις ΑΓΟΡΕΣ αντί για --auto-slippage.
+ * entry-speed-report (12 live): τιμή εκτέλεσης vs σήμα διάμεσο +4.8%, μέσο +19.8%, p90 +57.7% —
+ * το auto-slippage άφηνε να εκτελούνται αγορές αφού η τιμή είχε ήδη εκτοξευθεί. Με 15%, αν η
+ * τιμή φύγει περισσότερο ως την επιβεβαίωση, το swap απορρίπτεται → το trade γίνεται paper
+ * (swap_failed). Οι ΠΩΛΗΣΕΙΣ μένουν --auto-slippage: βγαίνουμε πάντα.
+ */
+export const LIVE_BUY_SLIPPAGE_PCT = 15;
+
+/** Τα args slippage μιας live αγοράς (exported για test). */
+export function buySlippageArgs(slippagePct: number | null = LIVE_BUY_SLIPPAGE_PCT): string[] {
+  return slippagePct === null ? ['--auto-slippage'] : ['--slippage', String(slippagePct)];
+}
+
+/**
  * Αγορά — input=SOL (currency, άρα ΠΑΝΤΑ --amount, ΠΟΤΕ --percent, βλ. SKILL.md).
  * Πετάει `AutomatedTradesDisabledError` αν λείπει το flag, `SwapFailedError` αν το ίδιο
  * το swap απέτυχε ρητά — ο caller ΔΕΝ πρέπει να καταγράψει θέση σε καμία από τις δύο.
@@ -269,7 +283,7 @@ export async function executeLiveBuy(
       '--input-token', WSOL_MINT,
       '--output-token', outputToken,
       '--amount', solToLamports(amountSol),
-      '--auto-slippage', // συνιστάται ρητά για ασταθή tokens (memecoins) στο SKILL.md
+      ...buySlippageArgs(), // 2026-10-06: σταθερό 15% (βλ. LIVE_BUY_SLIPPAGE_PCT)
       '--anti-mev',
       ...conditionOrderArgs,
       '--yes',

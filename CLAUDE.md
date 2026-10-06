@@ -1016,3 +1016,8 @@ entirely in our own Postgres.
 - `LIVE_DISCOVERY_GATE = false`: discovery entries stay paper (fallback `discovery_gate_paper_only`); on-demand entries go live when `GMGN_ALLOW_AUTOMATED_TRADES=1`. First day of the new rules: discovery 1/11 wins, −0.28 SOL (enters ~13′ after creation at ~100 SOL mcap); on-demand 14/27, +0.18.
 - `paperOnlyReason(graduated, gateSource)` in `realtimeEntryHandler.ts` is the single place that decides "don't even try live" (graduated / on-demand / discovery flags), tested.
 - Plan: 0.05 SOL per position as a measurement run; after ~30 live trades compare live entry/exit prices with paper (`npm run entry-speed-report`: slippage vs signal). The open question is the live entry slippage (earlier 10 live trades: median +2.9%, mean +15.8%) against an on-demand paper edge of ~+6.6%/trade.
+
+## Fixed buy slippage (2026-10-06, explicit user decision)
+
+- Live buys use `--slippage 15` (`LIVE_BUY_SLIPPAGE_PCT`, `buySlippageArgs()` in `gmgn/swap.ts`) instead of `--auto-slippage`. entry-speed-report on 12 live buys: executed vs signal median +4.8%, mean +19.8%, p90 +57.7% — auto-slippage let buys fill after the price had already run. A buy that would move more than 15% between GMGN's quote and confirmation is rejected → `swap_failed` → the trade is paper. Sells stay `--auto-slippage` (always get out).
+- Limit: the 15% covers quote→confirmation, not the ~1s between the wallet's buy and our request. Re-check `entry-speed-report` (slippage vs signal) after ~20 live buys.
