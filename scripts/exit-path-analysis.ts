@@ -14,7 +14,7 @@ import {
 import { anchorCandlesToEntryPrice } from '../src/collectors/exitResolver.js';
 import { closePool, getPool } from '../src/db/pool.js';
 import { PAPER_ASSUMED_FEES_PCT } from '../src/decision/paperTradingConfig.js';
-import { rethrowIfRateLimited } from '../src/gmgn/errors.js';
+import { GmgnRateLimitError } from '../src/gmgn/errors.js';
 import { fetchKline, type Candle } from '../src/gmgn/kline.js';
 import { delay } from '../src/util/delay.js';
 
@@ -145,20 +145,41 @@ try {
   const cache = loadCache();
   let fetched = 0;
   let failed = 0;
+  const saveCache = () => {
+    if (USE_CACHE) fs.writeFileSync(CACHE_FILE, JSON.stringify(cache));
+  };
+  // 2026-10-06: η 1η εκτέλεση με live ενεργό έφαγε GMGN ban (429 RATE_LIMIT_BANNED) — το script
+  // μοιράζεται το ίδιο IP με το bot. Τώρα: πιο αργά (1.2″/call) και σε ban ΠΕΡΙΜΕΝΕΙ ως τη λήξη του
+  // (από το μήνυμα, +5″, έως 5′) αντί να σπάει ή να ξαναχτυπάει μέσα στο ban.
+  const banWaitMs = (error: GmgnRateLimitError): number => {
+    const m = /resets at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/.exec(error.output);
+    const until = error.retryAt?.getTime() ?? (m ? Date.parse(`${m[1]!.replace(' ', 'T')}Z`) : Number.NaN);
+    const ms = Number.isFinite(until) ? until - Date.now() + 5_000 : 60_000;
+    return Math.min(Math.max(ms, 10_000), 5 * 60_000);
+  };
   const kline = async (key: string, tokenAddress: string, fromMs: number, toMs: number, resolution: string): Promise<Candle[] | undefined> => {
     if (cache[key] !== undefined) return cache[key];
-    try {
-      const c = await fetchKline({ chain: 'sol', tokenAddress, from: Math.floor(fromMs / 1000), to: Math.floor(toMs / 1000), resolution });
-      cache[key] = c;
-      fetched += 1;
-      await delay(400);
-      if (fetched % 50 === 0 && USE_CACHE) fs.writeFileSync(CACHE_FILE, JSON.stringify(cache));
-      return c;
-    } catch (error) {
-      rethrowIfRateLimited(error);
-      failed += 1;
-      return undefined;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      try {
+        const c = await fetchKline({ chain: 'sol', tokenAddress, from: Math.floor(fromMs / 1000), to: Math.floor(toMs / 1000), resolution });
+        cache[key] = c;
+        fetched += 1;
+        await delay(1_200);
+        if (fetched % 10 === 0) saveCache();
+        return c;
+      } catch (error) {
+        if (!(error instanceof GmgnRateLimitError)) {
+          failed += 1;
+          return undefined;
+        }
+        saveCache();
+        const wait = banWaitMs(error);
+        console.log(`  GMGN rate limit — περιμένω ${Math.round(wait / 1000)}″ (απόπειρα ${attempt + 1}/6)`);
+        await delay(wait);
+      }
     }
+    failed += 1;
+    return undefined;
   };
   // SOL/USD: candles 5′ ανά μέρα, από την πρώτη είσοδο ως 24h μετά την τελευταία.
   const solCandles: Candle[] = [];
