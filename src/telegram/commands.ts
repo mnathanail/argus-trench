@@ -1,4 +1,5 @@
 import type { MirrorWalletSummary } from '../db/repositories/mirror.js';
+import { MIRROR_ENABLED } from '../mirror/mirrorConfig.js';
 import type { WalletStats } from '../gmgn/walletStats.js';
 import type { WatchlistWallet } from '../db/repositories/watchlistWallets.js';
 import type { WalletScoreEntry } from '../db/repositories/walletScoreHistory.js';
@@ -169,11 +170,11 @@ export async function handleCommand(text: string, deps: CommandDeps): Promise<st
     case '/digest':
       return deps.runDigest();
     case '/mirror':
-      return withAddress(argument, (address) => mirror(address, rest, deps));
+      return withMirrorPauseNote(await withAddress(argument, (address) => mirror(address, rest, deps)));
     case '/unmirror':
-      return withAddress(argument, (address) => unmirror(address, deps));
+      return withMirrorPauseNote(await withAddress(argument, (address) => unmirror(address, deps)));
     case '/mirrors':
-      return mirrors(deps);
+      return withMirrorPauseNote(await mirrors(deps));
     default:
       return `Άγνωστη εντολή: ${command || '(κενό)'}\n\n${HELP}`;
   }
@@ -184,6 +185,12 @@ export async function handleCommand(text: string, deps: CommandDeps): Promise<st
  * αν υπάρχει, κρατάει source/όνομα (όνομα αλλάζει μόνο αν δοθεί). Mirror = ενεργό, εκτός
  * κανονικού argus, ποτέ αυτόματη απενεργοποίηση.
  */
+/** 2026-10-06 — βλ. MIRROR_ENABLED (mirror σε παύση, δεδομένα ανέγγιχτα). */
+const MIRROR_PAUSED_NOTE = '⏸ Το mirror είναι σε ΠΑΥΣΗ — δεν καταγράφεται τίποτα μέχρι να ξαναενεργοποιηθεί (MIRROR_ENABLED).';
+function withMirrorPauseNote(text: string): string {
+  return MIRROR_ENABLED ? text : `${text}\n${MIRROR_PAUSED_NOTE}`;
+}
+
 async function mirror(address: string, name: string, deps: CommandDeps): Promise<string> {
   const trimmedName = name.trim();
   const existing = await deps.getWallet(address);

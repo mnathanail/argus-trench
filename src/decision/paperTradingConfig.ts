@@ -145,6 +145,24 @@ export const NO_PROGRESS_EXIT_MS = 30 * 60 * 1000;
  */
 export const MIN_WALLET_BUY_SOL = 0.3;
 
+/**
+ * ΝΕΟ 2026-10-06, ρητή απόφαση χρήστη — PAPER πείραμα «τα φίλτρα πετάνε τους winners».
+ * winners-why: σε 13 από τους 20 μεγαλύτερους winners των 48 ωρών αγόρασαν wallets μας
+ * (264 αγορές) και δεν μπήκαμε σε κανέναν: gate_not_passed 165 (κυρίως bundler 0.40–0.63),
+ * wallet_buy_too_small 72, graduated_off 17.
+ *
+ * Με true, οι αγορές wallets μας που ως τώρα πετιούνταν ανοίγουν PAPER θέση με ετικέτα στο
+ * `entry_timing_json.experiment` (array, υπάρχει ΜΟΝΟ στα πειραματικά trades):
+ *  - 'relaxed_gate': το token δεν πέρασε το gate (discovery ή on-demand, ή δεν αξιολογήθηκε
+ *    καθόλου) — `entry_timing_json.gate_fail_reason` = ποιος κανόνας το έκοψε.
+ *  - 'small_buy': αγορά του wallet < MIN_WALLET_BUY_SOL.
+ *  - 'graduated': token εκτός bonding curve.
+ * ΠΟΤΕ live (fallback `experiment_paper_only`). Τα κανονικά σήματα δουλεύουν όπως πριν, και
+ * ένα ανοιχτό πειραματικό trade ΔΕΝ μπλοκάρει κανονική (live) είσοδο στο ίδιο token.
+ * false = ακριβώς η παλιά συμπεριφορά (skips).
+ */
+export const PAPER_EXPERIMENT_ENABLED = true;
+
 export const EXIT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
 /**

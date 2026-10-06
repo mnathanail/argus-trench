@@ -44,6 +44,7 @@ import { handleRealtimeEntryEvent } from './realtime/realtimeEntryHandler.js';
 import { handleMirrorEvent, setMirrorSubscriber, type MirrorOutcome } from './mirror/mirrorHandler.js';
 import { MIRROR_POLL_INTERVAL_MS, runMirrorPollCycle } from './mirror/mirrorPoller.js';
 import { startHeliusMirrorSource } from './mirror/heliusMirrorSource.js';
+import { MIRROR_ENABLED } from './mirror/mirrorConfig.js';
 import { expireMirrorShadows, handleMirrorShadowTick, hasActiveShadow, refreshMirrorShadows } from './mirror/mirrorShadow.js';
 import { runScheduler, SharedCooldown, type LoopDefinition } from './scheduler.js';
 import { createBotFromEnv, runBot } from './telegram/bot.js';
@@ -145,6 +146,8 @@ realtimeConnection = pumpportalApiKey
           .then(async (outcomes) => {
             for (const o of outcomes) {
               if (o.type === 'closed') {
+                // 2026-10-06: τα trades του paper πειράματος μόνο στη βάση (θα ήταν δεκάδες/μέρα).
+                if (o.experiment === true) continue;
                 const outcomeEmoji = o.pnlPct > 0 ? '🟢' : '🔴';
                 await notify(
                   `⚡ ${outcomeEmoji} ${o.exitReason} μέσω realtime — ${short(o.tokenAddress)} ` +
@@ -174,7 +177,8 @@ realtimeConnection = pumpportalApiKey
         // 2026-09-30 — MIRROR route: ανεξάρτητη τρίτη αλυσίδα (paper). Ειδοποίηση μόνο σε
         // άνοιγμα/κλείσιμο θέσης — οι ενδιάμεσες αγορές/πωλήσεις γράφονται στο mirror_events.
         // Σκιά trailing των mirror θέσεων — μόνο καταγραφή, ποτέ πραγματική έξοδος.
-        handleMirrorShadowTick(event)
+        // 2026-10-06 (ρητή απόφαση χρήστη): mirror σε παύση — βλ. MIRROR_ENABLED.
+        if (MIRROR_ENABLED) handleMirrorShadowTick(event)
           .then(async (closed) => {
             for (const c of closed) {
               console.log(
@@ -188,7 +192,7 @@ realtimeConnection = pumpportalApiKey
             console.error(`[mirror-shadow] σφάλμα: ${error instanceof Error ? error.message : String(error)}`);
           });
 
-        handleMirrorEvent(event, 'pumpportal')
+        if (MIRROR_ENABLED) handleMirrorEvent(event, 'pumpportal')
           .then(notifyMirrorOutcome)
           .catch((error) => {
             console.error(`[mirror] σφάλμα: ${error instanceof Error ? error.message : String(error)}`);
@@ -197,6 +201,10 @@ realtimeConnection = pumpportalApiKey
         handleRealtimeEntryEvent(event, realtimeConnection)
           .then(async (entry) => {
             if (entry === null) return;
+            if (entry.experiment.length > 0) {
+              console.log(`[realtime-entry] paper πείραμα [${entry.experiment.join(',')}] ${short(entry.tokenAddress)}`);
+              return;
+            }
             // ΔΙΟΡΘΩΣΗ 2026-09-18 (πραγματικό εύρημα): πριν, το kill-switch ενεργοποιούνταν
             // σιωπηλά μέσα στο checkLiveRiskGate — ο χρήστης το μάθαινε μόνο από το επόμενο
             // daily digest (ή ένα ήδη-μπαγιάτικο digest, ακριβώς αυτό που τον μπέρδεψε
@@ -248,19 +256,23 @@ realtimeConnection = pumpportalApiKey
 // 2026-09-30 — MIRROR γρήγορη πηγή (Helius logsSubscribe). Μόνο με MIRROR_HELIUS=on.
 const heliusApiKey = config.heliusApiKey();
 const heliusMirror =
-  heliusApiKey !== undefined && config.mirrorHeliusEnabled()
+  MIRROR_ENABLED && heliusApiKey !== undefined && config.mirrorHeliusEnabled()
     ? await startHeliusMirrorSource(heliusApiKey, notifyMirrorOutcome).catch((error) => {
         console.error(`[mirror-helius] δεν ξεκίνησε: ${error instanceof Error ? error.message : String(error)}`);
         return undefined;
       })
     : undefined;
 console.log(
+  MIRROR_ENABLED ? '[main] mirror: ενεργό' : '[main] mirror: ΣΕ ΠΑΥΣΗ (MIRROR_ENABLED=false) — καμία πηγή, κανένα tick, δεδομένα ανέγγιχτα',
+);
+if (MIRROR_ENABLED) console.log(
   `[main] mirror πηγές: pumpportal=${realtimeConnection ? 'ναι' : 'όχι'} gmgn=${heliusMirror ? 'όχι (υπάρχει helius)' : 'ναι'} ` +
     `helius=${heliusMirror ? 'ναι' : heliusApiKey === undefined ? 'όχι (λείπει HELIUS_API_KEY)' : 'όχι (MIRROR_HELIUS≠on)'}`,
 );
 // Νέο /mirror wallet → συνδρομή αμέσως σε όσες realtime πηγές υπάρχουν.
 const connectionForMirror = realtimeConnection;
 setMirrorSubscriber((address) => {
+  if (!MIRROR_ENABLED) return;
   connectionForMirror?.subscribeWallet(address);
   heliusMirror?.addWallet(address);
 });
@@ -268,7 +280,7 @@ setMirrorSubscriber((address) => {
 if (realtimeConnection) {
   realtimeConnection.connect();
   // Σκιές trailing που τρέχουν ακόμα (μετά από restart) → ξανά token ticks.
-  const shadowTokens = await refreshMirrorShadows().catch(() => [] as string[]);
+  const shadowTokens = MIRROR_ENABLED ? await refreshMirrorShadows().catch(() => [] as string[]) : [];
   for (const token of shadowTokens) realtimeConnection.subscribeToken(token);
   const openTargets = await listOpenTradesWithWallet();
   subscribeOpenTrades(realtimeConnection, openTargets);
@@ -425,6 +437,7 @@ const loops: LoopDefinition[] = [
     intervalMs: MIRROR_POLL_INTERVAL_MS,
     initialDelayMs: 20_000,
     run: async () => {
+      if (!MIRROR_ENABLED) return;
       await expireMirrorShadows().catch((error) => console.error(`[mirror-shadow] expire: ${String(error)}`));
       // 2026-10-04: με ενεργό Helius το GMGN poll έφερνε μόνο duplicates και ήταν η κύρια
       // αιτία των GMGN IP bans (72/170 σε 4 ώρες) — δεν τρέχει πια όσο δουλεύει το Helius.

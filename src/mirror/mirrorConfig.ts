@@ -3,6 +3,14 @@
  * mirrorDecision.ts για τους κανόνες.
  */
 
+/**
+ * 2026-10-06, ρητή απόφαση χρήστη: «σταμάτα το /mirror, δε θέλω άλλα data για τώρα — μη
+ * διαγράψεις τίποτα». Με false: καμία πηγή (PumpPortal routing, Helius, GMGN poll), κανένα
+ * shadow tick/expiry, τα mirror wallets δεν γίνονται subscribe. Πίνακες, δεδομένα, κώδικας
+ * και οι εντολές /mirror /unmirror /mirrors μένουν (απαντούν ότι είναι σε παύση).
+ */
+export const MIRROR_ENABLED = false;
+
 /** Μόνο paper μέχρι να δούμε αποτελέσματα (ρητή απόφαση). Το live θα είναι ξεχωριστό βήμα. */
 export const MIRROR_MODE = 'paper' as const;
 

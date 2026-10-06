@@ -262,3 +262,34 @@ test('paperOnlyReason: κάθε σημαία ανεξάρτητη', () => {
   assert.equal(paperOnlyReason(true, 'discovery', all), null);
   assert.equal(paperOnlyReason(false, 'on_demand', { ...all, onDemand: false }), 'on_demand_gate_paper_only');
 });
+
+// --- 2026-10-06: paper πείραμα (PAPER_EXPERIMENT_ENABLED) ---
+import { experimentTags, experimentTimingJson } from './realtimeEntryHandler.js';
+import { PAPER_EXPERIMENT_ENABLED } from '../decision/paperTradingConfig.js';
+
+test('experimentTags: μία ετικέτα ανά λόγο που θα κοβόταν, κενό για κανονικό σήμα', () => {
+  assert.deepEqual(experimentTags({ relaxedGate: false, smallBuy: false, graduated: false }), []);
+  assert.deepEqual(experimentTags({ relaxedGate: true, smallBuy: true, graduated: false }), ['relaxed_gate', 'small_buy']);
+  assert.deepEqual(experimentTags({ relaxedGate: false, smallBuy: false, graduated: true }), ['graduated']);
+});
+
+test('paperOnlyReason: πειραματικό σήμα ή χωρίς gate → ΠΟΤΕ live, ακόμα κι αν όλες οι live σημαίες είναι true', () => {
+  const all = { graduated: true, onDemand: true, discovery: true };
+  assert.equal(paperOnlyReason(false, 'on_demand', all, ['small_buy']), 'experiment_paper_only');
+  assert.equal(paperOnlyReason(false, 'none', all), 'experiment_paper_only');
+  assert.equal(paperOnlyReason(true, 'discovery', all, ['graduated']), 'experiment_paper_only');
+  assert.equal(paperOnlyReason(false, 'on_demand', all, []), null, 'κανονικό σήμα όπως πριν');
+});
+
+test('experimentTimingJson: πεδία ΜΟΝΟ στα πειραματικά trades (με αυτά ξεχωρίζουν στη βάση)', () => {
+  assert.deepEqual(experimentTimingJson([], null, 'passed'), {});
+  assert.deepEqual(experimentTimingJson(['relaxed_gate'], 'bundler_trader_amount_rate 0.45 > max 0.3', 'failed'), {
+    experiment: ['relaxed_gate'],
+    gate_fail_reason: 'bundler_trader_amount_rate 0.45 > max 0.3',
+    on_demand_outcome: 'failed',
+  });
+});
+
+test('PAPER_EXPERIMENT_ENABLED: ενεργό (ρητή απόφαση 2026-10-06)', () => {
+  assert.equal(PAPER_EXPERIMENT_ENABLED, true);
+});

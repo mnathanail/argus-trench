@@ -425,6 +425,18 @@ export async function countOpenTradesForToken(tokenAddress: string, conn?: Query
   return toNum(requireRow(rows, 'countOpenTradesForToken').count);
 }
 
+/** 2026-10-06 — όπως countOpenTradesForToken, αλλά χωρίς τα paper ΠΕΙΡΑΜΑΤΙΚΑ trades
+ * (`entry_timing_json ? 'experiment'`): αυτά δεν μπλοκάρουν ποτέ κανονική είσοδο. */
+export async function countOpenNonExperimentTradesForToken(tokenAddress: string, conn?: Queryable): Promise<number> {
+  const { rows } = await db(conn).query<{ count: string }>(
+    `SELECT count(*) AS count FROM paper_trades
+      WHERE status = 'open' AND token_address = $1
+        AND NOT (COALESCE(entry_timing_json, '{}'::jsonb) ? 'experiment')`,
+    [tokenAddress],
+  );
+  return toNum(requireRow(rows, 'countOpenNonExperimentTradesForToken').count);
+}
+
 export interface OpenTradeSubscriptionTarget {
   tokenAddress: string;
   triggerWalletAddress: string | null;
@@ -648,6 +660,8 @@ export interface OpenTradeForTick {
    * (collectors/liveStrategyReconciler.ts) πρέπει να το παρακολουθεί. */
   nativeOrderActive: boolean;
   liveStrategyOrderId: string | null;
+  /** 2026-10-06: paper πείραμα (`entry_timing_json ? 'experiment'`) — κλείνει χωρίς Telegram. */
+  isExperiment?: boolean;
 }
 
 /**
@@ -697,12 +711,14 @@ export async function getOpenTradeForTickLocked(
     exit_attempt_started_at: Date | null;
     native_order_active: boolean;
     live_strategy_order_id: string | null;
+    is_experiment: boolean | null;
   }>(
     `SELECT pt.id, pt.simulated_entry_price, pt.entry_at, pt.bankroll_at_entry,
             pt.intended_size_pct, pt.peak_price_since_entry, pt.trailing_active,
             dl.trigger_wallet_address, pt.mode, pt.actual_entry_amount_sol,
             pt.needs_manual_exit, pt.exit_attempt_started_at, pt.native_order_active,
-            pt.live_strategy_order_id
+            pt.live_strategy_order_id,
+            COALESCE(pt.entry_timing_json ? 'experiment', false) AS is_experiment
        FROM paper_trades pt
        JOIN decision_log dl ON dl.id = pt.decision_log_id
       WHERE pt.id = $1 AND pt.status = 'open'
@@ -727,6 +743,7 @@ export async function getOpenTradeForTickLocked(
     exitAttemptStartedAt: row.exit_attempt_started_at,
     nativeOrderActive: row.native_order_active,
     liveStrategyOrderId: row.live_strategy_order_id,
+    isExperiment: row.is_experiment === true,
   };
 }
 

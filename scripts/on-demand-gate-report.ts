@@ -42,12 +42,12 @@ try {
     `SELECT count(*) FILTER (WHERE gate_passed)     AS passed,
             count(*) FILTER (WHERE NOT gate_passed) AS failed
        FROM decision_log
-      WHERE candidate_source = 'on_demand'`,
+      WHERE candidate_source = 'on_demand' AND logic_version NOT LIKE '%:exp'`,
   );
   const { rows: reasons } = await pool.query<{ reason: string; n: string }>(
     `SELECT split_part(gate_fail_reason, ' ', 1) AS reason, count(*) AS n
        FROM decision_log
-      WHERE candidate_source = 'on_demand' AND NOT gate_passed
+      WHERE candidate_source = 'on_demand' AND NOT gate_passed AND logic_version NOT LIKE '%:exp'
       GROUP BY 1 ORDER BY 2 DESC LIMIT 5`,
   );
 
@@ -76,6 +76,7 @@ try {
          JOIN decision_log d ON d.id = pt.decision_log_id
         WHERE d.trigger_wallet_snapshot_json->>'source_channel' = 'pumpportal_websocket'
           AND d.trigger_wallet_snapshot_json->>'token_stage' = 'bonding_curve'
+          AND NOT (d.trigger_wallet_snapshot_json ? 'experiment')
           AND pt.entry_at >= $1
         GROUP BY 1
         ORDER BY 1 DESC`,
@@ -92,7 +93,8 @@ try {
                    AND x.gate_passed)) AS later_passed
          FROM paper_trades pt
          JOIN decision_log d ON d.id = pt.decision_log_id
-        WHERE d.trigger_wallet_snapshot_json->>'gate_source' = 'on_demand'`,
+        WHERE d.trigger_wallet_snapshot_json->>'gate_source' = 'on_demand'
+          AND NOT (d.trigger_wallet_snapshot_json ? 'experiment')`,
     );
 
     console.log(`\n=== Σύγκριση (bonding-curve realtime trades από ${since.toISOString().replace('T', ' ').slice(0, 16)} UTC) ===`);

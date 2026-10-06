@@ -1,9 +1,10 @@
-import { findPassedTokens, recordTrigger, linkTrade } from '../db/repositories/decisionLog.js';
+import { findPassedTokens, recordTrigger, recordExperimentTrigger, linkTrade } from '../db/repositories/decisionLog.js';
 import { isRealtimeSignalWallet } from './walletSubscriptionSync.js';
 import {
   openTrade,
   countOpenLiveOrPaperTrades,
   countOpenTradesForToken,
+  countOpenNonExperimentTradesForToken,
   setNativeOrderState,
 } from '../db/repositories/paperTrades.js';
 import { getWallet, type WatchlistWallet } from '../db/repositories/watchlistWallets.js';
@@ -25,6 +26,7 @@ import {
   conditionOrdersJson,
   liveExitConditionOrders,
   MIN_WALLET_BUY_SOL,
+  PAPER_EXPERIMENT_ENABLED,
 } from '../decision/paperTradingConfig.js';
 import { WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE } from '../collectors/intervals.js';
 import {
@@ -65,10 +67,25 @@ export interface RealtimeEntryResult {
   nativeOrderVerified: boolean;
   /** Μπήκε μέσω on-demand gate (2026-09-28) — βλ. decision/onDemandGate.ts. */
   onDemandGate: boolean;
+  /** Paper πείραμα (2026-10-06) — κενό για κανονικά σήματα. */
+  experiment: ExperimentTag[];
 }
 
-/** Από πού ήρθε το «πέρασε το gate» ενός σήματος. */
-export type GateSource = 'discovery' | 'on_demand';
+/** Από πού ήρθε το «πέρασε το gate» ενός σήματος. 'none' = ΔΕΝ πέρασε (paper πείραμα
+ * relaxed_gate, 2026-10-06). */
+export type GateSource = 'discovery' | 'on_demand' | 'none';
+
+/** Ετικέτες του paper πειράματος (PAPER_EXPERIMENT_ENABLED) — βλ. paperTradingConfig.ts. */
+export type ExperimentTag = 'relaxed_gate' | 'small_buy' | 'graduated';
+
+/** Ποιες ετικέτες πειράματος παίρνει ένα σήμα (κενό = κανονικό σήμα, όπως πριν). */
+export function experimentTags(input: { relaxedGate: boolean; smallBuy: boolean; graduated: boolean }): ExperimentTag[] {
+  const tags: ExperimentTag[] = [];
+  if (input.relaxedGate) tags.push('relaxed_gate');
+  if (input.smallBuy) tags.push('small_buy');
+  if (input.graduated) tags.push('graduated');
+  return tags;
+}
 
 /**
  * Γιατί ΔΕΝ επιχειρούμε καν live (null = επιχειρούμε). Graduated → LIVE_ON_GRADUATED_TOKENS,
@@ -82,7 +99,10 @@ export function paperOnlyReason(
     onDemand: LIVE_ON_DEMAND_GATE,
     discovery: LIVE_DISCOVERY_GATE,
   },
-): 'graduated_paper_only' | 'on_demand_gate_paper_only' | 'discovery_gate_paper_only' | null {
+  experiment: readonly ExperimentTag[] = [],
+): 'graduated_paper_only' | 'on_demand_gate_paper_only' | 'discovery_gate_paper_only' | 'experiment_paper_only' | null {
+  // 2026-10-06: πειραματικό σήμα (ή χωρίς gate) → ΠΟΤΕ live.
+  if (experiment.length > 0 || gateSource === 'none') return 'experiment_paper_only';
   if (graduated && !flags.graduated) return 'graduated_paper_only';
   if (gateSource === 'on_demand' && !flags.onDemand) return 'on_demand_gate_paper_only';
   if (gateSource === 'discovery' && !flags.discovery) return 'discovery_gate_paper_only';
@@ -235,7 +255,9 @@ export async function handleRealtimeEntryEvent(
     recordEntrySkip(event, 'wallet_bot', { avg_holding_sec: wallet.avgHoldingSec ?? null });
     return null;
   }
-  if (wallet !== null && wallet.active && isWalletBuyTooSmall(event)) {
+  const smallBuy = wallet !== null && wallet.active && isWalletBuyTooSmall(event);
+  // 2026-10-06: με το paper πείραμα η μικρή αγορά συνεχίζει (ετικέτα small_buy, μόνο paper).
+  if (smallBuy && !PAPER_EXPERIMENT_ENABLED) {
     recordEntrySkip(event, 'wallet_buy_too_small', { min_sol: MIN_WALLET_BUY_SOL });
     return null;
   }
@@ -266,7 +288,17 @@ export async function handleRealtimeEntryEvent(
     }
   }
 
-  const decision = decideEntry(event, wallet, gateSnapshotExists, openTradesCount);
+  let decision = decideEntry(event, wallet, gateSnapshotExists, openTradesCount);
+  // 2026-10-06 — paper πείραμα relaxed_gate: ΜΟΝΟ όταν ο μοναδικός λόγος skip είναι το gate.
+  let relaxedGate = false;
+  if (decision.type === 'skip' && PAPER_EXPERIMENT_ENABLED && !gateSnapshotExists) {
+    const relaxed = decideEntry(event, wallet, true, openTradesCount);
+    if (relaxed.type === 'enter') {
+      decision = relaxed;
+      relaxedGate = true;
+      gateSource = 'none';
+    }
+  }
   if (decision.type === 'skip') {
     // 2026-09-24 — διαγνωστικό: το decideEntry (σκόπιμα pure, βλ. tests) γυρνάει μόνο
     // {type:'skip'}, χωρίς λόγο — καμία από τις 5 περιπτώσεις του δεν άφηνε ίχνος στα
@@ -299,7 +331,8 @@ export async function handleRealtimeEntryEvent(
   if (wallet === null) return null;
 
   // 2026-09-29 (ρητή απόφαση χρήστη): graduated tokens → τίποτα, ούτε paper.
-  if (decision.graduated && !LIVE_ON_GRADUATED_TOKENS) {
+  // 2026-10-06: εκτός αν τρέχει το paper πείραμα (ετικέτα graduated, μόνο paper).
+  if (decision.graduated && !LIVE_ON_GRADUATED_TOKENS && !PAPER_EXPERIMENT_ENABLED) {
     console.log(`[realtime-entry-skip] reason=graduated_off mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`);
     recordEntrySkip(event, 'graduated_off', { gate_source: gateSource });
     return null;
@@ -307,13 +340,23 @@ export async function handleRealtimeEntryEvent(
 
   // 2026-09-28: ΕΝΑ trade ανά token — βλ. entriesInFlight. Πρώτα το in-memory lock (πιάνει
   // ταυτόχρονα events), μετά η βάση (πιάνει ένα νέο event όσο το trade είναι ακόμα ανοιχτό).
+  const experiment = experimentTags({
+    relaxedGate,
+    smallBuy,
+    graduated: decision.graduated && !LIVE_ON_GRADUATED_TOKENS,
+  });
+  const entry: ClaimedEntry = { decision, version, gateSource, timeline, experiment, onDemandOutcome };
   const result = await withTokenEntryLock(event.mint, async () => {
-    if ((await countOpenTradesForToken(event.mint)) > 0) {
+    // Πειραματικό σήμα: όχι αν υπάρχει ΟΠΟΙΟΔΗΠΟΤΕ ανοιχτό trade στο token. Κανονικό σήμα:
+    // τα πειραματικά (paper) δεν το μπλοκάρουν — το πείραμα δεν αγγίζει ποτέ το live.
+    const openForToken =
+      experiment.length > 0 ? await countOpenTradesForToken(event.mint) : await countOpenNonExperimentTradesForToken(event.mint);
+    if (openForToken > 0) {
       console.log(`[realtime-entry-skip] reason=token_already_open mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`);
       recordEntrySkip(event, 'token_already_open');
       return null;
     }
-    return enterClaimedSignal(event, connection, wallet, decision, version, gateSource, timeline);
+    return enterClaimedSignal(event, connection, wallet, entry);
   });
   if (result === IN_FLIGHT) {
     console.log(`[realtime-entry-skip] reason=entry_in_flight mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`);
@@ -323,26 +366,39 @@ export async function handleRealtimeEntryEvent(
   return result;
 }
 
+interface ClaimedEntry {
+  decision: Extract<EntryDecision, { type: 'enter' }>;
+  version: string;
+  gateSource: GateSource;
+  timeline: EntryTimeline;
+  experiment: ExperimentTag[];
+  onDemandOutcome: string;
+}
+
 async function enterClaimedSignal(
   event: PumpPortalTradeEvent,
   connection: PumpPortalConnection,
   wallet: WatchlistWallet,
-  decision: Extract<EntryDecision, { type: 'enter' }>,
-  version: string,
-  gateSource: GateSource,
-  timeline: EntryTimeline,
+  entry: ClaimedEntry,
 ): Promise<RealtimeEntryResult | null> {
+  const { decision, version, gateSource, timeline, experiment } = entry;
+  const relaxedGate = experiment.includes('relaxed_gate');
   // 2026-09-29 — holder risk (βλ. HOLDER_RISK_ENTRY_MODE). 'block': πριν από οτιδήποτε·
   // 'record': παράλληλα με την αγορά, το αποτέλεσμα γράφεται στο entry_timing_json.
+  // 2026-10-06: τα πειραματικά (paper) σήματα ΔΕΝ ξοδεύουν GMGN (token holders, weight 5)
+  // — το IP ban είναι κοινό με το live.
   const holderRiskStartedAt = Date.now();
-  const holderRiskPromise = tryComputeHolderRisk(event.mint, { priority: ON_DEMAND_GATE_PRIORITY }).then((r) => ({
-    snapshot: r.snapshot,
-    ms: Date.now() - holderRiskStartedAt,
-  }));
-  const holderRiskMode = HOLDER_RISK_ENTRY_MODE[gateSource];
+  const holderRiskPromise: Promise<{ snapshot: HolderRiskSnapshot; ms: number } | null> =
+    experiment.length > 0
+      ? Promise.resolve(null)
+      : tryComputeHolderRisk(event.mint, { priority: ON_DEMAND_GATE_PRIORITY }).then((r) => ({
+          snapshot: r.snapshot,
+          ms: Date.now() - holderRiskStartedAt,
+        }));
+  const holderRiskMode: HolderRiskMode = gateSource === 'none' ? 'record' : HOLDER_RISK_ENTRY_MODE[gateSource];
   if (holderRiskMode === 'block') {
     const hr = await holderRiskPromise;
-    if (isHighHolderRisk(hr.snapshot.riskPct)) {
+    if (hr !== null && isHighHolderRisk(hr.snapshot.riskPct)) {
       console.log(
         `[realtime-entry-skip] reason=holder_risk_high gate=${gateSource} risk=${(hr.snapshot.riskPct ?? 0).toFixed(2)} ` +
           `mint=${event.mint.slice(0, 8)} wallet=${event.traderPublicKey.slice(0, 8)}`,
@@ -353,12 +409,7 @@ async function enterClaimedSignal(
   }
 
   const claimStartedAt = Date.now();
-  const decisionLogId = await recordTrigger({
-    tokenAddress: event.mint,
-    logicVersion: version,
-    triggerType: 'smart_money_buy',
-    triggerWalletAddress: wallet.address,
-    triggerWalletSnapshot: {
+  const triggerWalletSnapshot = {
       win_rate: wallet.winRate,
       pnl_multiplier: wallet.pnlMultiplier,
       trade_count: wallet.tradeCount,
@@ -375,12 +426,36 @@ async function enterClaimedSignal(
       entry_price_source: decision.graduated ? 'trade_sol_over_tokens' : 'bonding_curve_reserves',
       // 2026-09-28 — για το `npm run on-demand-gate-report`.
       gate_source: gateSource,
-    },
-    decision: 'signal_logged',
-    decisionReasonText:
-      `${wallet.source} wallet ${wallet.address} αγόρασε (realtime) — gate είχε περάσει` +
-      (decision.graduated ? ' — graduated token' : ''),
-  });
+      ...(experiment.length > 0 ? { experiment } : {}),
+  };
+  let gateFailReason: string | null = null;
+  let decisionLogId: number | null;
+  if (relaxedGate) {
+    const claimed = await recordExperimentTrigger({
+      tokenAddress: event.mint,
+      logicVersion: version,
+      triggerType: 'smart_money_buy',
+      triggerWalletAddress: wallet.address,
+      triggerWalletSnapshot,
+      graduated: decision.graduated,
+      fallbackFailReason: `not_evaluated (on_demand=${entry.onDemandOutcome})`,
+      decisionReasonText: `paper πείραμα: ${wallet.source} wallet ${wallet.address} αγόρασε — το token ΔΕΝ πέρασε το gate`,
+    });
+    decisionLogId = claimed?.id ?? null;
+    gateFailReason = claimed?.gateFailReason ?? null;
+  } else {
+    decisionLogId = await recordTrigger({
+      tokenAddress: event.mint,
+      logicVersion: version,
+      triggerType: 'smart_money_buy',
+      triggerWalletAddress: wallet.address,
+      triggerWalletSnapshot,
+      decision: 'signal_logged',
+      decisionReasonText:
+        `${wallet.source} wallet ${wallet.address} αγόρασε (realtime) — gate είχε περάσει` +
+        (decision.graduated ? ' — graduated token' : ''),
+    });
+  }
   if (decisionLogId === null) {
     // π.χ. race με ήδη υπάρχον ανοιχτό trade στο ίδιο ζευγάρι
     recordEntrySkip(event, 'claim_failed', { gate_source: gateSource });
@@ -391,7 +466,7 @@ async function enterClaimedSignal(
   // κατευθείαν paper, χωρίς καν να αγγίξουμε κεφάλαιο/risk gate/swap.
   const claimMs = Date.now() - claimStartedAt;
   const liveStartedAt = Date.now();
-  const paperOnly = paperOnlyReason(decision.graduated, gateSource);
+  const paperOnly = paperOnlyReason(decision.graduated, gateSource, undefined, experiment);
   const live = paperOnly !== null ? fallbackOutcomeFor(paperOnly) : await attemptLiveEntry(event.mint);
   // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #3): το live.entryPrice είναι ΗΔΗ η πραγματική,
   // εκτελεσμένη τιμή — καμία προσομοίωση δε χρειάζεται ή πρέπει να εφαρμοστεί εκεί. Η
@@ -403,7 +478,8 @@ async function enterClaimedSignal(
   const holderRisk = await holderRiskPromise;
   const entryTiming = {
     ...buildEntryTiming(event, decision, gateSource, timeline, claimMs, liveAttemptMs, live),
-    holder_risk: holderRiskJson(holderRisk.snapshot, holderRisk.ms, holderRiskMode),
+    holder_risk: holderRisk === null ? null : holderRiskJson(holderRisk.snapshot, holderRisk.ms, holderRiskMode),
+    ...experimentTimingJson(experiment, gateFailReason, entry.onDemandOutcome),
   };
   logEntryTiming(event.mint, entryTiming);
 
@@ -457,7 +533,22 @@ async function enterClaimedSignal(
     graduated: decision.graduated,
     nativeOrderVerified: live.nativeOrderVerified,
     onDemandGate: gateSource === 'on_demand',
+    experiment,
   };
+}
+
+/**
+ * 2026-10-06 — πεδία του paper πειράματος στο entry_timing_json. Το `experiment` υπάρχει
+ * ΜΟΝΟ στα πειραματικά trades (με αυτό τα ξεχωρίζουν countOpenNonExperimentTradesForToken
+ * και recordTrigger) — τα κανονικά trades δεν παίρνουν κανένα από αυτά τα πεδία.
+ */
+export function experimentTimingJson(
+  experiment: readonly ExperimentTag[],
+  gateFailReason: string | null,
+  onDemandOutcome: string,
+): Record<string, unknown> {
+  if (experiment.length === 0) return {};
+  return { experiment: [...experiment], gate_fail_reason: gateFailReason, on_demand_outcome: onDemandOutcome };
 }
 
 /**

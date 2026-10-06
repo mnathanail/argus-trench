@@ -35,7 +35,7 @@ import type { PumpPortalConnection } from './pumpportalConnection.js';
  * ανάλογα με το `type` — ίδιο μοτίβο με πριν, όλη η μορφοποίηση μηνυμάτων μένει εκεί.
  */
 export type RealtimeTradeOutcome =
-  | { type: 'closed'; tokenAddress: string; exitReason: ExitReason; pnlPct: number }
+  | { type: 'closed'; tokenAddress: string; exitReason: ExitReason; pnlPct: number; experiment?: boolean }
   | { type: 'manual_exit_needed'; tokenAddress: string; tradeId: number; errorMessage: string };
 
 export type TickDecision =
@@ -444,7 +444,13 @@ async function handleOneTrade(
       await unsubscribeIfNoLongerNeeded(connection, event.mint, conn);
       return {
         kind: 'closed',
-        outcome: { type: 'closed', tokenAddress: event.mint, exitReason: decision.exitReason, pnlPct: pnl.pnlPct },
+        outcome: {
+          type: 'closed',
+          tokenAddress: event.mint,
+          exitReason: decision.exitReason,
+          pnlPct: pnl.pnlPct,
+          experiment: trade.isExperiment === true,
+        },
       };
     }
   }

@@ -396,6 +396,8 @@ export async function recordTrigger(
               AND existing_d.logic_version = $2
               AND existing_d.trigger_wallet_address = $4
               AND pt.status = 'open'
+              -- 2026-10-06: ένα paper ΠΕΙΡΑΜΑΤΙΚΟ trade δεν μπλοκάρει κανονικό σήμα.
+              AND NOT (COALESCE(pt.entry_timing_json, '{}'::jsonb) ? 'experiment')
           )
         ORDER BY last_evaluated_at DESC
         LIMIT 1
@@ -434,6 +436,66 @@ export async function recordTrigger(
   );
   const row = rows[0];
   return row === undefined ? null : toNum(row.id);
+}
+
+/** Το logic_version των rows του paper πειράματος (2026-10-06) — ξεχωριστό ώστε να μην
+ * αγγίζουν ΠΟΤΕ τα rows του discovery/on-demand (pass-rate, hasBlockingGateEvaluation,
+ * recordTrigger). */
+export function experimentLogicVersion(logicVersion: string): string {
+  return `${logicVersion}:exp`;
+}
+
+export interface ExperimentTriggerRecord extends Omit<TriggerRecord, 'decision'> {
+  /** Graduated → category 'completed', αλλιώς 'new_creation'. */
+  graduated: boolean;
+  /** Όταν το token δεν αξιολογήθηκε ΚΑΘΟΛΟΥ (π.χ. on-demand rate limited) — ο λόγος. */
+  fallbackFailReason: string;
+}
+
+/**
+ * 2026-10-06 — paper πείραμα (PAPER_EXPERIMENT_ENABLED): νέο decision_log row για ένα σήμα
+ * σε token που ΔΕΝ πέρασε το gate (το recordTrigger claim-άρει μόνο gate_passed rows).
+ * Αντιγράφει την πιο πρόσφατη αξιολόγηση του token (snapshot + gate_fail_reason) ώστε να
+ * φαίνεται ποιος κανόνας το έκοψε. Ένα πειραματικό row ανά token (ON CONFLICT DO NOTHING
+ * → null), όπως το κανονικό path δίνει ένα trade ανά gated row.
+ */
+export async function recordExperimentTrigger(
+  input: ExperimentTriggerRecord,
+  conn?: Queryable,
+): Promise<{ id: number; gateFailReason: string | null } | null> {
+  const { rows: src } = await db(conn).query<{ gate_snapshot_json: Record<string, unknown> | null; gate_fail_reason: string | null; gate_passed: boolean }>(
+    `SELECT gate_snapshot_json, gate_fail_reason, gate_passed
+       FROM decision_log
+      WHERE token_address = $1 AND logic_version = $2
+      ORDER BY gate_passed ASC, last_evaluated_at DESC
+      LIMIT 1`,
+    [input.tokenAddress, input.logicVersion],
+  );
+  const prior = src[0];
+  const failReason = prior?.gate_passed === false ? (prior.gate_fail_reason ?? input.fallbackFailReason) : input.fallbackFailReason;
+  const { rows } = await db(conn).query<{ id: string }>(
+    `INSERT INTO decision_log (
+       token_address, chain, logic_version, candidate_source, category,
+       gate_snapshot_json, gate_passed, gate_fail_reason,
+       trigger_type, trigger_wallet_address, trigger_wallet_snapshot_json,
+       decision, decision_reason_text
+     ) VALUES ($1, 'sol', $2, 'on_demand', $3, $4, false, $5, $6, $7, $8, 'signal_logged', $9)
+     ON CONFLICT (token_address, logic_version, candidate_source, category) DO NOTHING
+     RETURNING id`,
+    [
+      input.tokenAddress,
+      experimentLogicVersion(input.logicVersion),
+      input.graduated ? 'completed' : 'new_creation',
+      JSON.stringify(prior?.gate_snapshot_json ?? {}),
+      failReason,
+      input.triggerType,
+      input.triggerWalletAddress,
+      JSON.stringify(input.triggerWalletSnapshot),
+      input.decisionReasonText,
+    ],
+  );
+  const row = rows[0];
+  return row === undefined ? null : { id: toNum(row.id), gateFailReason: failReason };
 }
 
 /** Το βασικό ερώτημα του tuning: pass-rate ανά provenance, ΠΟΤΕ αναμεμιγμένο. */

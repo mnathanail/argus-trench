@@ -8,7 +8,12 @@ test('isRealtimeSignalWallet: bot (< 60″) εκτός· άγνωστο ή 60″
   assert.equal(isRealtimeSignalWallet({ copyMode: 'signal', avgHoldingSec: 60 }), true);
   assert.equal(isRealtimeSignalWallet({ copyMode: 'signal', avgHoldingSec: null }), true);
   assert.equal(isRealtimeSignalWallet({ copyMode: 'signal' }), true);
-  assert.equal(isRealtimeSignalWallet({ copyMode: 'mirror', avgHoldingSec: 5 }), true);
+  assert.equal(isRealtimeSignalWallet({ copyMode: 'mirror', avgHoldingSec: 5 }, true), true);
+});
+
+test('isRealtimeSignalWallet: mirror σε παύση (2026-10-06) → τα mirror wallets ΔΕΝ γίνονται subscribe', () => {
+  assert.equal(isRealtimeSignalWallet({ copyMode: 'mirror', avgHoldingSec: 3600 }, false), false);
+  assert.equal(isRealtimeSignalWallet({ copyMode: 'mirror', avgHoldingSec: 3600 }), false, 'σημερινή σημαία MIRROR_ENABLED=false');
 });
 
 test('planWalletSubscriptions: προσθέτει ό,τι λείπει, αφαιρεί ό,τι περισσεύει', () => {
@@ -24,6 +29,9 @@ test('desiredWalletSubscriptions: ενεργά μη-bot + wallets ανοιχτώ
       { address: 'Mirror', copyMode: 'mirror', avgHoldingSec: 5 },
     ],
     ['Bot', 'Human', null, 'Old'],
+    true,
   );
   assert.deepEqual(d.sort(), ['Bot', 'Human', 'Mirror', 'Old']);
+  const paused = desiredWalletSubscriptions([{ address: 'Mirror', copyMode: 'mirror', avgHoldingSec: 3600 }], [], false);
+  assert.deepEqual(paused, []);
 });

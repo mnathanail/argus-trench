@@ -1,4 +1,5 @@
 import type { WatchlistWallet } from '../db/repositories/watchlistWallets.js';
+import { MIRROR_ENABLED } from '../mirror/mirrorConfig.js';
 
 /**
  * 2026-10-04 (ρητή απόφαση χρήστη, μετά από 4 ώρες με κομμένες συνδρομές PumpPortal): το
@@ -15,9 +16,10 @@ export const BOT_MAX_AVG_HOLDING_SEC = 60;
 
 export type SignalWalletInput = Pick<WatchlistWallet, 'copyMode'> & { avgHoldingSec?: number | null };
 
-/** Mirror wallets πάντα (τα χειρίζεται το mirror route). Άγνωστος χρόνος κράτησης = μένει. */
-export function isRealtimeSignalWallet(wallet: SignalWalletInput): boolean {
-  if (wallet.copyMode === 'mirror') return true;
+/** Mirror wallets πάντα όσο τρέχει το mirror route (MIRROR_ENABLED· σε παύση από 2026-10-06 →
+ * ποτέ). Άγνωστος χρόνος κράτησης = μένει. */
+export function isRealtimeSignalWallet(wallet: SignalWalletInput, mirrorEnabled: boolean = MIRROR_ENABLED): boolean {
+  if (wallet.copyMode === 'mirror') return mirrorEnabled;
   const hold = wallet.avgHoldingSec;
   return hold === null || hold === undefined || !(hold < BOT_MAX_AVG_HOLDING_SEC);
 }
@@ -42,9 +44,10 @@ export function planWalletSubscriptions(current: Iterable<string>, desired: Iter
 export function desiredWalletSubscriptions(
   activeWallets: readonly (SignalWalletInput & { address: string })[],
   openTradeWallets: readonly (string | null)[],
+  mirrorEnabled: boolean = MIRROR_ENABLED,
 ): string[] {
   const out = new Set<string>();
-  for (const w of activeWallets) if (isRealtimeSignalWallet(w)) out.add(w.address);
+  for (const w of activeWallets) if (isRealtimeSignalWallet(w, mirrorEnabled)) out.add(w.address);
   for (const a of openTradeWallets) if (a !== null) out.add(a);
   return [...out];
 }
