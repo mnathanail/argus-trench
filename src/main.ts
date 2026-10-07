@@ -45,6 +45,9 @@ import { handleMirrorEvent, setMirrorSubscriber, type MirrorOutcome } from './mi
 import { MIRROR_POLL_INTERVAL_MS, runMirrorPollCycle } from './mirror/mirrorPoller.js';
 import { startHeliusMirrorSource } from './mirror/heliusMirrorSource.js';
 import { MIRROR_ENABLED } from './mirror/mirrorConfig.js';
+import { SignatureDedupe, startHeliusSignalSource } from './realtime/heliusSignalSource.js';
+import { WALLET_DISCOVERY_ENABLED } from './collectors/walletDiscovery.js';
+import type { PumpPortalTradeEvent } from './realtime/pumpportalEvents.js';
 import { expireMirrorShadows, handleMirrorShadowTick, hasActiveShadow, refreshMirrorShadows } from './mirror/mirrorShadow.js';
 import { runScheduler, SharedCooldown, type LoopDefinition } from './scheduler.js';
 import { createBotFromEnv, runBot } from './telegram/bot.js';
@@ -121,6 +124,53 @@ async function notifyMirrorOutcome(m: MirrorOutcome | null): Promise<void> {
 // realtimeConnection (για unsubscribe μετά από κλείσιμο), αλλά δημιουργείται μέσα στην
 // ίδια του τη δήλωση. Δουλεύει σωστά χάρη σε closure: το callback καλείται ΜΟΝΟ αργότερα
 // (όταν έρθει πραγματικό event), μέχρι τότε η ανάθεση θα έχει ήδη ολοκληρωθεί.
+/**
+ * Entry path για ένα σήμα αγοράς (PumpPortal ή Helius). 2026-10-07: ό,τι φτάσει πρώτο από τις
+ * δύο πηγές κερδίζει — `signalDedupe` (η ίδια υπογραφή δεν περνάει δεύτερη φορά).
+ */
+const signalDedupe = new SignatureDedupe();
+function runEntryForSignal(event: PumpPortalTradeEvent, connection: PumpPortalConnection): void {
+  if (event.txType !== 'buy') return;
+  if (!signalDedupe.claim(event.signature)) return;
+  handleRealtimeEntryEvent(event, connection)
+    .then(async (entry) => {
+      if (entry === null) return;
+      if (entry.experiment.length > 0) {
+        console.log(`[realtime-entry] paper πείραμα [${entry.experiment.join(',')}] ${short(entry.tokenAddress)}`);
+        return;
+      }
+      // ΔΙΟΡΘΩΣΗ 2026-09-18 (πραγματικό εύρημα): πριν, το kill-switch ενεργοποιούνταν
+      // σιωπηλά μέσα στο checkLiveRiskGate — ο χρήστης το μάθαινε μόνο από το επόμενο
+      // daily digest (ή ένα ήδη-μπαγιάτικο digest, ακριβώς αυτό που τον μπέρδεψε
+      // 2026-09-17 βράδυ). Proactive alert ΑΜΕΣΩΣ, μία φορά (killSwitchJustTriggered
+      // είναι true ΜΟΝΟ την πρώτη φορά που ενεργοποιείται, βλ. liveRiskGate.ts).
+      if (entry.killSwitchJustTriggered) {
+        await notify(
+          `🔴 Live trading kill-switch ΕΝΕΡΓΟΠΟΙΗΘΗΚΕ ΤΩΡΑ — ${LIVE_KILL_SWITCH_CONSEC_LOSSES} συνεχόμενες ζημιές.\n` +
+            `Κανένα νέο live trade μέχρι /resume_live. Δες /trades για λεπτομέρειες.`,
+        );
+      }
+      const walletLabel = entry.walletName ?? short(entry.walletAddress);
+      const modeLabel =
+        entry.mode === 'live'
+          ? '💰 LIVE'
+          : entry.graduated
+            ? '📝 paper (graduated)'
+            : entry.onDemandGate
+              ? '📝 paper (on-demand gate)'
+              : '📝 paper';
+      await notify(
+        `⚡🎯 νέο trade (${event.signalSource ?? 'realtime'}) ${modeLabel} — ${short(entry.tokenAddress)} | wallet ${walletLabel} ` +
+          `| entry ${entry.entryPrice.toPrecision(4)} — δες /trades`,
+      );
+    })
+    .catch((error) => {
+      console.error(
+        `[realtime] σφάλμα στο entry handler: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+}
+
 let realtimeConnection: PumpPortalConnection | undefined;
 // Rate limit για το PumpPortal low-balance alert — το connection ξαναδοκιμάζει κάθε 5
 // λεπτά, δεν θέλουμε Telegram μήνυμα σε κάθε προσπάθεια.
@@ -198,43 +248,7 @@ realtimeConnection = pumpportalApiKey
             console.error(`[mirror] σφάλμα: ${error instanceof Error ? error.message : String(error)}`);
           });
 
-        handleRealtimeEntryEvent(event, realtimeConnection)
-          .then(async (entry) => {
-            if (entry === null) return;
-            if (entry.experiment.length > 0) {
-              console.log(`[realtime-entry] paper πείραμα [${entry.experiment.join(',')}] ${short(entry.tokenAddress)}`);
-              return;
-            }
-            // ΔΙΟΡΘΩΣΗ 2026-09-18 (πραγματικό εύρημα): πριν, το kill-switch ενεργοποιούνταν
-            // σιωπηλά μέσα στο checkLiveRiskGate — ο χρήστης το μάθαινε μόνο από το επόμενο
-            // daily digest (ή ένα ήδη-μπαγιάτικο digest, ακριβώς αυτό που τον μπέρδεψε
-            // 2026-09-17 βράδυ). Proactive alert ΑΜΕΣΩΣ, μία φορά (killSwitchJustTriggered
-            // είναι true ΜΟΝΟ την πρώτη φορά που ενεργοποιείται, βλ. liveRiskGate.ts).
-            if (entry.killSwitchJustTriggered) {
-              await notify(
-                `🔴 Live trading kill-switch ΕΝΕΡΓΟΠΟΙΗΘΗΚΕ ΤΩΡΑ — ${LIVE_KILL_SWITCH_CONSEC_LOSSES} συνεχόμενες ζημιές.\n` +
-                  `Κανένα νέο live trade μέχρι /resume_live. Δες /trades για λεπτομέρειες.`,
-              );
-            }
-            const walletLabel = entry.walletName ?? short(entry.walletAddress);
-            const modeLabel =
-              entry.mode === 'live'
-                ? '💰 LIVE'
-                : entry.graduated
-                  ? '📝 paper (graduated)'
-                  : entry.onDemandGate
-                    ? '📝 paper (on-demand gate)'
-                    : '📝 paper';
-            await notify(
-              `⚡🎯 νέο trade (realtime) ${modeLabel} — ${short(entry.tokenAddress)} | wallet ${walletLabel} ` +
-                `| entry ${entry.entryPrice.toPrecision(4)} — δες /trades`,
-            );
-          })
-          .catch((error) => {
-            console.error(
-              `[realtime] σφάλμα στο entry handler: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          });
+        runEntryForSignal(event, realtimeConnection);
       },
       log: (message) => console.log(message),
       onInsufficientBalance: () => {
@@ -298,6 +312,34 @@ if (realtimeConnection) {
 } else {
   console.log('[main] realtime: PUMPPORTAL_API_KEY λείπει — μόνο polling, καμία websocket σύνδεση');
 }
+
+// 2026-10-07 — δεύτερη πηγή σημάτων watchlist: Helius (βλ. realtime/heliusSignalSource.ts). Το
+// PumpPortal δεν στέλνει τις αγορές όσων αγοράζουν μέσω Axiom/Photon/Padre. Χρειάζεται και το
+// PumpPortal connection (token ticks για τις εξόδους).
+const heliusSignals =
+  heliusApiKey !== undefined && config.heliusSignalsEnabled() && realtimeConnection !== undefined
+    ? await startHeliusSignalSource({
+        apiKey: heliusApiKey,
+        dedupe: signalDedupe,
+        onEvent: (event) => {
+          if (realtimeConnection) runEntryForSignal(event, realtimeConnection);
+        },
+        onBudgetExhausted: (u) => {
+          notify(
+            `⚠️ Helius: το ημερήσιο όριο credits (${u.used}/${u.limit}) τελείωσε — μέχρι τα μεσάνυχτα UTC ` +
+              `σήματα μόνο από το PumpPortal. (HELIUS_DAILY_CREDIT_BUDGET)`,
+          ).catch((error) => console.error(`[helius-signal] alert: ${String(error)}`));
+        },
+        dailyCreditBudget: config.heliusDailyCreditBudget(),
+        walletDailyFetches: config.heliusWalletDailyFetches(),
+      }).catch((error) => {
+        console.error(`[helius-signal] δεν ξεκίνησε: ${error instanceof Error ? error.message : String(error)}`);
+        return undefined;
+      })
+    : undefined;
+console.log(
+  `[main] σήματα Helius: ${heliusSignals ? `ναι (όριο ${config.heliusDailyCreditBudget()} credits/μέρα, ${config.heliusWalletDailyFetches()}/wallet)` : 'όχι'}`,
+);
 
 const loops: LoopDefinition[] = [
   {
@@ -366,6 +408,9 @@ const loops: LoopDefinition[] = [
     // Αυξανόμενο retry αντί για σταθερό 60s — βλ. intervals.ts για το σκεπτικό.
     retryBackoffMs: WALLET_DISCOVERY_RETRY_BACKOFF_MS,
     run: async () => {
+      // 2026-10-07 (ρητή απόφαση χρήστη): η watchlist κόπηκε στα ~250 καλύτερα για το free plan
+      // του Helius — δεν προστίθενται νέα wallets μέχρι να το αλλάξουμε (WALLET_DISCOVERY_ENABLED).
+      if (!WALLET_DISCOVERY_ENABLED) return;
       const result = await runWalletDiscoveryCycle({ realtimeConnection });
       console.log(
         `[wallet-discovery] tokens=${result.tokensScanned} traders=${result.tradersSeen} ` +

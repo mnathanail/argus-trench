@@ -229,7 +229,8 @@ export function recordEntrySkip(
     hasCurveData: event.vTokensInBondingCurve !== undefined && event.vSolInBondingCurve !== undefined,
     solAmount: Number.isFinite(event.solAmount) ? event.solAmount : null,
     marketCapSol: event.marketCapSol ?? null,
-    detail,
+    // 2026-10-07: σήματα από Helius σημειώνονται (απουσία = PumpPortal).
+    detail: event.signalSource === undefined ? detail : { ...(detail ?? {}), signal_source: event.signalSource },
   }).catch((error: unknown) => {
     console.error(`[realtime-entry-skip] αποθήκευση απέτυχε: ${error instanceof Error ? error.message : String(error)}`);
   });
@@ -576,6 +577,9 @@ export function buildEntryTiming(
     event_received_at: new Date(timeline.receivedAt).toISOString(),
     gate_source: gateSource,
     graduated: decision.graduated,
+    // 2026-10-07: πηγή του σήματος — 'helius' = on-chain (heliusSignalSource), αλλιώς PumpPortal.
+    signal_source: event.signalSource ?? 'pumpportal',
+    signal_lag_sec: event.signalLagSec ?? null,
     mode: live.mode,
     fallback_reason: live.fallbackReason,
     signal: {

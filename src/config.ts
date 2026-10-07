@@ -55,4 +55,15 @@ export const config = {
   /** Ο Helius listener του mirror τρέχει ΜΟΝΟ με MIRROR_HELIUS=on (μέχρι να επιβεβαιωθεί
    * η ανάγνωση των συναλλαγών με το helius-mirror-probe σε πραγματικά δεδομένα). */
   mirrorHeliusEnabled: () => process.env.MIRROR_HELIUS === 'on',
+  /** 2026-10-07 — σήματα watchlist μέσω Helius (realtime/heliusSignalSource.ts). Ενεργά όταν
+   * υπάρχει HELIUS_API_KEY, εκτός αν HELIUS_SIGNALS=off. */
+  heliusSignalsEnabled: () => process.env.HELIUS_SIGNALS !== 'off',
+  /** Free plan 1M credits/μήνα ≈ 32k/μέρα — default 25k αφήνει περιθώριο. */
+  heliusDailyCreditBudget: () => positiveInt(process.env.HELIUS_DAILY_CREDIT_BUDGET, 25_000),
+  heliusWalletDailyFetches: () => positiveInt(process.env.HELIUS_WALLET_DAILY_FETCHES, 150),
 } as const;
+
+function positiveInt(raw: string | undefined, fallback: number): number {
+  const n = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}

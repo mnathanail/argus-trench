@@ -39,6 +39,11 @@ export interface PumpPortalTradeEvent {
   /** Υπόλοιπο του trader σε αυτό το token ΜΕΤΑ το trade (επιβεβαιωμένο στο πραγματικό event,
    * βλ. test fixture). 2026-09-30: το mirror route το χρειάζεται για το % μιας μερικής πώλησης. */
   newTokenBalance?: number;
+  /** 2026-10-07: από πού ήρθε το σήμα (απουσία = PumpPortal). 'helius' = on-chain συναλλαγή
+   * του wallet μέσω Helius (βλ. realtime/heliusSignalSource.ts). */
+  signalSource?: 'helius';
+  /** Helius: δευτερόλεπτα από το block της συναλλαγής ως την επεξεργασία της. */
+  signalLagSec?: number | null;
 }
 
 /**

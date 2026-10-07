@@ -291,3 +291,10 @@ export function passesAutoDiscoveryThreshold(stats: WalletStats): boolean {
     stats.tokenCount >= ADVISORY_TOKEN_COUNT_FLOOR
   );
 }
+
+/**
+ * 2026-10-07 (ρητή απόφαση χρήστη): η watchlist κόπηκε στα ~250 καλύτερα wallets ώστε τα
+ * σήματα μέσω Helius να χωράνε στο free plan (1M credits/μήνα). Μέχρι την επόμενη αλλαγή
+ * (αναβάθμιση Helius) δεν προστίθενται αυτόματα νέα wallets. true = όπως πριν.
+ */
+export const WALLET_DISCOVERY_ENABLED = false;

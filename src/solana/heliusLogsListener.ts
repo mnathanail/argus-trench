@@ -20,7 +20,8 @@ export interface SocketLike {
 
 export interface HeliusLogsListenerOptions {
   wsUrl: string;
-  onSignature: (wallet: string, signature: string, receivedAtMs: number) => void;
+  /** `logs` = τα log messages της συναλλαγής από το notification (φιλτράρισμα ΠΡΙΝ το getTransaction). */
+  onSignature: (wallet: string, signature: string, receivedAtMs: number, logs: readonly string[]) => void;
   log?: (line: string) => void;
   createSocket?: (url: string) => SocketLike;
   setTimer?: (fn: () => void, ms: number) => unknown;
@@ -169,7 +170,7 @@ export class HeliusLogsListener {
       return;
     }
     if (msg.method !== 'logsNotification') return;
-    const params = msg.params as { subscription?: number; result?: { value?: { signature?: string; err?: unknown } } } | undefined;
+    const params = msg.params as { subscription?: number; result?: { value?: { signature?: string; err?: unknown; logs?: unknown } } } | undefined;
     const wallet = params?.subscription === undefined ? undefined : this.subIdToWallet.get(params.subscription);
     const value = params?.result?.value;
     if (wallet === undefined || value === undefined || typeof value.signature !== 'string') return;
@@ -181,6 +182,7 @@ export class HeliusLogsListener {
       const first = this.recent.values().next().value;
       if (first !== undefined) this.recent.delete(first);
     }
-    this.options.onSignature(wallet, value.signature, Date.now());
+    const logs = Array.isArray(value.logs) ? value.logs.filter((l): l is string => typeof l === 'string') : [];
+    this.options.onSignature(wallet, value.signature, Date.now(), logs);
   }
 }

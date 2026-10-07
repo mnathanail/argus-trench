@@ -78,10 +78,13 @@ export async function getParsedTransactionWithRetry(
   signature: string,
   delaysMs: readonly number[] = [0, 400, 800, 1_500, 3_000, 5_000],
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+  /** 2026-10-07: καλείται ΠΡΙΝ από κάθε κλήση (κάθε κλήση = 1 credit στο Helius). false = σταμάτα. */
+  beforeAttempt: () => boolean = () => true,
 ): Promise<ParsedTransaction | null> {
   let lastError: unknown = null;
   for (const delay of delaysMs) {
     if (delay > 0) await sleep(delay);
+    if (!beforeAttempt()) break;
     try {
       const tx = await getParsedTransaction(url, signature);
       if (tx !== null) return tx;
