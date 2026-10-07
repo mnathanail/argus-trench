@@ -22,7 +22,8 @@ import { WALLET_DISCOVERY_LOOP_PACING_MS } from './intervals.js';
  * νομίσματα — τώρα έχουμε θόρυβο και καίμε credits»). Αντικαθιστά το παλιό wallet discovery
  * (GMGN win rate) ως ΜΟΝΗ αυτόματη πηγή της watchlist, και κλαδεύει ό,τι δεν το δικαιολογεί.
  *
- * Κάθε κύκλος (κάθε 6h):
+ * Κάθε κύκλος (κάθε 2h· 2026-10-07: 50 tokens / 60 bot έλεγχοι ανά κύκλο ώστε η watchlist να
+ * αλλάξει μέσα σε ώρες, όχι μέρες):
  *   1. Τοπ tokens: Pump.fun, δημιουργία τις τελευταίες 48h, ATH ≥ $300k, κατά ATH (ίδια κλήση με
  *      το winners-report). Όσα δεν σαρώθηκαν τις τελευταίες 12h, ως `TOKENS_PER_CYCLE`.
  *   2. Top 100 traders κατά κέρδος ανά token → «νικητής» = κανονικό wallet, χωρίς ετικέτα
@@ -39,7 +40,7 @@ import { WALLET_DISCOVERY_LOOP_PACING_MS } from './intervals.js';
  */
 export const WINNER_TOKENS_HOURS = 48;
 export const WINNER_MIN_ATH_USD = 300_000;
-export const TOKENS_PER_CYCLE = 20;
+export const TOKENS_PER_CYCLE = 50;
 export const TOKEN_RESCAN_HOURS = 12;
 export const WINNER_MIN_MULTIPLE = 3;
 export const WINNER_BIG_MULTIPLE = 10;
@@ -51,7 +52,7 @@ export const WINNER_MIN_HOLD_SEC = 120;
 export const WINNER_WINDOW_DAYS = 14;
 export const WATCHLIST_MAX = 150;
 export const MIN_WINNERS_TO_PRUNE = 30;
-export const MAX_STATS_PER_CYCLE = 25;
+export const MAX_STATS_PER_CYCLE = 60;
 export const BOT_MAX_AVG_HOLDING_SEC = 120;
 export const PROVEN_MIN_TRADES = 3;
 
