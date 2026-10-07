@@ -128,6 +128,21 @@ export function isDustGraduatedTrade(event: PumpPortalTradeEvent): boolean {
   return isGraduatedEvent(event) && event.solAmount < MIN_SOL_FOR_TRADE_PRICE;
 }
 
+/** Όλα τα pump.fun tokens έχουν 1 δισ. supply (UI units, ίδιες με το tokenAmount). */
+export const PUMP_TOKEN_SUPPLY = 1_000_000_000;
+
+/**
+ * 2026-10-07 — τιμή graduated token από το marketCapSol του event. Πρώτο πείραμα (paper):
+ * η τιμή εκτέλεσης solAmount/tokenAmount ήταν 12–32% πάνω από το marketCapSol/supply του
+ * ίδιου event και κάποια trades (router/multi-hop) έδιναν παράλογες τιμές — ψεύτικα peaks
+ * 6–7× και stops στο −98% (#7645, #7533, #7512). Ένα token που αποφοιτούσε έκανε επίσης
+ * ψεύτικο άλμα ~+23% (bonding curve vSol/vTokens = marketCapSol/supply, βλ. test).
+ */
+export function priceFromMarketCap(marketCapSol: number | undefined): number | null {
+  if (marketCapSol === undefined || !Number.isFinite(marketCapSol) || marketCapSol <= 0) return null;
+  return marketCapSol / PUMP_TOKEN_SUPPLY;
+}
+
 /**
  * Η τιμή του token (SOL ανά token) σε αυτό το trade.
  *
@@ -140,6 +155,9 @@ export function isDustGraduatedTrade(event: PumpPortalTradeEvent): boolean {
  *   graduated token, και live trades των οποίων το token αποφοιτούσε πάγωναν σε
  *   needs_manual_exit ΧΩΡΙΣ καμία αυτόματη προστασία.
  *
+ * - Graduated με marketCapSol (2026-10-07): marketCapSol / PUMP_TOKEN_SUPPLY — βλ.
+ *   priceFromMarketCap.
+ *
  * null: degenerate reserves, dust graduated trade, ή μη θετικό tokenAmount.
  */
 export function priceFromTradeEvent(event: PumpPortalTradeEvent): number | null {
@@ -149,6 +167,17 @@ export function priceFromTradeEvent(event: PumpPortalTradeEvent): number | null 
     if (vTokens <= 0) return null;
     return vSol / vTokens;
   }
+  // 2026-10-07: PumpSwap events (χωρίς curve πεδία) φέρνουν marketCapSol του pool ΜΕΤΑ το
+  // trade → τιμή = marketCapSol / supply. Αν υπάρχουν curve πεδία ενώ pool≠pump, είναι
+  // μπαγιάτικα (βλ. test) — τότε, όπως και χωρίς marketCapSol, solAmount/tokenAmount.
+  const fromMcap = event.vTokensInBondingCurve === undefined ? priceFromMarketCap(event.marketCapSol) : null;
+  if (fromMcap !== null) return fromMcap;
   if (event.solAmount < MIN_SOL_FOR_TRADE_PRICE || event.tokenAmount <= 0) return null;
   return event.solAmount / event.tokenAmount;
+}
+
+/** 2026-10-07 — από πού βγήκε η τιμή του priceFromTradeEvent (για το entry_timing_json). */
+export function priceSourceOf(event: PumpPortalTradeEvent): 'curve' | 'mcap' | 'trade' {
+  if (!isGraduatedEvent(event)) return 'curve';
+  return event.vTokensInBondingCurve === undefined && priceFromMarketCap(event.marketCapSol) !== null ? 'mcap' : 'trade';
 }

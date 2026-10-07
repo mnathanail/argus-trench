@@ -97,7 +97,7 @@ test('decideShadowTick: a tick after 24h closes the shadow as timeout at that ti
 });
 
 test('decideShadowTick: no price (graduated dust) → ignore; unchanged state → ignore (no wasted write)', () => {
-  const dust = ev(1, { pool: undefined, vSolInBondingCurve: undefined, vTokensInBondingCurve: undefined, solAmount: 0.0009 });
+  const dust = ev(1, { pool: undefined, vSolInBondingCurve: undefined, vTokensInBondingCurve: undefined, marketCapSol: undefined, solAmount: 0.0009 });
   assert.deepEqual(decideShadowTick(trade(), dust, at(30), RULES), { type: 'ignore' });
   const s: ShadowState = { peak: 1.3, trailingActive: false, breachSince: null };
   assert.deepEqual(decideShadowTick(trade(s), ev(1.2), at(30), RULES), { type: 'ignore' });

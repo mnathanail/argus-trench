@@ -70,8 +70,8 @@ test('without newTokenBalance the % comes from our estimate; with no estimate at
 });
 
 test('a sell with no usable price uses the last known price, never leaves us stuck', () => {
-  // graduated dust sell: pool pump-amm χωρίς curve πεδία και solAmount < 0.01 → καμία τιμή
-  const e = ev({ txType: 'sell', pool: 'pump-amm', vSolInBondingCurve: undefined, vTokensInBondingCurve: undefined, solAmount: 0.001, newTokenBalance: 0, tokenAmount: 2_000_000 });
+  // graduated dust sell: pump-amm χωρίς curve πεδία, χωρίς marketCapSol, solAmount < 0.01 → καμία τιμή
+  const e = ev({ txType: 'sell', pool: 'pump-amm', vSolInBondingCurve: undefined, vTokensInBondingCurve: undefined, marketCapSol: undefined, solAmount: 0.001, newTokenBalance: 0, tokenAmount: 2_000_000 });
   const d = decideMirror(e, pos({ lastPriceSol: 0.0002 }), CFG);
   assert.ok(d.action === 'sell' && d.close && d.priceSol === 0.0002);
 });

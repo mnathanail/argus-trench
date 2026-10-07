@@ -38,6 +38,7 @@ import {
 import {
   isGraduatedEvent,
   priceFromTradeEvent,
+  priceSourceOf,
   REALTIME_SOURCE_CHANNEL,
   type PumpPortalTradeEvent,
 } from './pumpportalEvents.js';
@@ -582,6 +583,8 @@ export function buildEntryTiming(
       mcap_sol: event.marketCapSol ?? null,
       sol_amount: event.solAmount,
       signature: event.signature,
+      // 2026-10-07: 'mcap' = graduated με τιμή pool (βλ. priceFromMarketCap).
+      price_source: priceSourceOf(event),
     },
     executed_price: executed,
     slippage_vs_signal: executed !== null && decision.entryPrice > 0 ? executed / decision.entryPrice - 1 : null,

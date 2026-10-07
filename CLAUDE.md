@@ -1038,3 +1038,9 @@ entirely in our own Postgres.
 ## Mirror paused (2026-10-06, explicit user decision)
 
 - "Stop /mirror, no more data there for now — don't delete anything." `MIRROR_ENABLED = false` (`mirror/mirrorConfig.ts`): no PumpPortal routing to `handleMirrorEvent`, no shadow ticks/expiry, Helius mirror source not started, `mirror-poll` does nothing, mirror wallets are not subscribed (`isRealtimeSignalWallet`/`desiredWalletSubscriptions` take `mirrorEnabled`), `/mirror` adds no subscription. Tables, rows, code and the `/mirror` `/unmirror` `/mirrors` commands stay (replies carry a "paused" line). Mirror wallets still never give argus signals (entry handler returns early). Set `true` to resume.
+
+## Graduated price from the pool's market cap (2026-10-07)
+
+- First experiment analysis: for graduated tokens `solAmount/tokenAmount` was 12–32% above `marketCapSol/1e9` of the same event, and some (router / multi-hop) trades gave absurd prices → fake peaks of 6–7× and stops at −98% (#7645, #7533, #7512; one entry at 0.12× the pool price). A token graduating mid-trade also jumped a fake ~+23% (on the curve vSol/vTokens = marketCapSol/1e9).
+- `priceFromTradeEvent`: graduated events WITHOUT curve fields and with `marketCapSol` (PumpSwap) → `marketCapSol / PUMP_TOKEN_SUPPLY` (`priceFromMarketCap`); trade ratio only as fallback (no marketCapSol, or stale curve fields with pool≠pump). Applies to entries, ticks, stops/trailing, shadows.
+- `entry_timing_json.signal.price_source` = `curve` | `mcap` | `trade`. Graduated trades opened before this change (no `price_source`) entered at the trade ratio but tick at the pool price (~−19% shift) — exclude them from graduated analysis.

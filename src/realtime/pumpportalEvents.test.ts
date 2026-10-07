@@ -165,3 +165,43 @@ test('parseTradeEvent keeps newTokenBalance from the real event (mirror route ne
   assert.equal(parseTradeEvent(without)?.newTokenBalance, undefined);
   assert.equal(parseTradeEvent({ ...REAL_BUY_EVENT, newTokenBalance: 'x' })?.newTokenBalance, undefined, 'wrong type is ignored, event still parses');
 });
+
+// --- 2026-10-07: graduated τιμή από marketCapSol ---
+import { priceFromMarketCap, PUMP_TOKEN_SUPPLY } from './pumpportalEvents.js';
+
+test('graduated event ΜΕ marketCapSol → τιμή pool (marketCapSol / supply), όχι solAmount/tokenAmount', () => {
+  const parsed = parseTradeEvent({ ...GRADUATED_TOKEN_EVENT, pool: 'pump-amm', marketCapSol: 1062 });
+  assert.ok(parsed !== null);
+  assert.equal(isGraduatedEvent(parsed), true);
+  assert.equal(priceFromTradeEvent(parsed), 1062 / PUMP_TOKEN_SUPPLY);
+});
+
+test('graduated router trade με παράλογα ποσά: η τιμή μένει του pool (το #7645 έδινε stop στο −98%)', () => {
+  const parsed = parseTradeEvent({ ...GRADUATED_TOKEN_EVENT, pool: 'pump-amm', solAmount: 0.5, tokenAmount: 900_000_000, marketCapSol: 1000 });
+  assert.ok(parsed !== null);
+  assert.equal(priceFromTradeEvent(parsed), 1000 / PUMP_TOKEN_SUPPLY);
+});
+
+test('graduated dust trade ΜΕ marketCapSol έχει τιμή (κατάσταση pool) · άκυρο marketCapSol → fallback', () => {
+  const dust = parseTradeEvent({ ...GRADUATED_TOKEN_EVENT, pool: 'pump-amm', solAmount: 0.0001, marketCapSol: 500 });
+  assert.ok(dust !== null);
+  assert.equal(priceFromTradeEvent(dust), 500 / PUMP_TOKEN_SUPPLY);
+  assert.equal(priceFromMarketCap(0), null);
+  assert.equal(priceFromMarketCap(Number.NaN), null);
+  assert.equal(priceFromMarketCap(undefined), null);
+});
+
+test('bonding curve: vSol/vTokens ≈ marketCapSol/supply → καμία ασυνέχεια όταν το token αποφοιτά', () => {
+  const parsed = parseTradeEvent(REAL_BUY_EVENT);
+  assert.ok(parsed !== null && parsed.marketCapSol !== undefined);
+  const curve = priceFromTradeEvent(parsed) as number;
+  const mcap = priceFromMarketCap(parsed.marketCapSol) as number;
+  assert.ok(Math.abs(curve / mcap - 1) < 0.01, `${curve} vs ${mcap}`);
+});
+
+import { priceSourceOf } from './pumpportalEvents.js';
+test('priceSourceOf: curve / mcap / trade', () => {
+  assert.equal(priceSourceOf(parseTradeEvent(REAL_BUY_EVENT)!), 'curve');
+  assert.equal(priceSourceOf(parseTradeEvent({ ...GRADUATED_TOKEN_EVENT, pool: 'pump-amm', marketCapSol: 900 })!), 'mcap');
+  assert.equal(priceSourceOf(parseTradeEvent(GRADUATED_TOKEN_EVENT)!), 'trade');
+});
