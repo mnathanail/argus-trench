@@ -15,6 +15,7 @@ import { expectArray, expectObject, expectString, toNumberOrNull } from './valid
  */
 export interface TrendingToken {
   address: string;
+  symbol?: string | null;
   historyHighestMarketCap: number | null;
   creationTimestamp: number | null;
 }
@@ -81,6 +82,7 @@ export function parseTrendingResponse(raw: unknown): TrendingToken[] {
     };
     return {
       address: expectString(row['address'], `${path}.address`),
+      symbol: typeof row['symbol'] === 'string' ? row['symbol'] : null,
       historyHighestMarketCap: num('history_highest_market_cap'),
       creationTimestamp: num('creation_timestamp'),
     };
@@ -97,4 +99,28 @@ function findRankList(raw: unknown): unknown[] {
     if (container[key] !== undefined) return expectArray(container[key], key);
   }
   throw new GmgnResponseError(`no "rank"/"list" key; got [${Object.keys(container).join(', ')}]`, 'trending');
+}
+
+/**
+ * 2026-10-07 — τα ΤΟΠ tokens (ίδια κλήση με το `winners-report`): Pump.fun, δημιουργία τις
+ * τελευταίες `hours` ώρες, ATH ≥ `minAthUsd`, ταξινόμηση κατά ATH. ΧΩΡΙΣ φίλτρο bundler/insider:
+ * οι μεγάλοι νικητές είχαν συχνά bundler 0.40–0.63 (βλ. CLAUDE.md, bundler κανόνας).
+ */
+export function buildWinnerTokensArgs(hours: number, minAthUsd: number): string[] {
+  return [
+    'market', 'trending',
+    '--chain', 'sol',
+    '--interval', '24h',
+    '--platform', 'Pump.fun',
+    '--max-created', `${hours}h`,
+    '--min-history-highest-marketcap', String(minAthUsd),
+    '--order-by', 'history_highest_market_cap',
+    '--direction', 'desc',
+    '--limit', '100',
+  ];
+}
+
+export async function fetchWinnerTokens(hours: number, minAthUsd: number, options: RunOptions = {}): Promise<TrendingToken[]> {
+  const raw = await runCli('market trending', buildWinnerTokensArgs(hours, minAthUsd), options);
+  return parseTrendingResponse(raw).sort((a, b) => (b.historyHighestMarketCap ?? 0) - (a.historyHighestMarketCap ?? 0));
 }

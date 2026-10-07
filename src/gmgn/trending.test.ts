@@ -22,7 +22,7 @@ test('buildTrendingArgs: Pump.fun tokens 1h–3d old that already ran, by 24h vo
 test('parseTrendingResponse accepts data.rank, rank, list and a bare array', () => {
   for (const raw of [{ data: { rank: [item] } }, { rank: [item] }, { list: [item] }, [item], { data: [item] }]) {
     assert.deepEqual(parseTrendingResponse(raw), [
-      { address: 'TokA', historyHighestMarketCap: 812000.5, creationTimestamp: 1759140000 },
+      { address: 'TokA', symbol: 'A', historyHighestMarketCap: 812000.5, creationTimestamp: 1759140000 },
     ]);
   }
 });

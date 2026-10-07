@@ -6,7 +6,7 @@
 export type Chain = 'sol' | 'bsc' | 'base' | 'eth';
 
 /** 'top_trader' (2026-09-29): wallet discovery από `token traders` — βλ. collectors/walletDiscovery.ts. */
-export type WalletSource = 'smart_money' | 'kol' | 'manual' | 'top_trader';
+export type WalletSource = 'smart_money' | 'kol' | 'manual' | 'top_trader' | 'winner_trader';
 
 /** migration 0023: 'signal' = κανονικό argus, 'mirror' = ακριβής αντιγραφή θέσεων (src/mirror/). */
 export type CopyMode = 'signal' | 'mirror';

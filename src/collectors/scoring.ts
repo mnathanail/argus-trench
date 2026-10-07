@@ -122,9 +122,12 @@ export type LifecycleTransition = 'deactivate' | 'reactivate' | null;
  * `deactivatedReason='manual'` — το `/unwatch` παραμένει τελικό veto.
  */
 export function decideLifecycleTransition(
-  wallet: Pick<WatchlistWallet, 'active' | 'winRate' | 'tradeCount' | 'deactivatedReason' | 'copyMode'>,
+  wallet: Pick<WatchlistWallet, 'active' | 'winRate' | 'tradeCount' | 'deactivatedReason' | 'copyMode'> & { source?: WatchlistWallet['source'] },
   score: { winRate: number | null; tradeCount: number | null },
 ): LifecycleTransition {
+  // 2026-10-07: τα winner_trader wallets μπήκαν επειδή κέρδισαν σε τοπ tokens (collectors/winnerWallets.ts),
+  // όχι για το win rate του GMGN — συχνά κυνηγούν μεγάλα × με χαμηλό win rate. Τα διαχειρίζεται μόνο εκείνο.
+  if (wallet.source === 'winner_trader') return null;
   // 2026-09-30: τα mirror wallets τα διάλεξε ο χρήστης για ακριβή αντιγραφή — ποτέ αυτόματη
   // απενεργοποίηση (θα έκοβε τη realtime συνδρομή και θα έμεναν ανοιχτές θέσεις χωρίς έξοδο).
   if (wallet.copyMode === 'mirror') return null;

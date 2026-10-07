@@ -189,8 +189,9 @@ export const WALLET_DISCOVERY_LOOP_PACING_MS = 1_500;
  * interval sleep) — άρα κάθε restart του process (π.χ. Railway redeploy) προκαλεί ένα
  * άμεσο discovery pass, πέρα από το κανονικό ωριαίο interval.
  */
-export const WALLET_DISCOVERY_INTERVAL_MS = 60 * 60 * 1000;
-export const WALLET_DISCOVERY_INITIAL_DELAY_MS = 30_000;
+// 2026-10-07: 6h — το ίδιο loop τρέχει πλέον το winner-wallets (τοπ tokens κάθε 6h αρκούν· ~110 weight/κύκλο).
+export const WALLET_DISCOVERY_INTERVAL_MS = 6 * 60 * 60 * 1000;
+export const WALLET_DISCOVERY_INITIAL_DELAY_MS = 5 * 60_000;
 
 /**
  * Retry policy για το wallet-discovery μετά από αποτυχία: καμία δεύτερη προσπάθεια μέσα

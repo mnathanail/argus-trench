@@ -49,6 +49,7 @@ import { startHeliusMirrorSource } from './mirror/heliusMirrorSource.js';
 import { MIRROR_ENABLED } from './mirror/mirrorConfig.js';
 import { SignatureDedupe, startHeliusSignalSource } from './realtime/heliusSignalSource.js';
 import { WALLET_DISCOVERY_ENABLED } from './collectors/walletDiscovery.js';
+import { runWinnerWalletsCycle, WINNER_WALLETS_ENABLED } from './collectors/winnerWallets.js';
 import type { PumpPortalTradeEvent } from './realtime/pumpportalEvents.js';
 import { expireMirrorShadows, handleMirrorShadowTick, hasActiveShadow, refreshMirrorShadows } from './mirror/mirrorShadow.js';
 import { runScheduler, SharedCooldown, type LoopDefinition } from './scheduler.js';
@@ -434,6 +435,22 @@ const loops: LoopDefinition[] = [
     run: async () => {
       // 2026-10-07 (ρητή απόφαση χρήστη): η watchlist κόπηκε στα ~250 καλύτερα για το free plan
       // του Helius — δεν προστίθενται νέα wallets μέχρι να το αλλάξουμε (WALLET_DISCOVERY_ENABLED).
+      // 2026-10-07 (ρητή απόφαση χρήστη): η watchlist = wallets που κέρδισαν σε τοπ tokens
+      // (collectors/winnerWallets.ts) — αντικαθιστά το παλιό discovery (GMGN win rate).
+      if (WINNER_WALLETS_ENABLED) {
+        const w = await runWinnerWalletsCycle();
+        console.log(
+          `[winner-wallets] tokens=${w.tokensScanned} traders=${w.tradersSeen} hits=${w.hits} winners=${w.winners} ` +
+            `activated=${w.activated} deactivated=${w.deactivated} pruned=${w.pruned} bots=${w.bots} failures=${w.failures} ` +
+            `rejected=${JSON.stringify(w.rejected)}`,
+        );
+        if (w.activated > 0 || w.deactivated > 0) {
+          await notify(
+            `🏆 Watchlist από τοπ tokens: +${w.activated} wallets που κέρδισαν σε νικητές, −${w.deactivated} χωρίς τέτοιο ιστορικό ` +
+              `(σύνολο νικητών ${w.winners}, ${w.tokensScanned} νέα τοπ tokens σαρώθηκαν).`,
+          );
+        }
+      }
       if (!WALLET_DISCOVERY_ENABLED) return;
       const result = await runWalletDiscoveryCycle({ realtimeConnection });
       console.log(

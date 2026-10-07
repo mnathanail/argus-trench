@@ -30,6 +30,12 @@ export interface TokenTrader {
   startHoldingAt: number | null;
   /** Unix sec· null = κρατάει ακόμα. */
   endHoldingAt: number | null;
+  /** Συνολικό κέρδος (realized + unrealized) σε USD — πεδίο `profit` (winners-report, πραγματικό response). */
+  profitUsd?: number | null;
+  /** `profit_change`: (κέρδος) / κόστος → × = 1 + profit_change. */
+  profitChange?: number | null;
+  /** `total_cost` (USD). */
+  totalCostUsd?: number | null;
 }
 
 export interface FetchTokenTradersOptions extends RunOptions {
@@ -91,6 +97,9 @@ function parseTrader(item: unknown, path: string): TokenTrader {
     buyCostUsd: num(row, 'history_bought_cost', path),
     startHoldingAt: num(row, 'start_holding_at', path),
     endHoldingAt: end === 0 ? null : end,
+    profitUsd: num(row, 'profit', path),
+    profitChange: num(row, 'profit_change', path),
+    totalCostUsd: num(row, 'total_cost', path),
   };
 }
 
