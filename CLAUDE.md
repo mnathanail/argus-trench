@@ -1044,3 +1044,9 @@ entirely in our own Postgres.
 - First experiment analysis: for graduated tokens `solAmount/tokenAmount` was 12–32% above `marketCapSol/1e9` of the same event, and some (router / multi-hop) trades gave absurd prices → fake peaks of 6–7× and stops at −98% (#7645, #7533, #7512; one entry at 0.12× the pool price). A token graduating mid-trade also jumped a fake ~+23% (on the curve vSol/vTokens = marketCapSol/1e9).
 - `priceFromTradeEvent`: graduated events WITHOUT curve fields and with `marketCapSol` (PumpSwap) → `marketCapSol / PUMP_TOKEN_SUPPLY` (`priceFromMarketCap`); trade ratio only as fallback (no marketCapSol, or stale curve fields with pool≠pump). Applies to entries, ticks, stops/trailing, shadows.
 - `entry_timing_json.signal.price_source` = `curve` | `mcap` | `trade`. Graduated trades opened before this change (no `price_source`) entered at the trade ratio but tick at the pool price (~−19% shift) — exclude them from graduated analysis.
+
+## Bundler rule removed from the gate (2026-10-07, explicit user decision)
+
+- `maxBundlerRate` (was 0.3) removed from `PHASE1_THRESHOLDS` — discovery (server-side flag and client-side check) and the on-demand gate no longer filter on bundler; the value is still recorded in the gate snapshot. Basis: winners-why (most of our wallets' big winners had bundler 0.40–0.63) and the paper experiment (tokens cut ONLY by bundler: 39 trades, +0.30 SOL, 7 reached 2× in 11h; rug_ratio was negative and stays).
+- `logic_version` changes (hash of the thresholds): analysis by version starts fresh; tokens get one new on-demand check under the new version. Holder risk (bundler/sniper/rat % of float) unchanged. Wallet-discovery's trending filter (`gmgn/trending.ts`, bundler ≤ 0.3) is a separate filter and unchanged.
+- This also affects live when it is on (on-demand entries on high-bundler tokens can go live).

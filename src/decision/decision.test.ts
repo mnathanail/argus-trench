@@ -36,7 +36,6 @@ test('logicVersion changes automatically when any threshold changes', () => {
     logicVersion({
       minSmartDegenCount: 1,
       maxRugRatio: 0.2,
-      maxBundlerRate: 0.3,
       maxInsiderRatio: 0.3,
       maxTopHolderRate: 0.5,
       maxEntrapmentRatio: 0.3,

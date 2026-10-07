@@ -22,9 +22,16 @@ import type { GateThresholds } from '../gmgn/trenches.js';
  * (`entrapment_ratio`) υπήρχαν ΗΔΗ πλήρως wired στο `trenches.ts` πριν από αυτή την αλλαγή
  * — απλά ανενεργά, χωρίς τιμή εδώ.
  */
+/*
+ * `maxBundlerRate` ΑΦΑΙΡΕΘΗΚΕ 2026-10-07 (ρητή απόφαση χρήστη, ήταν 0.3). winners-why: ο
+ * κανόνας έκοψε τους περισσότερους από τους μεγάλους winners των wallets μας (bundler
+ * 0.40–0.63)· paper πείραμα relaxed_gate (11 ώρες): tokens κομμένα ΜΟΝΟ από bundler → 39
+ * trades, +0.30 SOL, 7 έφτασαν 2× — ο μόνος κανόνας με καθαρά θετικό αποτέλεσμα (rug_ratio
+ * −0.08). Η τιμή καταγράφεται ακόμα στο gate snapshot (discovery και on-demand). Το
+ * holder risk (bundler/sniper/rat % του float) μένει όπως ήταν.
+ */
 export const PHASE1_THRESHOLDS: GateThresholds = {
   maxRugRatio: 0.2,
-  maxBundlerRate: 0.3,
   maxInsiderRatio: 0.3,
   maxTopHolderRate: 0.5,
   minSmartDegenCount: 1,

@@ -4,6 +4,7 @@ import { test } from 'node:test';
 
 import { parseTokenInfo, parseTokenSecurity, type TokenInfo } from '../gmgn/tokenInfo.js';
 import { evaluateOnDemandGate } from './onDemandGate.js';
+import { PHASE1_THRESHOLDS } from './gateConfig.js';
 
 const fixture = (name: string): unknown =>
   JSON.parse(readFileSync(new URL(`../gmgn/__fixtures__/${name}`, import.meta.url), 'utf8'));
@@ -51,9 +52,12 @@ const base: TokenInfo = {
   migrationMarketCap: 410,
 };
 
+/** Ο κανόνας bundler (≤ 0.3) αφαιρέθηκε από το PHASE1 στις 2026-10-07 — η λογική του μένει. */
+const WITH_BUNDLER = { ...PHASE1_THRESHOLDS, maxBundlerRate: 0.3 };
+
 test('evaluateOnDemandGate: same limits as the discovery gate, fail-closed on unknown required fields', () => {
   assert.match(evaluateOnDemandGate({ ...base, topHolderRate: 0.6 }, null).failReason ?? '', /top_10_holder_rate/);
-  assert.match(evaluateOnDemandGate({ ...base, bundlerVolumeRate: 0.31 }, null).failReason ?? '', /bundler_rate/);
+  assert.match(evaluateOnDemandGate({ ...base, bundlerVolumeRate: 0.31 }, null, WITH_BUNDLER).failReason ?? '', /bundler_rate/);
   assert.match(evaluateOnDemandGate({ ...base, entrapmentVolumeRate: 0.31 }, null).failReason ?? '', /entrapment_rate/);
   assert.match(evaluateOnDemandGate({ ...base, entrapmentVolumeRate: null }, null).failReason ?? '', /fail-closed/);
   assert.match(evaluateOnDemandGate({ ...base, launchpadPlatform: 'Moonshot' }, null).failReason ?? '', /launchpad/);
@@ -65,7 +69,15 @@ test('evaluateOnDemandGate: rug/insider enforced when GMGN does return them; sec
   const sec2 = { topHolderRate: null, rugRatio: 0.1, insiderHoldRate: 0.35, bundlerTraderAmountRate: null };
   assert.match(evaluateOnDemandGate(base, sec2).failReason ?? '', /insider/);
   const sec3 = { topHolderRate: null, rugRatio: 0.1, insiderHoldRate: 0.1, bundlerTraderAmountRate: 0.5 };
-  assert.match(evaluateOnDemandGate({ ...base, bundlerVolumeRate: 0 }, sec3).failReason ?? '', /bundler_rate 0.5/);
+  assert.match(evaluateOnDemandGate({ ...base, bundlerVolumeRate: 0 }, sec3, WITH_BUNDLER).failReason ?? '', /bundler_rate 0.5/);
+});
+
+test('2026-10-07: χωρίς κανόνα bundler — bundler 0.63 ή άγνωστο περνάει, η τιμή μένει στο snapshot', () => {
+  assert.equal(PHASE1_THRESHOLDS.maxBundlerRate, undefined);
+  const high = evaluateOnDemandGate({ ...base, bundlerVolumeRate: 0.63 }, null);
+  assert.equal(high.passed, true, high.failReason ?? '');
+  assert.equal(high.metrics['bundler_rate'], 0.63);
+  assert.equal(evaluateOnDemandGate({ ...base, bundlerVolumeRate: null }, null).passed, true);
 });
 
 test('evaluateOnDemandGate: GMGN smart-wallet count 0 does NOT block — the trigger wallet is the smart money', () => {
