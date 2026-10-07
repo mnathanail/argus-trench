@@ -161,7 +161,11 @@ export const MIN_WALLET_BUY_SOL = 0.3;
  * ένα ανοιχτό πειραματικό trade ΔΕΝ μπλοκάρει κανονική (live) είσοδο στο ίδιο token.
  * false = ακριβώς η παλιά συμπεριφορά (skips).
  */
-export const PAPER_EXPERIMENT_ENABLED = true;
+/* ΤΕΛΟΣ 2026-10-07 (βράδυ, ανάλυση ~1 μέρας): 418 πειραματικά trades −2.77 SOL, ενώ τα κανονικά
+ * 64 trades +0.19 SOL. Μόνο το «κόπηκε ΜΟΝΟ από bundler» ήταν θετικό (+0.30) — ο κανόνας
+ * bundler ήδη αφαιρέθηκε. rug_ratio −0.32, not_evaluated −0.64, smart_degen −0.23,
+ * entrapment −0.33, graduated μόνο −0.77: οι κανόνες κάνουν σωστά τη δουλειά τους. */
+export const PAPER_EXPERIMENT_ENABLED = false;
 
 /** 2026-10-07: το κομμάτι `small_buy` σταμάτησε — αρνητικό σε κάθε συνδυασμό (17 trades, −0.27
  * SOL) και γέμιζε θέσεις (= tokens να παρακολουθούμε). Οι αγορές < MIN_WALLET_BUY_SOL κόβονται

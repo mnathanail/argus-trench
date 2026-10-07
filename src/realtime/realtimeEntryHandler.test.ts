@@ -290,6 +290,6 @@ test('experimentTimingJson: πεδία ΜΟΝΟ στα πειραματικά tr
   });
 });
 
-test('PAPER_EXPERIMENT_ENABLED: ενεργό (ρητή απόφαση 2026-10-06)', () => {
-  assert.equal(PAPER_EXPERIMENT_ENABLED, true);
+test('PAPER_EXPERIMENT_ENABLED: τέλος πειράματος 2026-10-07 (−2.77 SOL σε 418 trades)', () => {
+  assert.equal(PAPER_EXPERIMENT_ENABLED, false);
 });
