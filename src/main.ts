@@ -37,6 +37,8 @@ import { logicVersion } from './decision/gateConfig.js';
 import { LIVE_KILL_SWITCH_CONSEC_LOSSES } from './decision/paperTradingConfig.js';
 import { msUntilNextAthensTime } from './util/athensTime.js';
 import { PumpPortalConnection } from './realtime/pumpportalConnection.js';
+import { HeliusPriceFeed } from './realtime/heliusPriceFeed.js';
+import type { RealtimeFeed } from './realtime/realtimeFeed.js';
 import { subscribeAllActiveWallets, subscribeOpenTrades, unsubscribeIfNoLongerNeeded } from './realtime/subscriptionManager.js';
 import { desiredWalletSubscriptions, isRealtimeSignalWallet, planWalletSubscriptions } from './realtime/walletSubscriptionSync.js';
 import { handleRealtimeTradeEvent } from './realtime/realtimeExitHandler.js';
@@ -129,7 +131,7 @@ async function notifyMirrorOutcome(m: MirrorOutcome | null): Promise<void> {
  * δύο πηγές κερδίζει — `signalDedupe` (η ίδια υπογραφή δεν περνάει δεύτερη φορά).
  */
 const signalDedupe = new SignatureDedupe();
-function runEntryForSignal(event: PumpPortalTradeEvent, connection: PumpPortalConnection): void {
+function runEntryForSignal(event: PumpPortalTradeEvent, connection: RealtimeFeed): void {
   if (event.txType !== 'buy') return;
   if (!signalDedupe.claim(event.signature)) return;
   handleRealtimeEntryEvent(event, connection)
@@ -171,12 +173,82 @@ function runEntryForSignal(event: PumpPortalTradeEvent, connection: PumpPortalCo
     });
 }
 
-let realtimeConnection: PumpPortalConnection | undefined;
+/**
+ * Ένα price tick (trade στο token ή, από 2026-10-07, αλλαγή λογαριασμού του pool μέσω Helius)
+ * → έξοδοι ανοιχτών θέσεων (+ σκιές mirror όσο είναι ενεργό). Entry και exit είναι ΔΥΟ
+ * ανεξάρτητες αλυσίδες· κάθε σφάλμα πιάνεται εδώ, δεν ρίχνει ποτέ το process.
+ */
+function onPriceTick(event: PumpPortalTradeEvent, feed: RealtimeFeed): void {
+  handleRealtimeTradeEvent(event, feed)
+    .then(async (outcomes) => {
+      for (const o of outcomes) {
+        if (o.type === 'closed') {
+          // 2026-10-06: τα trades του paper πειράματος μόνο στη βάση (θα ήταν δεκάδες/μέρα).
+          if (o.experiment === true) continue;
+          const outcomeEmoji = o.pnlPct > 0 ? '🟢' : '🔴';
+          await notify(
+            `⚡ ${outcomeEmoji} ${o.exitReason} μέσω realtime — ${short(o.tokenAddress)} ` +
+              `pnl ${formatPercent(o.pnlPct, true)} — δες /trades`,
+          );
+        } else {
+          // Πραγματική πώληση απέτυχε — η θέση παραμένει ανοιχτή, πραγματικό
+          // κεφάλαιο ακόμα εκτεθειμένο. Ρητό αίτημα χρήστη 2026-09-15: ξεκάθαρο
+          // μήνυμα (πλήρες token address, όχι μόνο short — χρειάζεται για
+          // χειροκίνητη προσπάθεια), καμία αυτόματη επανάληψη.
+          await notify(
+            `🚨 ΠΡΑΓΜΑΤΙΚΗ πώληση ΑΠΕΤΥΧΕ — χρειάζεται χειροκίνητη προσοχή\n` +
+              `Token: ${o.tokenAddress}\n` +
+              `Trade ID: ${o.tradeId}\n` +
+              `Σφάλμα: ${o.errorMessage}\n` +
+              `Χειροκίνητη προσπάθεια: railway run npm run close-manual-exit -- ${o.tradeId}`,
+          );
+        }
+      }
+    })
+    .catch((error) => {
+      console.error(
+        `[realtime] σφάλμα στο exit handler: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+
+  // 2026-09-30 — MIRROR route: ανεξάρτητη τρίτη αλυσίδα (paper). Ειδοποίηση μόνο σε
+  // άνοιγμα/κλείσιμο θέσης — οι ενδιάμεσες αγορές/πωλήσεις γράφονται στο mirror_events.
+  // Σκιά trailing των mirror θέσεων — μόνο καταγραφή, ποτέ πραγματική έξοδος.
+  // 2026-10-06 (ρητή απόφαση χρήστη): mirror σε παύση — βλ. MIRROR_ENABLED.
+  if (MIRROR_ENABLED) handleMirrorShadowTick(event)
+    .then(async (closed) => {
+      for (const c of closed) {
+        console.log(
+          `[mirror-shadow] #${c.positionId} ${c.token.slice(0, 8)} έξοδος σκιάς: ${c.reason} ` +
+            `${c.pnlPct === null ? '' : `${(c.pnlPct * 100).toFixed(1)}%`}`,
+        );
+        if (!hasActiveShadow(c.token) ) await unsubscribeIfNoLongerNeeded(feed, c.token);
+      }
+    })
+    .catch((error) => {
+      console.error(`[mirror-shadow] σφάλμα: ${error instanceof Error ? error.message : String(error)}`);
+    });
+
+}
+
+let realtimeConnection: RealtimeFeed | undefined;
 // Rate limit για το PumpPortal low-balance alert — το connection ξαναδοκιμάζει κάθε 5
 // λεπτά, δεν θέλουμε Telegram μήνυμα σε κάθε προσπάθεια.
 const PUMPPORTAL_BALANCE_ALERT_INTERVAL_MS = 60 * 60_000;
 let lastPumpportalBalanceAlertAt = 0;
-realtimeConnection = pumpportalApiKey
+// 2026-10-07 (ρητή απόφαση χρήστη: «δεν κάνω άλλο top-up στο PumpPortal»): με HELIUS_API_KEY
+// οι τιμές για τις εξόδους έρχονται από το Helius (accountSubscribe, δωρεάν) και τα σήματα από
+// το heliusSignalSource. Το PumpPortal μόνο αν REALTIME_FEED=pumpportal.
+const heliusApiKey = config.heliusApiKey();
+const useHeliusFeed = heliusApiKey !== undefined && process.env.REALTIME_FEED !== 'pumpportal';
+realtimeConnection = useHeliusFeed
+  ? new HeliusPriceFeed({
+      apiKey: heliusApiKey,
+      onTick: (event) => {
+        if (realtimeConnection) onPriceTick(event, realtimeConnection);
+      },
+    })
+  : pumpportalApiKey
   ? new PumpPortalConnection({
       apiKey: pumpportalApiKey,
       onTradeEvent: (event) => {
@@ -192,55 +264,7 @@ realtimeConnection = pumpportalApiKey
         // πρόβλημα στη μία δεν πρέπει ποτέ να εμποδίσει την άλλη (π.χ. ένα trade που
         // μόλις άνοιξε στο ΙΔΙΟ token με ένα trade που κλείνει, και τα δύο πρέπει να
         // προχωρήσουν ανεξάρτητα).
-        handleRealtimeTradeEvent(event, realtimeConnection)
-          .then(async (outcomes) => {
-            for (const o of outcomes) {
-              if (o.type === 'closed') {
-                // 2026-10-06: τα trades του paper πειράματος μόνο στη βάση (θα ήταν δεκάδες/μέρα).
-                if (o.experiment === true) continue;
-                const outcomeEmoji = o.pnlPct > 0 ? '🟢' : '🔴';
-                await notify(
-                  `⚡ ${outcomeEmoji} ${o.exitReason} μέσω realtime — ${short(o.tokenAddress)} ` +
-                    `pnl ${formatPercent(o.pnlPct, true)} — δες /trades`,
-                );
-              } else {
-                // Πραγματική πώληση απέτυχε — η θέση παραμένει ανοιχτή, πραγματικό
-                // κεφάλαιο ακόμα εκτεθειμένο. Ρητό αίτημα χρήστη 2026-09-15: ξεκάθαρο
-                // μήνυμα (πλήρες token address, όχι μόνο short — χρειάζεται για
-                // χειροκίνητη προσπάθεια), καμία αυτόματη επανάληψη.
-                await notify(
-                  `🚨 ΠΡΑΓΜΑΤΙΚΗ πώληση ΑΠΕΤΥΧΕ — χρειάζεται χειροκίνητη προσοχή\n` +
-                    `Token: ${o.tokenAddress}\n` +
-                    `Trade ID: ${o.tradeId}\n` +
-                    `Σφάλμα: ${o.errorMessage}\n` +
-                    `Χειροκίνητη προσπάθεια: railway run npm run close-manual-exit -- ${o.tradeId}`,
-                );
-              }
-            }
-          })
-          .catch((error) => {
-            console.error(
-              `[realtime] σφάλμα στο exit handler: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          });
-
-        // 2026-09-30 — MIRROR route: ανεξάρτητη τρίτη αλυσίδα (paper). Ειδοποίηση μόνο σε
-        // άνοιγμα/κλείσιμο θέσης — οι ενδιάμεσες αγορές/πωλήσεις γράφονται στο mirror_events.
-        // Σκιά trailing των mirror θέσεων — μόνο καταγραφή, ποτέ πραγματική έξοδος.
-        // 2026-10-06 (ρητή απόφαση χρήστη): mirror σε παύση — βλ. MIRROR_ENABLED.
-        if (MIRROR_ENABLED) handleMirrorShadowTick(event)
-          .then(async (closed) => {
-            for (const c of closed) {
-              console.log(
-                `[mirror-shadow] #${c.positionId} ${c.token.slice(0, 8)} έξοδος σκιάς: ${c.reason} ` +
-                  `${c.pnlPct === null ? '' : `${(c.pnlPct * 100).toFixed(1)}%`}`,
-              );
-              if (!hasActiveShadow(c.token) && realtimeConnection) await unsubscribeIfNoLongerNeeded(realtimeConnection, c.token);
-            }
-          })
-          .catch((error) => {
-            console.error(`[mirror-shadow] σφάλμα: ${error instanceof Error ? error.message : String(error)}`);
-          });
+        onPriceTick(event, realtimeConnection);
 
         if (MIRROR_ENABLED) handleMirrorEvent(event, 'pumpportal')
           .then(notifyMirrorOutcome)
@@ -268,7 +292,6 @@ realtimeConnection = pumpportalApiKey
   : undefined;
 
 // 2026-09-30 — MIRROR γρήγορη πηγή (Helius logsSubscribe). Μόνο με MIRROR_HELIUS=on.
-const heliusApiKey = config.heliusApiKey();
 const heliusMirror =
   MIRROR_ENABLED && heliusApiKey !== undefined && config.mirrorHeliusEnabled()
     ? await startHeliusMirrorSource(heliusApiKey, notifyMirrorOutcome).catch((error) => {
@@ -309,8 +332,9 @@ if (realtimeConnection) {
     `[main] realtime: συνδρομή σε ${openTargets.length} ήδη ανοιχτά trades και ` +
       `${signalWallets.length} ενεργά wallets μετά το startup (${activeWallets.length - signalWallets.length} bots εκτός)`,
   );
+  console.log(`[main] realtime πηγή τιμών: ${useHeliusFeed ? 'Helius (accountSubscribe)' : 'PumpPortal'}`);
 } else {
-  console.log('[main] realtime: PUMPPORTAL_API_KEY λείπει — μόνο polling, καμία websocket σύνδεση');
+  console.log('[main] realtime: ούτε HELIUS_API_KEY ούτε PUMPPORTAL_API_KEY — μόνο polling, καμία websocket σύνδεση');
 }
 
 // 2026-10-07 — δεύτερη πηγή σημάτων watchlist: Helius (βλ. realtime/heliusSignalSource.ts). Το
@@ -327,7 +351,7 @@ const heliusSignals =
         onBudgetExhausted: (u) => {
           notify(
             `⚠️ Helius: το ημερήσιο όριο credits (${u.used}/${u.limit}) τελείωσε — μέχρι τα μεσάνυχτα UTC ` +
-              `σήματα μόνο από το PumpPortal. (HELIUS_DAILY_CREDIT_BUDGET)`,
+              `χωρίς νέα σήματα (οι έξοδοι συνεχίζουν). (HELIUS_DAILY_CREDIT_BUDGET)`,
           ).catch((error) => console.error(`[helius-signal] alert: ${String(error)}`));
         },
         dailyCreditBudget: config.heliusDailyCreditBudget(),

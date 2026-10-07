@@ -111,3 +111,41 @@ export async function getSignaturesForAddress(url: string, address: string, limi
     { limit, commitment: 'confirmed', ...(before !== undefined ? { before } : {}) },
   ]);
 }
+
+// ── 2026-10-07: για το HeliusPriceFeed (εύρεση bonding curve / pool ενός token) ─────────
+export interface AccountInfoLite {
+  owner: string;
+  lamports: number;
+  /** jsonParsed token account → parsed.info· base64 → [data, 'base64']. */
+  data: unknown;
+}
+
+export async function getTokenLargestAccounts(url: string, mint: string): Promise<{ address: string; uiAmount: number | null }[]> {
+  const r = await rpcCall<{ value: { address: string; uiAmount: number | null }[] }>(url, 'getTokenLargestAccounts', [
+    mint,
+    { commitment: 'confirmed' },
+  ]);
+  return r.value;
+}
+
+export async function getMultipleAccounts(
+  url: string,
+  addresses: readonly string[],
+  encoding: 'jsonParsed' | 'base64',
+): Promise<(AccountInfoLite | null)[]> {
+  if (addresses.length === 0) return [];
+  const r = await rpcCall<{ value: (AccountInfoLite | null)[] }>(url, 'getMultipleAccounts', [
+    [...addresses],
+    { encoding, commitment: 'confirmed' },
+  ]);
+  return r.value;
+}
+
+export async function getTokenAccountsByOwner(url: string, owner: string, mint: string): Promise<{ pubkey: string; account: AccountInfoLite }[]> {
+  const r = await rpcCall<{ value: { pubkey: string; account: AccountInfoLite }[] }>(url, 'getTokenAccountsByOwner', [
+    owner,
+    { mint },
+    { encoding: 'jsonParsed', commitment: 'confirmed' },
+  ]);
+  return r.value;
+}

@@ -163,6 +163,11 @@ export const MIN_WALLET_BUY_SOL = 0.3;
  */
 export const PAPER_EXPERIMENT_ENABLED = true;
 
+/** 2026-10-07: το κομμάτι `small_buy` σταμάτησε — αρνητικό σε κάθε συνδυασμό (17 trades, −0.27
+ * SOL) και γέμιζε θέσεις (= tokens να παρακολουθούμε). Οι αγορές < MIN_WALLET_BUY_SOL κόβονται
+ * ξανά ('wallet_buy_too_small'). */
+export const PAPER_EXPERIMENT_SMALL_BUY = false;
+
 export const EXIT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
 /**

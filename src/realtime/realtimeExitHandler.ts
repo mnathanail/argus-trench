@@ -26,7 +26,7 @@ import { verifySellAfterError } from '../live/sellVerification.js';
 import { decideShadowTick, NO_EXIT_SIGNAL_RULES, SHADOW_4B_RULES } from './shadowExit.js';
 import { isDustGraduatedTrade, priceFromTradeEvent, type PumpPortalTradeEvent } from './pumpportalEvents.js';
 import { unsubscribeIfNoLongerNeeded } from './subscriptionManager.js';
-import type { PumpPortalConnection } from './pumpportalConnection.js';
+import type { RealtimeFeed as PumpPortalConnection } from './realtimeFeed.js';
 
 /**
  * Ένα «κανονικό» κλείσιμο (paper ΚΑΙ live) ή μια πραγματική πώληση που ΑΠΕΤΥΧΕ και

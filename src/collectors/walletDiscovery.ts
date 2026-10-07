@@ -4,7 +4,7 @@ import { rethrowIfRateLimited } from '../gmgn/errors.js';
 import { fetchTokenTraders, traderRejectReason, type TokenTrader, type TraderRejectReason } from '../gmgn/traders.js';
 import { type TrenchCandidate } from '../gmgn/trenches.js';
 import { fetchTrendingTokens, type TrendingToken } from '../gmgn/trending.js';
-import type { PumpPortalConnection } from '../realtime/pumpportalConnection.js';
+import type { RealtimeFeed as PumpPortalConnection } from '../realtime/realtimeFeed.js';
 import { fetchWalletStats, type WalletStats } from '../gmgn/walletStats.js';
 import { WALLET_DISCOVERY_LOOP_PACING_MS } from './intervals.js';
 import { ADVISORY_TOKEN_COUNT_FLOOR, ADVISORY_WIN_RATE_FLOOR } from '../telegram/commands.js';

@@ -20,7 +20,7 @@ import { rethrowIfRateLimited } from '../gmgn/errors.js';
 import { LIVE_STRATEGY_RECONCILER_LOOP_PACING_MS } from './intervals.js';
 import { delay } from '../util/delay.js';
 import { unsubscribeIfNoLongerNeeded } from '../realtime/subscriptionManager.js';
-import type { PumpPortalConnection } from '../realtime/pumpportalConnection.js';
+import type { RealtimeFeed as PumpPortalConnection } from '../realtime/realtimeFeed.js';
 import { short } from '../telegram/commands.js';
 
 /**

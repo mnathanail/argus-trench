@@ -25,7 +25,7 @@ import { EXIT_RESOLVER_LOOP_PACING_MS, EXIT_RESOLVER_TRADES_PER_CYCLE } from './
 import { delay } from '../util/delay.js';
 import { unsubscribeIfNoLongerNeeded } from '../realtime/subscriptionManager.js';
 import { REALTIME_SOURCE_CHANNEL } from '../realtime/pumpportalEvents.js';
-import type { PumpPortalConnection } from '../realtime/pumpportalConnection.js';
+import type { RealtimeFeed as PumpPortalConnection } from '../realtime/realtimeFeed.js';
 
 /**
  * Κλείνει `paper_trades` (mode='log_only', ανοιγμένα από signal_logged decisions) βάσει

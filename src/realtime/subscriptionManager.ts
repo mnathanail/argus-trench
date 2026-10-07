@@ -1,6 +1,6 @@
 import { countTradesNeedingTicksForToken, type OpenTradeSubscriptionTarget } from '../db/repositories/paperTrades.js';
 import type { Queryable } from '../db/tx.js';
-import type { PumpPortalConnection } from './pumpportalConnection.js';
+import type { RealtimeFeed as PumpPortalConnection } from './realtimeFeed.js';
 
 /** Μόνο ό,τι χρειαζόμαστε από τη σύνδεση — επιτρέπει fake object στα tests χωρίς να
  * χρειάζεται ολόκληρο PumpPortalConnection με πραγματικό socket. */

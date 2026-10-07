@@ -27,6 +27,7 @@ import {
   liveExitConditionOrders,
   MIN_WALLET_BUY_SOL,
   PAPER_EXPERIMENT_ENABLED,
+  PAPER_EXPERIMENT_SMALL_BUY,
 } from '../decision/paperTradingConfig.js';
 import { WALLET_ACTIVITY_MAX_OPEN_TRADES_BEFORE_PAUSE } from '../collectors/intervals.js';
 import {
@@ -47,7 +48,7 @@ import { tryOnDemandGate } from './onDemandGateRunner.js';
 import { attachNativeStrategy } from '../live/nativeStrategyAttach.js';
 import { isHighHolderRisk, tryComputeHolderRisk, type HolderRiskSnapshot } from '../decision/holderRiskCheck.js';
 import { ON_DEMAND_GATE_PRIORITY, type HolderRiskMode } from '../decision/paperTradingConfig.js';
-import type { PumpPortalConnection } from './pumpportalConnection.js';
+import type { RealtimeFeed as PumpPortalConnection } from './realtimeFeed.js';
 import type { TradeMode } from '../db/types.js';
 
 export interface RealtimeEntryResult {
@@ -259,7 +260,7 @@ export async function handleRealtimeEntryEvent(
   }
   const smallBuy = wallet !== null && wallet.active && isWalletBuyTooSmall(event);
   // 2026-10-06: με το paper πείραμα η μικρή αγορά συνεχίζει (ετικέτα small_buy, μόνο paper).
-  if (smallBuy && !PAPER_EXPERIMENT_ENABLED) {
+  if (smallBuy && !(PAPER_EXPERIMENT_ENABLED && PAPER_EXPERIMENT_SMALL_BUY)) {
     recordEntrySkip(event, 'wallet_buy_too_small', { min_sol: MIN_WALLET_BUY_SOL });
     return null;
   }
