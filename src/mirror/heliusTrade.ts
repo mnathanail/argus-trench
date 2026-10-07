@@ -20,7 +20,9 @@ import type { ParsedTransaction, TokenBalance } from '../solana/heliusRpc.js';
  */
 
 export const PUMP_PROGRAM = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
-export const PUMP_AMM_PROGRAM = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpMNtHVfk3KnA';
+/** PumpSwap AMM. ΔΙΟΡΘΩΣΗ 2026-10-07: ήταν λάθος (`…WpMNtHVfk3KnA`) — οι αγορές στο PumpSwap
+ * έβγαιναν program 'other', και ο HeliusPriceFeed δεν έβρισκε κανένα pool. Σωστό: επίσημα IDs. */
+export const PUMP_AMM_PROGRAM = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 /** 2026-09-30: ο chriskogias πληρώνει/εισπράττει σε USDC (το bot κάνει USDC→SOL→token στην ίδια
  * συναλλαγή· το SOL του wallet δεν αλλάζει). Τα stablecoins μετράνε ως πληρωμή, όχι ως traded token. */

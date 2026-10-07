@@ -138,7 +138,11 @@ export function withPoolPrice(tx: ParsedTransaction, event: PumpPortalTradeEvent
       }
     }
   }
-  const sane = (spot: number): boolean => avg !== null && spot >= avg * 0.7 && spot <= avg * 2;
+  let lastSpot: number | null = null;
+  const sane = (spot: number): boolean => {
+    lastSpot = spot;
+    return avg !== null && spot >= avg * 0.7 && spot <= avg * 2;
+  };
 
   if (event.pool === 'pump' && owner !== null && meta !== null) {
     const idx = keys.indexOf(owner);
@@ -162,6 +166,8 @@ export function withPoolPrice(tx: ParsedTransaction, event: PumpPortalTradeEvent
     }
   }
   if (avg === null) return { event, priceFallback: true };
+  // 2026-10-07: ~40% των σημάτων έπεφταν εδώ την πρώτη μέρα — καταγραφή για διάγνωση.
+  logPriceFallback(event, owner, lastSpot, avg);
   if (event.pool === 'pump') {
     return {
       event: { ...event, vSolInBondingCurve: avg * PUMP_TOKEN_SUPPLY, vTokensInBondingCurve: PUMP_TOKEN_SUPPLY, marketCapSol: avg * PUMP_TOKEN_SUPPLY },
@@ -169,6 +175,18 @@ export function withPoolPrice(tx: ParsedTransaction, event: PumpPortalTradeEvent
     };
   }
   return { event: { ...event, marketCapSol: avg * PUMP_TOKEN_SUPPLY }, priceFallback: true };
+}
+
+let priceFallbackLogs = 0;
+const PRICE_FALLBACK_LOG_LIMIT = 30;
+function logPriceFallback(event: PumpPortalTradeEvent, owner: string | null, spot: number | null, avg: number): void {
+  if (priceFallbackLogs >= PRICE_FALLBACK_LOG_LIMIT) return;
+  priceFallbackLogs += 1;
+  console.log(
+    `[helius-signal] price_fallback ${event.signature.slice(0, 10)} mint=${event.mint.slice(0, 8)} pool=${event.pool} ` +
+      `owner=${owner === null ? '—' : owner.slice(0, 8)} spot/avg=${spot === null ? '—' : (spot / avg).toFixed(3)} ` +
+      `sol=${event.solAmount.toFixed(4)} tokens=${event.tokenAmount.toFixed(0)}`,
+  );
 }
 
 export type HeliusSignalOutcome =
@@ -198,7 +216,10 @@ export async function processHeliusSignal(wallet: string, signature: string, dep
   if (parsed.program === 'other') return 'other_program';
   const { event, priceFallback } = withPoolPrice(tx, parsed.event);
   const lagSec = parsed.blockTime === null ? null : Math.round((deps.nowMs() / 1000 - parsed.blockTime) * 10) / 10;
-  if (!deps.dedupe.claim(signature)) return 'duplicate';
+  // ΔΙΟΡΘΩΣΗ 2026-10-07: εδώ μόνο έλεγχος — το claim το κάνει το entry path (runEntryForSignal).
+  // Πριν το κάναμε ΚΑΙ εδώ, οπότε το entry path έβρισκε την υπογραφή «ήδη επεξεργασμένη» και
+  // πετούσε ΚΑΘΕ σήμα του Helius (946 σήματα, 0 trades / 0 skips την πρώτη μέρα).
+  if (deps.dedupe.has(signature)) return 'duplicate';
   deps.onEvent({ ...event, signalSource: 'helius', signalLagSec: lagSec });
   return priceFallback ? 'emitted_price_fallback' : 'emitted';
 }

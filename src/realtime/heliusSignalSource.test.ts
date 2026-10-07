@@ -144,6 +144,9 @@ test('processHeliusSignal: αγορά curve → ένα σήμα με signalSourc
   assert.equal(d.events[0]!.signalLagSec, 2.5);
   assert.equal(d.events[0]!.txType, 'buy');
   assert.equal(isGraduatedEvent(d.events[0]!), false);
+  // το claim ανήκει στο entry path — αλλιώς εκείνο θα έβρισκε την υπογραφή «ήδη επεξεργασμένη»
+  assert.equal(d.dedupe.has('sigCurve'), false);
+  assert.equal(d.dedupe.claim('sigCurve'), true);
 });
 
 test('processHeliusSignal: ήδη από PumpPortal → καμία κλήση, κανένα σήμα', async () => {

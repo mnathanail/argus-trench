@@ -1073,3 +1073,10 @@ entirely in our own Postgres.
 
 - ~1 day of data: 418 experiment trades −2.77 SOL vs 64 normal trades +0.19 SOL. Only "cut ONLY by bundler" was positive (+0.30, rule already removed); rug_ratio −0.32, not_evaluated −0.64, smart_degen_count −0.23, entrapment −0.33, graduated alone −0.77 (57 trades), small_buy −0.90. `PAPER_EXPERIMENT_ENABLED = false` → the old skips again (gate_not_passed, wallet_buy_too_small, graduated_off). The code and the tagged trades stay for later analysis.
 - Stops overshoot: experiment stop_loss average −42% and normal −38.8% vs the −30% threshold (fills at the next tick after a gap).
+
+## Two Helius bugs found in the first day's logs (2026-10-07 evening)
+
+- **Every Helius signal was dropped**: `processHeliusSignal` claimed the signature in the shared `SignatureDedupe` and then `runEntryForSignal` found it "already processed" → 946 signals emitted, 0 trades and 0 skips with `signal_source='helius'`. Now `processHeliusSignal` only checks `has()`; the entry path claims.
+- **Wrong PumpSwap program id** in `mirror/heliusTrade.ts` (`…WpMNtHVfk3KnA`); the official one is `pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`. Effects until now: PumpSwap trades parsed as `program: 'other'`, `isPumpBuyLog` ignored PumpSwap buys, `HeliusPriceFeed.locatePool` found no pool for graduated tokens ("δεν βρέθηκε … pool" for ~28 tokens).
+- Real cost on day 1: 1,069 credits for ~8h of 230–240 wallets (budget 25k/day) — the free plan is far from its limit.
+- Diagnostics: the first 30 price fallbacks per process log `[helius-signal] price_fallback … spot/avg=…` (~40% of signals fell back to the trade's average price on day 1).
