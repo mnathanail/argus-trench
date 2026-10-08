@@ -132,10 +132,10 @@ test('withPoolPrice: PumpSwap buy → marketCapSol από wSOL/tokens του poo
 });
 
 test('withPoolPrice: παράλογη τιμή pool → μέση τιμή του trade (price_fallback), curve παραμένει curve', () => {
-  const { event, priceFallback } = withPoolPrice(curveBuy(), baseEvent({ solAmount: 10 }));
+  const { event, priceFallback } = withPoolPrice(curveBuy(), baseEvent({ solAmount: 0.4 }));
   assert.equal(priceFallback, true);
   assert.equal(isGraduatedEvent(event), false);
-  assert.ok(close(priceFromTradeEvent(event)!, 10 / TOKENS_OUT));
+  assert.ok(close(priceFromTradeEvent(event)!, 0.4 / TOKENS_OUT));
 });
 
 function deps(fetched: ParsedTransaction | null, dedupe = new SignatureDedupe()): HeliusSignalDeps & { events: PumpPortalTradeEvent[] } {
@@ -181,4 +181,20 @@ test('processHeliusSignal: πώληση / όχι pump / δεν βρέθηκε �
   other.transaction.message.accountKeys[4] = { pubkey: 'SomeOtherDex1111111111111111111111111111111' };
   assert.equal(await processHeliusSignal(W, 'y', deps(other)), 'other_program');
   assert.equal(await processHeliusSignal(W, 'z', deps(null)), 'not_found');
+});
+
+test('withPoolPrice / processHeliusSignal: curve ή pool με quote ΑΛΛΟ από SOL → κανένα σήμα', async () => {
+  // Το wallet πλήρωσε 1 SOL αλλά η curve δεν πήρε lamports (το quote είναι άλλο token).
+  const nonSol = curveBuy();
+  nonSol.meta!.postBalances[2] = nonSol.meta!.preBalances[2]!;
+  assert.equal(withPoolPrice(nonSol, baseEvent({})).nonSolQuote, true);
+  const d = deps(nonSol);
+  assert.equal(await processHeliusSignal(W, 'sigX', d), 'non_sol_quote');
+  assert.equal(d.events.length, 0);
+  // PumpSwap pool χωρίς wSOL λογαριασμό
+  const amm = ammBuy();
+  amm.meta!.postTokenBalances = amm.meta!.postTokenBalances!.filter((b) => b.mint !== WSOL_MINT);
+  assert.equal(withPoolPrice(amm, baseEvent({ pool: 'pump-amm', tokenAmount: 1_000_000, solAmount: 0.6 })).nonSolQuote, true);
+  // κανονικές αγορές σε SOL: όχι
+  assert.equal(withPoolPrice(curveBuy(), baseEvent({})).nonSolQuote, undefined);
 });

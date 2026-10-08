@@ -125,7 +125,10 @@ function uiAmount(b: { uiTokenAmount: { amount: string; decimals: number } }): n
  * Αν δεν βρεθεί ή βγει παράλογη (εκτός 0.7×–2× της μέσης τιμής του trade), χρησιμοποιείται η
  * μέση τιμή (`price_fallback`).
  */
-export function withPoolPrice(tx: ParsedTransaction, event: PumpPortalTradeEvent): { event: PumpPortalTradeEvent; priceFallback: boolean } {
+export function withPoolPrice(
+  tx: ParsedTransaction,
+  event: PumpPortalTradeEvent,
+): { event: PumpPortalTradeEvent; priceFallback: boolean; nonSolQuote?: boolean } {
   const avg = event.tokenAmount > 0 ? event.solAmount / event.tokenAmount : null;
   const meta = tx.meta;
   const keys = tx.transaction.message.accountKeys.map((k) => k.pubkey);
@@ -152,6 +155,13 @@ export function withPoolPrice(tx: ParsedTransaction, event: PumpPortalTradeEvent
 
   if (event.pool === 'pump' && owner !== null && meta !== null) {
     const idx = keys.indexOf(owner);
+    // 2026-10-08: νέες curves του Pump.fun (Token-2022) με quote ΑΛΛΟ από SOL — η curve δεν παίρνει
+    // lamports στην αγορά (π.χ. HQbAXd3b: curve 0.001 SOL, realSol 0.957). Όλες οι τιμές μας είναι σε
+    // SOL, άρα αυτά δεν τα αγγίζουμε (έδιναν κορυφές 7–9k SOL mcap σε tokens με ATH ~$10–50k).
+    if (idx >= 0) {
+      const gained = ((meta.postBalances[idx] ?? 0) - (meta.preBalances[idx] ?? 0)) / LAMPORTS;
+      if (gained < event.solAmount * 0.5) return { event, priceFallback: false, nonSolQuote: true };
+    }
     if (idx >= 0) {
       const vSol = (meta.postBalances[idx] ?? 0) / LAMPORTS + PUMP_CURVE_VIRTUAL_SOL;
       const vTokens = ownerPostTokens + PUMP_CURVE_VIRTUAL_TOKEN_OFFSET;
@@ -166,6 +176,7 @@ export function withPoolPrice(tx: ParsedTransaction, event: PumpPortalTradeEvent
   }
   if (event.pool === 'pump-amm' && owner !== null && meta !== null) {
     const quote = (meta.postTokenBalances ?? []).find((b) => b.mint === WSOL_MINT && b.owner === owner);
+    if (quote === undefined) return { event, priceFallback: false, nonSolQuote: true }; // pool χωρίς wSOL = άλλο quote
     if (quote !== undefined && ownerPostTokens > 0) {
       const spot = uiAmount(quote) / ownerPostTokens;
       if (sane(spot)) return { event: { ...event, marketCapSol: spot * PUMP_TOKEN_SUPPLY }, priceFallback: false };
@@ -202,7 +213,8 @@ export type HeliusSignalOutcome =
   | 'other_program'
   | 'duplicate'
   | 'emitted'
-  | 'emitted_price_fallback';
+  | 'emitted_price_fallback'
+  | 'non_sol_quote';
 
 export interface HeliusSignalDeps {
   fetchTx: (wallet: string, signature: string) => Promise<ParsedTransaction | null>;
@@ -220,7 +232,8 @@ export async function processHeliusSignal(wallet: string, signature: string, dep
   if (!parsed.ok) return 'not_a_trade';
   if (parsed.event.txType !== 'buy') return 'not_a_buy';
   if (parsed.program === 'other') return 'other_program';
-  const { event, priceFallback } = withPoolPrice(tx, parsed.event);
+  const { event, priceFallback, nonSolQuote } = withPoolPrice(tx, parsed.event);
+  if (nonSolQuote === true) return 'non_sol_quote';
   const lagSec = parsed.blockTime === null ? null : Math.round((deps.nowMs() / 1000 - parsed.blockTime) * 10) / 10;
   // ΔΙΟΡΘΩΣΗ 2026-10-07: εδώ μόνο έλεγχος — το claim το κάνει το entry path (runEntryForSignal).
   // Πριν το κάναμε ΚΑΙ εδώ, οπότε το entry path έβρισκε την υπογραφή «ήδη επεξεργασμένη» και
