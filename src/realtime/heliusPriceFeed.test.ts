@@ -29,6 +29,9 @@ test('decodeBondingCurve: virtual reserves σε SOL / UI tokens και flag ολ
   assert.equal(s.virtualSolReserves, 36);
   assert.equal(s.complete, true);
   assert.equal(decodeBondingCurve(Buffer.alloc(10)), null);
+  // αδύνατες τιμές για bonding curve → null (όχι ψεύτικη τιμή)
+  assert.equal(decodeBondingCurve(Buffer.from(curveData(5_000_000_000_000n, 40_000_000_000n), 'base64')), null, 'vTok 5M');
+  assert.equal(decodeBondingCurve(Buffer.from(curveData(779_900_000_000_000n, 900_000_000_000n), 'base64')), null, 'vSol 900');
 });
 
 test('curveTick / ammTick: ίδιες μονάδες με το PumpPortal — curve = όχι graduated, PumpSwap = τιμή από marketCapSol', () => {

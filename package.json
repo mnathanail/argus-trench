@@ -49,6 +49,7 @@
     "wallet-onchain-replay": "tsx scripts/wallet-onchain-replay.ts",
     "exit-path-analysis": "tsx scripts/exit-path-analysis.ts",
     "winners-report": "tsx scripts/winners-report.ts",
+    "price-probe": "tsx scripts/price-probe.ts",
     "watchlist-helius-estimate": "tsx scripts/watchlist-helius-estimate.ts"
   },
   "dependencies": {

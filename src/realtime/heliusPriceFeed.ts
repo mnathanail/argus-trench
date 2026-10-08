@@ -34,12 +34,20 @@ export interface CurveState {
   complete: boolean;
 }
 
+const CURVE_MIN_VTOK = 250_000_000;
+const CURVE_MAX_VTOK = 1_100_000_000;
+const CURVE_MIN_VSOL = 25;
+const CURVE_MAX_VSOL = 150;
+
 /** Pump.fun BondingCurve account: [8 disc][u64 vTok][u64 vSol][u64 realTok][u64 realSol][u64 supply][bool complete]. */
 export function decodeBondingCurve(data: Buffer): CurveState | null {
   if (data.length < 49) return null;
   const vTok = Number(data.readBigUInt64LE(8)) / 1e6;
   const vSol = Number(data.readBigUInt64LE(16)) / 1e9;
   if (!(vTok > 0) || !(vSol > 0)) return null;
+  // Pump.fun curve: vSol 30…~115, vTok 279.9M…1.073B → mcap ~28…~410 SOL. Οτιδήποτε έξω από αυτά
+  // δεν είναι bonding curve (άλλος λογαριασμός / άλλο layout) — καμία τιμή αντί για ψεύτικη.
+  if (vTok < CURVE_MIN_VTOK || vTok > CURVE_MAX_VTOK || vSol < CURVE_MIN_VSOL || vSol > CURVE_MAX_VSOL) return null;
   return { virtualTokenReserves: vTok, virtualSolReserves: vSol, complete: data.readUInt8(48) === 1 };
 }
 
@@ -286,6 +294,13 @@ export class HeliusPriceFeed implements RealtimeFeed {
       return;
     }
     state.location = location;
+    // 2026-10-08: κορυφές χιλιάδων SOL σε tokens με ATH ~$10–50k — καταγραφή κάθε εύρεσης για διάγνωση.
+    this.log(
+      location.kind === 'curve'
+        ? `[helius-price] ${mint.slice(0, 8)}: curve ${location.curve.slice(0, 8)} mcap ${((location.state.virtualSolReserves / location.state.virtualTokenReserves) * PUMP_TOKEN_SUPPLY).toFixed(1)} SOL`
+        : `[helius-price] ${mint.slice(0, 8)}: PumpSwap pool ${location.pool.slice(0, 8)} base ${location.base.slice(0, 8)} (${location.baseUi.toFixed(0)}) ` +
+            `quote ${location.quote.slice(0, 8)} (${location.quoteSol.toFixed(3)} wSOL) mcap ${((location.quoteSol / location.baseUi) * PUMP_TOKEN_SUPPLY).toFixed(1)} SOL`,
+    );
     if (location.kind === 'curve') {
       this.options.onTick(curveTick(mint, location.state, 0));
       if (location.state.complete) this.scheduleRecheck(mint);
