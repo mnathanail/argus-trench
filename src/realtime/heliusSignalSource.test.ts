@@ -6,6 +6,7 @@ import { PUMP_AMM_PROGRAM, PUMP_PROGRAM, WSOL_MINT } from '../mirror/heliusTrade
 import {
   HeliusCreditBudget,
   isPumpBuyLog,
+  PUMP_CURVE_VIRTUAL_TOKEN_OFFSET,
   processHeliusSignal,
   SignatureDedupe,
   withPoolPrice,
@@ -42,8 +43,8 @@ function curveBuy(): ParsedTransaction {
     [W, 'ATA', 'Curve', 'CurveATA', PUMP_PROGRAM],
     [10 * S, 0, 5 * S, RENT, 1],
     [10 * S - 1 * S - RENT - FEE, RENT, 6 * S, RENT, 1],
-    [tb(3, 'Curve', M, PRE_VTOK - 279_900_000)],
-    [tb(1, W, M, TOKENS_OUT), tb(3, 'Curve', M, 500_000_000)],
+    [tb(3, 'Curve', M, PRE_VTOK - 73_000_000)],
+    [tb(1, W, M, TOKENS_OUT), tb(3, 'Curve', M, 779_900_000 - 73_000_000)],
   );
 }
 
@@ -106,6 +107,12 @@ test('HeliusCreditBudget: ημερήσιο και ανά wallet όριο, μηδ
   assert.equal(b.usage().used, 1);
 });
 
+test('PUMP_CURVE_VIRTUAL_TOKEN_OFFSET: στη δημιουργία το account έχει 1B και η curve 1.073B virtual', () => {
+  assert.equal(1_000_000_000 + PUMP_CURVE_VIRTUAL_TOKEN_OFFSET, 1_073_000_000);
+  // στο graduation: real 0 → account 206.9M, virtual 279.9M
+  assert.equal(206_900_000 + PUMP_CURVE_VIRTUAL_TOKEN_OFFSET, 279_900_000);
+});
+
 test('withPoolPrice: curve buy → vSol/vTokens της bonding curve ΜΕΤΑ το trade (όχι graduated)', () => {
   const { event, priceFallback } = withPoolPrice(curveBuy(), baseEvent({}));
   assert.equal(priceFallback, false);
@@ -165,8 +172,8 @@ test('processHeliusSignal: ήδη από PumpPortal → καμία κλήση, �
 
 test('processHeliusSignal: πώληση / όχι pump / δεν βρέθηκε → κανένα σήμα', async () => {
   const sell = curveBuy();
-  sell.meta!.preTokenBalances = [tb(1, W, M, TOKENS_OUT), tb(3, 'Curve', M, 500_000_000)];
-  sell.meta!.postTokenBalances = [tb(3, 'Curve', M, 500_000_000 + TOKENS_OUT)];
+  sell.meta!.preTokenBalances = [tb(1, W, M, TOKENS_OUT), tb(3, 'Curve', M, 706_900_000)];
+  sell.meta!.postTokenBalances = [tb(3, 'Curve', M, 706_900_000 + TOKENS_OUT)];
   sell.meta!.preBalances = [9 * S, RENT, 6 * S, RENT, 1];
   sell.meta!.postBalances = [9 * S + 0.99 * S + RENT - FEE, 0, 5.01 * S, RENT, 1];
   assert.equal(await processHeliusSignal(W, 'x', deps(sell)), 'not_a_buy');

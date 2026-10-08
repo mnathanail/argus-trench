@@ -25,8 +25,14 @@ import { isRealtimeSignalWallet } from './walletSubscriptionSync.js';
  */
 
 export const PUMP_CURVE_VIRTUAL_SOL = 30;
-/** initial virtual token reserves 1.073B − initial real 793.1M (pump.fun bonding curve). */
-export const PUMP_CURVE_VIRTUAL_TOKEN_OFFSET = 279_900_000;
+/**
+ * vTokens = token account της curve + 73M. Το token account της curve κρατάει ΟΛΟ το supply στη
+ * δημιουργία (1B), όχι μόνο τα real reserves (793.1M) — τα 206.9M που μένουν πάνε στο pool στο
+ * graduation. Άρα virtual = account − 206.9M + 279.9M = account + 73M (1.073B − 1B).
+ * 2026-10-08: ήταν 279.9M → τιμή εισόδου 16–40% χαμηλότερη από την πραγματική για κάθε σήμα Helius
+ * στη curve, ενώ τα ticks (decodeBondingCurve) έδιναν τη σωστή → ψεύτικο άλμα αμέσως μετά την είσοδο.
+ */
+export const PUMP_CURVE_VIRTUAL_TOKEN_OFFSET = 73_000_000;
 const LAMPORTS = 1e9;
 
 /** true όταν τα logs δείχνουν αγορά σε Pump.fun curve ή PumpSwap (ή είναι κομμένα και το πρόγραμμα υπάρχει). */
@@ -114,7 +120,7 @@ function uiAmount(b: { uiTokenAmount: { amount: string; decimals: number } }): n
  * που στέλνει το PumpPortal (vSol/vTokens στη curve, marketCapSol στο PumpSwap), ώστε το entry
  * path (on-demand gate μόνο σε curve tokens, priceFromTradeEvent) να δουλεύει ίδια.
  *  - curve: αντισυμβαλλόμενος = ο owner του token account του mint που έδωσε τα περισσότερα
- *    tokens (bonding curve)· vTokens = real + 279.9M, vSol = lamports/1e9 + 30.
+ *    tokens (bonding curve)· vTokens = token account + 73M, vSol = lamports/1e9 + 30.
  *  - PumpSwap: ίδιος owner (pool)· τιμή = wSOL του pool / tokens του pool.
  * Αν δεν βρεθεί ή βγει παράλογη (εκτός 0.7×–2× της μέσης τιμής του trade), χρησιμοποιείται η
  * μέση τιμή (`price_fallback`).
