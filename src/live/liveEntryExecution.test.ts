@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { fallbackOutcomeFor, type LiveFallbackReason } from './liveEntryExecution.js';
+import { fallbackOutcomeFor, liveEntryAmountSol, type LiveFallbackReason } from './liveEntryExecution.js';
 
 /**
  * Ιστορικό: 2026-09-17 το `attemptLiveEntry` πέταγε την τιμή του `decideTradeMode()` και
@@ -69,4 +69,12 @@ test('fallbackOutcomeFor: graduated_paper_only (LIVE_ON_GRADUATED_TOKENS=false) 
   const outcome = fallbackOutcomeFor('graduated_paper_only', true);
   assert.equal(outcome.mode, 'paper');
   assert.equal(outcome.killSwitchJustTriggered, false);
+});
+
+test('liveEntryAmountSol: διαφορά υπολοίπου αν είναι λογική, αλλιώς GMGN report, αλλιώς το μέγεθος θέσης', () => {
+  assert.equal(liveEntryAmountSol(0.052, 0.05, 0.001, 0.05), 0.052);
+  assert.ok(Math.abs(liveEntryAmountSol(0, 0.05, 0.001, 0.05) - 0.051) < 1e-12, 'μπαγιάτικο υπόλοιπο → report');
+  assert.equal(liveEntryAmountSol(null, 0.05, null, 0.05), 0.05, 'δεν διαβάστηκε → report');
+  assert.equal(liveEntryAmountSol(-0.3, null, null, 0.05), 0.05, 'άσχετη κίνηση wallet → μέγεθος θέσης');
+  assert.equal(liveEntryAmountSol(0.4, 0.2, 0, 0.05), 0.05, 'όλα εκτός λογικού εύρους → μέγεθος θέσης');
 });

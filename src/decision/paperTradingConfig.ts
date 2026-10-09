@@ -185,6 +185,11 @@ export const EXIT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 export const LIVE_BANKROLL_SOL = 1;
 export const LIVE_POSITION_SIZE_PCT = 0.05;
 export const LIVE_POSITION_SIZE_SOL = LIVE_BANKROLL_SOL * LIVE_POSITION_SIZE_PCT;
+/** 2026-10-09: SOL που μένει ΠΑΝΤΑ στο wallet για fees πώλησης (anti-MEV tip + network fee) — χωρίς
+ * αυτό η τελευταία αγορά μπορούσε να αφήσει το wallet χωρίς SOL για να πουλήσει. */
+export const LIVE_SOL_RESERVE_SOL = 0.03;
+/** 2026-10-09: μέγιστες ταυτόχρονες ανοιχτές live θέσεις (πέρα από αυτό → paper, `live_positions_cap`). */
+export const LIVE_MAX_OPEN_POSITIONS = 5;
 
 /**
  * Από το GMGN's δικό τους reference "AI Trader" demo (gmgn-demos/aitrader, εξετάστηκε

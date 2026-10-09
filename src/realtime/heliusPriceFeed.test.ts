@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { PUMP_AMM_PROGRAM, PUMP_PROGRAM, WSOL_MINT } from '../mirror/heliusTrade.js';
 import type { SocketLike } from '../solana/heliusLogsListener.js';
 import type { AccountInfoLite } from '../solana/heliusRpc.js';
-import { ammTick, curveTick, decodeBondingCurve, HeliusPriceFeed, locatePool, type PoolRpc } from './heliusPriceFeed.js';
+import { ammTick, curveTick, decodeBondingCurve, HEARTBEAT_MS, HeliusPriceFeed, locatePool, type PoolRpc } from './heliusPriceFeed.js';
 import { isGraduatedEvent, isDustGraduatedTrade, priceFromTradeEvent, type PumpPortalTradeEvent } from './pumpportalEvents.js';
 
 const MINT = 'MintPumpToken1111111111111111111111111111111';
@@ -166,5 +166,26 @@ test('HeliusPriceFeed: PumpSwap → δύο συνδρομές (tokens + wSOL τ�
   // wallets: no-op, αλλά αναφέρονται (για το περιοδικό sync)
   feed.subscribeWallet('W');
   assert.deepEqual(feed.walletSubscriptions(), ['W']);
+  feed.close();
+});
+
+test('HeliusPriceFeed heartbeat: σιωπηλό token ξαναστέλνει την τελευταία τιμή (για time_limit / timeout)', async () => {
+  const socket = new FakeSocket();
+  const ticks: PumpPortalTradeEvent[] = [];
+  const feed = new HeliusPriceFeed({ apiKey: 'k', onTick: (e) => ticks.push(e), log: () => undefined, createSocket: () => socket, rpc: fakeRpc('curve') });
+  feed.connect();
+  socket.open();
+  feed.subscribeToken(MINT);
+  await settle();
+  assert.equal(ticks.length, 1);
+  const now = Date.now();
+  assert.equal(feed.emitHeartbeats(now), 0, 'μόλις ήρθε τιμή — κανένα heartbeat');
+  assert.equal(feed.emitHeartbeats(now + HEARTBEAT_MS + 1), 1);
+  assert.equal(ticks.length, 2);
+  assert.equal(priceFromTradeEvent(ticks[1]!), priceFromTradeEvent(ticks[0]!), 'ίδια τιμή');
+  assert.ok(ticks[1]!.signature.startsWith(`helius-hb:${MINT}:`));
+  assert.equal(feed.emitHeartbeats(now + HEARTBEAT_MS + 2), 0, 'το heartbeat μετράει σαν tick');
+  feed.unsubscribeToken(MINT);
+  assert.equal(feed.emitHeartbeats(now + 10 * HEARTBEAT_MS), 0);
   feed.close();
 });

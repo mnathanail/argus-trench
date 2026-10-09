@@ -19,10 +19,13 @@ import type { ExitReason } from '../db/types.js';
 import { computePnl } from '../decision/pnl.js';
 import { EXIT_ON_COPIED_WALLET_SELL, EXIT_TIMEOUT_MS, NO_PROGRESS_EXIT_MS, PAPER_ASSUMED_FEES_PCT } from '../decision/paperTradingConfig.js';
 import { fetchLiveSolWallet, getLiveSolBalance } from '../gmgn/portfolio.js';
-import { executeLiveSell, INSUFFICIENT_TOKEN_BALANCE_ERROR_CODE, SwapFailedError } from '../gmgn/swap.js';
+import { executeLiveSell, INSUFFICIENT_TOKEN_BALANCE_ERROR_CODE, SwapFailedError, TRADE_PRIORITY } from '../gmgn/swap.js';
+import { GmgnRateLimitError } from '../gmgn/errors.js';
 import { cancelStrategyOrderBestEffort, estimateExitAmountSol, getStrategyOrder, inferExitReason } from '../gmgn/strategyOrders.js';
 import { checkTick } from './tickExit.js';
 import { verifySellAfterError } from '../live/sellVerification.js';
+import { findOwnSellRatio, type OwnSellResult } from '../live/ownSellRatio.js';
+import { closeFromOwnSell } from '../collectors/liveStrategyReconciler.js';
 import { decideShadowTick, NO_EXIT_SIGNAL_RULES, SHADOW_4B_RULES } from './shadowExit.js';
 import { isDustGraduatedTrade, priceFromTradeEvent, type PumpPortalTradeEvent } from './pumpportalEvents.js';
 import { unsubscribeIfNoLongerNeeded } from './subscriptionManager.js';
@@ -188,6 +191,11 @@ interface PendingLiveClose {
   exitPrice: number;
   exitTriggerDetail: Record<string, unknown> | null;
   actualEntryAmountSol: number | null;
+  /** 2026-10-09: για το κλείσιμο από τη δική μας on-chain πώληση όταν το native order πούλησε πρώτο. */
+  entryAt: Date;
+  simulatedEntryPrice: number | null;
+  /** Η αναζήτηση της δικής μας on-chain πώλησης έγινε ήδη σε αυτή την απόπειρα (μία φορά, όχι δύο). */
+  ownSellSearched?: boolean;
   /** Μη-null ΜΟΝΟ όταν trade.nativeOrderActive ήταν true τη στιγμή της απόφασης — το
    * native GMGN order ακυρώνεται ΠΡΙΝ από τη δική μας πώληση (Phase 2, εκτός lock), ώστε
    * να μην παλέψουν δύο ταυτόχρονες πωλήσεις πάνω στην ίδια θέση (π.χ. exit_signal ή
@@ -347,6 +355,8 @@ async function handleOneTrade(
           exitTriggerDetail: null,
           actualEntryAmountSol: trade.actualEntryAmountSol,
           liveStrategyOrderId: trade.nativeOrderActive ? trade.liveStrategyOrderId : null,
+          entryAt: trade.entryAt,
+          simulatedEntryPrice: trade.simulatedEntryPrice,
         },
       };
     }
@@ -417,6 +427,8 @@ async function handleOneTrade(
             // timeout path — αποτρέπει το native order να πυροδοτήσει ταυτόχρονα πάνω
             // στην ίδια θέση όσο η δική μας πώληση εκτελείται.
             liveStrategyOrderId: trade.nativeOrderActive ? trade.liveStrategyOrderId : null,
+            entryAt: trade.entryAt,
+            simulatedEntryPrice: trade.simulatedEntryPrice,
           },
         };
       }
@@ -541,6 +553,22 @@ async function executeLiveCloseAndFinalize(
     }
   }
 
+  // 2026-10-09: tokens έφυγαν χωρίς να μπει SOL από τη δική μας πώληση = πουλήθηκαν αλλού (συνήθως
+  // το native order πριν προλάβει να συνδεθεί στο trade). Πραγματικό pnl από τη δική μας on-chain
+  // πώληση, αλλιώς needs_manual_exit όπως πριν.
+  if (verdict.kind === 'gone_elsewhere' && pending.ownSellSearched !== true) {
+    const ownSell = await findOwnSellWithRetry(wallet.address, tokenAddress, pending.entryAt);
+    if (ownSell !== null) {
+      await closeFromOwnSell(
+        { id: pending.tradeId, tokenAddress, actualEntryAmountSol: pending.actualEntryAmountSol, simulatedEntryPrice: pending.simulatedEntryPrice },
+        null,
+        ownSell,
+        connection,
+      );
+      return { type: 'closed', tokenAddress, exitReason: 'exit_signal', pnlPct: ownSell.ratio - 1 };
+    }
+  }
+
   const context =
     verdict.kind === 'gone_elsewhere'
       ? 'το token δεν είναι πια στο wallet αλλά δεν μπήκε SOL — πιθανόν πουλήθηκε αλλού, έλεγξε στο GMGN'
@@ -617,6 +645,29 @@ async function tryReconcileAlreadyClosedByNativeOrder(
   }
   if (strategy === null || strategy.status !== 'closed') return null;
 
+  // 2026-10-09: το `close_price` έρχεται ΠΑΝΤΑ κενό (βλ. liveStrategyReconciler) — πριν, αυτό
+  // το κλείσιμο έγραφε pnl NULL, αόρατο στο kill-switch και στο ημερήσιο όριο ζημίας. Το
+  // native order έχει τα ΙΔΙΑ όρια με εμάς (stop −30%, trailing), άρα συχνά πουλάει πρώτο.
+  // Πραγματικό αποτέλεσμα από τη δική μας on-chain πώληση, όπως ο reconciler.
+  if (strategy.closePrice === null) {
+    pending.ownSellSearched = true;
+    const ownSell = await findOwnSellWithRetry(walletAddress, tokenAddress, pending.entryAt);
+    if (ownSell === null) return null; // → verifySellAfterError / needs_manual_exit, ποτέ μαντεμένο pnl
+    // 'none' = κάποιος άλλος (π.χ. ο reconciler) το έκλεισε ήδη — κλειστό σε κάθε περίπτωση.
+    await closeFromOwnSell(
+      {
+        id: pending.tradeId,
+        tokenAddress,
+        actualEntryAmountSol: pending.actualEntryAmountSol,
+        simulatedEntryPrice: pending.simulatedEntryPrice,
+      },
+      strategy,
+      ownSell,
+      connection,
+    );
+    return { type: 'closed', tokenAddress, exitReason: pending.exitReason, pnlPct: ownSell.ratio - 1 };
+  }
+
   const actualEntryAmountSol = pending.actualEntryAmountSol;
   const actualExitAmountSol = estimateExitAmountSol(actualEntryAmountSol, strategy.openPrice, strategy.closePrice);
   const pnlSol =
@@ -637,6 +688,23 @@ async function tryReconcileAlreadyClosedByNativeOrder(
   });
   if (closed) await unsubscribeIfNoLongerNeeded(connection, tokenAddress);
   return { type: 'closed', tokenAddress, exitReason, pnlPct: pnlPct ?? 0 };
+}
+
+/** Το `portfolio activity` του GMGN βλέπει τη native πώληση με λίγα δευτερόλεπτα καθυστέρηση. */
+const OWN_SELL_ATTEMPTS = 3;
+const OWN_SELL_RETRY_MS = 5_000;
+
+async function findOwnSellWithRetry(walletAddress: string, tokenAddress: string, entryAt: Date): Promise<OwnSellResult | null> {
+  for (let i = 0; i < OWN_SELL_ATTEMPTS; i += 1) {
+    try {
+      const found = await findOwnSellRatio(walletAddress, tokenAddress, entryAt, { priority: TRADE_PRIORITY });
+      if (found !== null) return found;
+    } catch (error) {
+      if (error instanceof GmgnRateLimitError) return null; // μην περιμένουμε όλο το ban — needs_manual_exit / reconciler
+    }
+    if (i < OWN_SELL_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, OWN_SELL_RETRY_MS));
+  }
+  return null;
 }
 
 async function failLiveClose(

@@ -10,7 +10,8 @@ import type { CliTiming } from '../gmgn/exec.js';
 import { getStrategyOrder } from '../gmgn/strategyOrders.js';
 import { decideTradeMode } from '../decision/tradeMode.js';
 import { checkLiveRiskGate } from '../decision/liveRiskGate.js';
-import { LIVE_POSITION_SIZE_SOL, liveExitConditionOrders } from '../decision/paperTradingConfig.js';
+import { LIVE_MAX_OPEN_POSITIONS, LIVE_POSITION_SIZE_SOL, LIVE_SOL_RESERVE_SOL, liveExitConditionOrders } from '../decision/paperTradingConfig.js';
+import { countOpenLiveTrades } from '../db/repositories/paperTrades.js';
 import { recordExecutionError } from '../db/repositories/tradeExecutionErrors.js';
 import { reserveLiveCapital, releaseLiveCapital } from '../db/repositories/liveTradingState.js';
 import type { TradeMode } from '../db/types.js';
@@ -124,11 +125,33 @@ export type LiveFallbackReason =
   | 'wallet_score_paper'
   /** 2026-10-09: μη proven wallet και mcap εισόδου ≥ MAX_UNPROVEN_ENTRY_MCAP_SOL (decision/walletScore.ts). */
   | 'wallet_mcap_paper'
+  /** 2026-10-09: ήδη LIVE_MAX_OPEN_POSITIONS ανοιχτές live θέσεις. */
+  | 'live_positions_cap'
   | 'wallet_unavailable'
   | 'insufficient_capital'
   | 'risk_gate_blocked'
   | 'reservation_lost'
   | 'swap_failed';
+
+/**
+ * 2026-10-09: πόσο SOL μπήκε πραγματικά σε μια live αγορά. Η διαφορά υπολοίπου είναι η καλύτερη
+ * πηγή, αλλά αν το GMGN δείξει μπαγιάτικο υπόλοιπο (≈0) ή δεν διαβαστεί καθόλου, το pnl της
+ * εξόδου θα έβγαινε «όλα τα έσοδα = κέρδος». Δεκτό μόνο μέσα σε 0.5×–2× της θέσης· αλλιώς το
+ * input+gas του GMGN report, αλλιώς το μέγεθος θέσης.
+ */
+export function liveEntryAmountSol(
+  balanceDiff: number | null,
+  reportInput: number | null,
+  reportGas: number | null,
+  positionSize: number,
+): number {
+  const plausible = (x: number | null): x is number =>
+    x !== null && Number.isFinite(x) && x >= positionSize * 0.5 && x <= positionSize * 2;
+  if (plausible(balanceDiff)) return balanceDiff;
+  const fromReport = reportInput === null ? null : reportInput + (reportGas !== null && Number.isFinite(reportGas) ? reportGas : 0);
+  if (plausible(fromReport)) return fromReport;
+  return positionSize;
+}
 
 export function fallbackOutcomeFor(reason: LiveFallbackReason, killSwitchJustTriggered = false): LiveEntryOutcome {
   // ΜΟΝΟ το risk_gate_blocked περνάει ποτέ killSwitchJustTriggered=true στην πράξη (μόνο
@@ -248,8 +271,13 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
   }
 
   const balance = wallet.balances.find((b) => b.symbol === 'SOL')?.balance ?? 0;
-  if (decideTradeMode(balance, LIVE_POSITION_SIZE_SOL) !== 'live') {
+  // 2026-10-09: κράτα πάντα LIVE_SOL_RESERVE_SOL για τα fees των πωλήσεων.
+  const usableBalance = balance - LIVE_SOL_RESERVE_SOL;
+  if (decideTradeMode(usableBalance, LIVE_POSITION_SIZE_SOL) !== 'live') {
     return withTiming(fallbackOutcomeFor('insufficient_capital'));
+  }
+  if ((await countOpenLiveTrades()) >= LIVE_MAX_OPEN_POSITIONS) {
+    return withTiming(fallbackOutcomeFor('live_positions_cap'));
   }
 
   let stepAt = Date.now();
@@ -258,26 +286,54 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
   if (!risk.allowed) return withTiming(fallbackOutcomeFor('risk_gate_blocked', risk.justHalted));
 
   stepAt = Date.now();
-  const reserved = await reserveLiveCapital(balance, LIVE_POSITION_SIZE_SOL);
+  const reserved = await reserveLiveCapital(usableBalance, LIVE_POSITION_SIZE_SOL);
   timing.reserveMs = Date.now() - stepAt;
   // ένα σχεδόν-ταυτόχρονο σήμα μόλις δέσμευσε ό,τι έμενε
   if (!reserved) return withTiming(fallbackOutcomeFor('reservation_lost'));
 
   try {
-    const result = await executeLiveBuy(
-      wallet.address,
-      tokenAddress,
-      LIVE_POSITION_SIZE_SOL,
-      {},
-      liveExitConditionOrders(),
-    );
+    let result: Awaited<ReturnType<typeof executeLiveBuy>>;
+    try {
+      result = await executeLiveBuy(
+        wallet.address,
+        tokenAddress,
+        LIVE_POSITION_SIZE_SOL,
+        {},
+        liveExitConditionOrders(),
+      );
+    } catch (error) {
+      await recordExecutionError({
+        paperTradeId: null,
+        tokenAddress,
+        action: 'buy',
+        amountSol: LIVE_POSITION_SIZE_SOL,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        errorDetail: error,
+      });
+      return withTiming(fallbackOutcomeFor('swap_failed'));
+    }
+    // 2026-10-09: από εδώ και κάτω η αγορά ΕΧΕΙ γίνει — κανένα σφάλμα δεν επιτρέπεται να τη
+    // μετατρέψει σε paper (πριν, ένα 429 στο διάβασμα υπολοίπου έδινε swap_failed → paper trade
+    // ενώ τα tokens ήταν στο wallet, χωρίς δική μας πώληση ποτέ).
     timing.swap = result.timing ?? null;
     timing.txHash = result.txHash;
     timing.reportInputSol = result.reportInputAmount;
     timing.reportGasSol = result.reportGasNative;
     stepAt = Date.now();
-    const balanceAfter = await getLiveSolBalance({ priority: TRADE_PRIORITY });
-    timing.balanceDiffSol = balance - balanceAfter;
+    let balanceAfter: number | null = null;
+    try {
+      balanceAfter = await getLiveSolBalance({ priority: TRADE_PRIORITY });
+    } catch (error) {
+      await recordExecutionError({
+        paperTradeId: null,
+        tokenAddress,
+        action: 'buy',
+        amountSol: LIVE_POSITION_SIZE_SOL,
+        errorMessage: `η αγορά έγινε αλλά το υπόλοιπο SOL δεν διαβάστηκε — ποσό εισόδου από το GMGN report — ${error instanceof Error ? error.message : String(error)}`,
+        errorDetail: error,
+      });
+    }
+    timing.balanceDiffSol = balanceAfter === null ? null : balance - balanceAfter;
     const nativeOrderVerified =
       result.strategyOrderId !== null && (await verifyNativeOrder(wallet.address, tokenAddress, result.strategyOrderId));
     timing.postSwapMs = Date.now() - stepAt;
@@ -299,7 +355,7 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
     }
     return withTiming({
       mode: 'live',
-      actualEntryAmountSol: balance - balanceAfter,
+      actualEntryAmountSol: liveEntryAmountSol(timing.balanceDiffSol, result.reportInputAmount, result.reportGasNative, LIVE_POSITION_SIZE_SOL),
       entryPrice: result.executedPrice,
       liveStrategyOrderId: nativeOrderVerified ? result.strategyOrderId : null,
       nativeOrderVerified,
@@ -308,16 +364,6 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
       timing: null,
       walletAddress: wallet.address,
     });
-  } catch (error) {
-    await recordExecutionError({
-      paperTradeId: null,
-      tokenAddress,
-      action: 'buy',
-      amountSol: LIVE_POSITION_SIZE_SOL,
-      errorMessage: error instanceof Error ? error.message : String(error),
-      errorDetail: error,
-    });
-    return withTiming(fallbackOutcomeFor('swap_failed'));
   } finally {
     // ΠΑΝΤΑ απελευθέρωσε την κράτηση, ό,τι κι αν συνέβη στο swap — αλλιώς το reserved_sol
     // θα «κολλούσε» ψηλά για πάντα, μπλοκάροντας μελλοντικά, εντελώς άσχετα σήματα.

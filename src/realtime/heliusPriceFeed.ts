@@ -148,6 +148,9 @@ interface TokenState {
   baseUi: number | null;
   quoteSol: number | null;
   attempts: number;
+  /** 2026-10-09: τελευταίο tick (για το heartbeat). */
+  lastTick: PumpPortalTradeEvent | null;
+  lastTickAt: number;
 }
 
 export interface HeliusPriceFeedOptions {
@@ -165,6 +168,15 @@ const RESOLVE_RETRY_MS = 60_000;
 const MAX_RESOLVE_ATTEMPTS = 5;
 const GRADUATION_RECHECK_MS = 20_000;
 const RESOLVE_PACING_MS = 500;
+/**
+ * 2026-10-09: το Helius στέλνει ειδοποίηση ΜΟΝΟ όταν αλλάζει ο λογαριασμός — ένα token χωρίς
+ * συναλλαγές δεν δίνει κανένα tick, οπότε ούτε το time_limit (30′) ούτε το 24ωρο timeout
+ * έτρεχαν ποτέ (ένα live trade έμενε ανοιχτό για πάντα). Κάθε HEARTBEAT_MS ξαναστέλνουμε την
+ * τελευταία γνωστή τιμή για όσα tokens έμειναν σιωπηλά — ίδια τιμή, άρα peak/trailing δεν αλλάζουν.
+ */
+export const HEARTBEAT_MS = 60_000;
+/** Μετά τις MAX_RESOLVE_ATTEMPTS: συνεχίζουμε να ψάχνουμε, πιο αραιά (ανοιχτή θέση χωρίς τιμή = χωρίς stop). */
+const SLOW_RESOLVE_RETRY_MS = 5 * 60_000;
 
 export class HeliusPriceFeed implements RealtimeFeed {
   private socket: SocketLike | null = null;
@@ -176,6 +188,7 @@ export class HeliusPriceFeed implements RealtimeFeed {
   private reconnectAttempt = 0;
   private closedByUser = false;
   private ping: NodeJS.Timeout | null = null;
+  private heartbeat: NodeJS.Timeout | null = null;
   private readonly log: (line: string) => void;
   private readonly createSocket: (url: string) => SocketLike;
   private readonly rpc: PoolRpc;
@@ -196,6 +209,10 @@ export class HeliusPriceFeed implements RealtimeFeed {
   // ── RealtimeFeed ─────────────────────────────────────────────────────────────────
   connect(): void {
     this.closedByUser = false;
+    if (this.heartbeat === null) {
+      this.heartbeat = setInterval(() => this.emitHeartbeats(Date.now()), HEARTBEAT_MS);
+      this.heartbeat.unref();
+    }
     const socket = this.createSocket(heliusWsUrl(this.options.apiKey));
     this.socket = socket;
     socket.on('open', () => {
@@ -233,6 +250,10 @@ export class HeliusPriceFeed implements RealtimeFeed {
 
   close(): void {
     this.closedByUser = true;
+    if (this.heartbeat !== null) {
+      clearInterval(this.heartbeat);
+      this.heartbeat = null;
+    }
     this.socket?.close();
     this.socket = null;
   }
@@ -251,7 +272,7 @@ export class HeliusPriceFeed implements RealtimeFeed {
 
   subscribeToken(mint: string): void {
     if (this.tokens.has(mint)) return;
-    this.tokens.set(mint, { location: null, subIds: [], baseUi: null, quoteSol: null, attempts: 0 });
+    this.tokens.set(mint, { location: null, subIds: [], baseUi: null, quoteSol: null, attempts: 0, lastTick: null, lastTickAt: 0 });
     this.enqueueResolve(mint);
   }
 
@@ -289,8 +310,11 @@ export class HeliusPriceFeed implements RealtimeFeed {
     }
     if (this.tokens.get(mint) !== state) return; // έγινε unsubscribe στο μεταξύ
     if (location === null) {
-      if (state.attempts < MAX_RESOLVE_ATTEMPTS) setTimeout(() => this.enqueueResolve(mint), RESOLVE_RETRY_MS).unref();
-      else this.log(`[helius-price] ${mint.slice(0, 8)}: δεν βρέθηκε Pump.fun curve / PumpSwap pool — καμία τιμή`);
+      state.lastTick = null;
+      if (state.attempts === MAX_RESOLVE_ATTEMPTS) {
+        this.log(`[helius-price] ${mint.slice(0, 8)}: δεν βρέθηκε Pump.fun curve / PumpSwap pool — καμία τιμή (νέα προσπάθεια κάθε 5′)`);
+      }
+      setTimeout(() => this.enqueueResolve(mint), state.attempts < MAX_RESOLVE_ATTEMPTS ? RESOLVE_RETRY_MS : SLOW_RESOLVE_RETRY_MS).unref();
       return;
     }
     state.location = location;
@@ -302,13 +326,13 @@ export class HeliusPriceFeed implements RealtimeFeed {
             `quote ${location.quote.slice(0, 8)} (${location.quoteSol.toFixed(3)} wSOL) mcap ${((location.quoteSol / location.baseUi) * PUMP_TOKEN_SUPPLY).toFixed(1)} SOL`,
     );
     if (location.kind === 'curve') {
-      this.options.onTick(curveTick(mint, location.state, 0));
+      this.emit(mint, curveTick(mint, location.state, 0));
       if (location.state.complete) this.scheduleRecheck(mint);
     } else {
       state.baseUi = location.baseUi;
       state.quoteSol = location.quoteSol;
       const tick = ammTick(mint, location.baseUi, location.quoteSol, 0);
-      if (tick !== null) this.options.onTick(tick);
+      if (tick !== null) this.emit(mint, tick);
     }
     if (this.socket?.readyState === OPEN) this.subscribeAccounts(mint, location);
   }
@@ -321,6 +345,7 @@ export class HeliusPriceFeed implements RealtimeFeed {
       this.dropSubscriptions(state);
       state.location = null;
       state.attempts = 0;
+      state.lastTick = null; // καμία παλιά τιμή καμπύλης στα heartbeats μέχρι να βρεθεί το pool
       this.enqueueResolve(mint);
     }, GRADUATION_RECHECK_MS).unref();
   }
@@ -347,6 +372,28 @@ export class HeliusPriceFeed implements RealtimeFeed {
     const id = this.nextId++;
     this.pending.set(id, { mint, role });
     this.socket?.send(JSON.stringify({ jsonrpc: '2.0', id, method: 'accountSubscribe', params: [account, { encoding, commitment: 'confirmed' }] }));
+  }
+
+  private emit(mint: string, tick: PumpPortalTradeEvent, at: number = Date.now()): void {
+    const state = this.tokens.get(mint);
+    if (state !== undefined) {
+      state.lastTick = tick;
+      state.lastTickAt = at;
+    }
+    this.options.onTick(tick);
+  }
+
+  /** Ξαναστέλνει την τελευταία τιμή για tokens σιωπηλά ≥ HEARTBEAT_MS. Public για tests. */
+  emitHeartbeats(now: number): number {
+    // Χωρίς σύνδεση δεν ξέρουμε αν η τιμή άλλαξε — καμία «ζωντανή» τιμή από το παρελθόν.
+    if (this.socket?.readyState !== OPEN) return 0;
+    let sent = 0;
+    for (const [mint, state] of this.tokens) {
+      if (state.lastTick === null || now - state.lastTickAt < HEARTBEAT_MS) continue;
+      this.emit(mint, { ...state.lastTick, signature: `helius-hb:${mint}:${now}` }, now);
+      sent += 1;
+    }
+    return sent;
   }
 
   private handleMessage(data: unknown): void {
@@ -384,7 +431,7 @@ export class HeliusPriceFeed implements RealtimeFeed {
         this.scheduleRecheck(sub.mint);
         return;
       }
-      this.options.onTick(curveTick(sub.mint, curve, slot));
+      this.emit(sub.mint, curveTick(sub.mint, curve, slot));
       return;
     }
     const amount = parsedTokenAmount(value.data);
@@ -393,6 +440,6 @@ export class HeliusPriceFeed implements RealtimeFeed {
     else state.quoteSol = amount;
     if (state.baseUi === null || state.quoteSol === null) return;
     const tick = ammTick(sub.mint, state.baseUi, state.quoteSol, slot);
-    if (tick !== null) this.options.onTick(tick);
+    if (tick !== null) this.emit(sub.mint, tick);
   }
 }

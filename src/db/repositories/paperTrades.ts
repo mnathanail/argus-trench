@@ -977,3 +977,11 @@ export async function expireStaleShadows(conn?: Queryable): Promise<string[]> {
   }
   return [...tokens];
 }
+
+/** 2026-10-09: ανοιχτές live θέσεις (για το LIVE_MAX_OPEN_POSITIONS). */
+export async function countOpenLiveTrades(conn?: Queryable): Promise<number> {
+  const { rows } = await db(conn).query<{ n: string }>(
+    `SELECT count(*) AS n FROM paper_trades WHERE status = 'open' AND mode = 'live'`,
+  );
+  return toNum(rows[0]?.n ?? '0');
+}
