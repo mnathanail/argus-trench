@@ -79,19 +79,14 @@ export async function listWinnerScores(days: number, conn?: Queryable): Promise<
   }));
 }
 
-/** Wallets που αποδείχτηκαν με ΔΙΚΑ ΜΑΣ trades: ≥ `minTrades` κλειστά σε `days` μέρες με θετικό σύνολο
- * (χωρίς τα trades του πειράματος). */
-export async function listProvenWallets(days: number, minTrades: number, conn?: Queryable): Promise<Set<string>> {
+/** Wallets που αποδείχτηκαν με ΔΙΚΑ ΜΑΣ trades. 2026-10-09: από τη βαθμολογία (wallet_scores, μόνο
+ * καθαρά δεδομένα) — θετική εκτίμηση απόδοσης, όχι blocked, τουλάχιστον `minTrades` trades. Πριν μετρούσε
+ * 14 μέρες pnl_sol, μαζί με τα trades της 7/10 με τις ψεύτικες τιμές. */
+export async function listProvenWallets(_days: number, minTrades: number, conn?: Queryable): Promise<Set<string>> {
   const { rows } = await db(conn).query<{ address: string }>(
-    `SELECT d.trigger_wallet_address AS address
-       FROM paper_trades p JOIN decision_log d ON d.id = p.decision_log_id
-      WHERE p.status = 'closed' AND p.pnl_sol IS NOT NULL
-        AND p.entry_at > now() - make_interval(days => $1)
-        AND d.trigger_wallet_address IS NOT NULL
-        AND NOT COALESCE(p.entry_timing_json ? 'experiment', false)
-      GROUP BY 1
-     HAVING count(*) >= $2 AND sum(p.pnl_sol) > 0`,
-    [days, minTrades],
+    `SELECT wallet_address AS address FROM wallet_scores
+      WHERE status <> 'blocked' AND mean_ret > 0 AND trades >= $1`,
+    [minTrades],
   );
   return new Set(rows.map((r) => r.address));
 }
@@ -125,7 +120,7 @@ export async function activateWinnerWallet(address: string, avgHoldingSec: numbe
        SET active = true, deactivated_reason = NULL,
            source = CASE WHEN watchlist_wallets.source = 'manual' THEN watchlist_wallets.source ELSE 'winner_trader' END,
            avg_holding_sec = COALESCE(EXCLUDED.avg_holding_sec, watchlist_wallets.avg_holding_sec)
-     WHERE watchlist_wallets.deactivated_reason IS DISTINCT FROM 'manual'
+     WHERE COALESCE(watchlist_wallets.deactivated_reason, '') NOT IN ('manual', 'scored_out')
        AND (NOT watchlist_wallets.active OR watchlist_wallets.source NOT IN ('manual', 'winner_trader'))`,
     [address, avgHoldingSec],
   );

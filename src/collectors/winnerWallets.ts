@@ -56,6 +56,9 @@ export const MAX_STATS_PER_CYCLE = 60;
 export const BOT_MAX_AVG_HOLDING_SEC = 120;
 export const PROVEN_MIN_TRADES = 3;
 
+/** /unwatch (manual) και μπλοκαρισμένα από τη βαθμολογία (scored_out) δεν ξαναμπαίνουν ποτέ αυτόματα. */
+const NEVER_REACTIVATE = new Set(['manual', 'scored_out']);
+
 export type WinnerRejectReason =
   | 'not_wallet'
   | 'excluded_tag'
@@ -123,7 +126,7 @@ export function planWatchlist(
 ): WatchlistPlan {
   const byAddress = new Map(statuses.map((s) => [s.address, s]));
   const keepWinners = ranked
-    .filter((w) => !bots.has(w.address) && byAddress.get(w.address)?.deactivatedReason !== 'manual')
+    .filter((w) => !bots.has(w.address) && !NEVER_REACTIVATE.has(byAddress.get(w.address)?.deactivatedReason ?? ''))
     .slice(0, max)
     .map((w) => w.address);
   if (keepWinners.length < minToPrune) return { keepWinners, deactivate: [], pruned: false };
@@ -220,7 +223,7 @@ export async function runWinnerWalletsCycle(): Promise<WinnerWalletsResult> {
   const avgHold = new Map<string, number | null>();
   for (const w of ranked.slice(0, WATCHLIST_MAX)) {
     const status = byAddress.get(w.address);
-    if (knownBots.has(w.address) || status?.deactivatedReason === 'manual') continue;
+    if (knownBots.has(w.address) || NEVER_REACTIVATE.has(status?.deactivatedReason ?? '')) continue;
     if (status?.active && (status.source === 'winner_trader' || status.source === 'manual')) continue;
     if (statsUsed >= MAX_STATS_PER_CYCLE) break;
     statsUsed += 1;

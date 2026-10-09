@@ -120,6 +120,8 @@ export type LiveFallbackReason =
   | 'discovery_gate_paper_only'
   /** Paper πείραμα (PAPER_EXPERIMENT_ENABLED, 2026-10-06) — ποτέ live. */
   | 'experiment_paper_only'
+  /** 2026-10-09: το Thompson sampling της βαθμολογίας του wallet είπε όχι (decision/walletScore.ts). */
+  | 'wallet_score_paper'
   | 'wallet_unavailable'
   | 'insufficient_capital'
   | 'risk_gate_blocked'

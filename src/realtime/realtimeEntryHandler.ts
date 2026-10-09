@@ -9,6 +9,9 @@ import {
 } from '../db/repositories/paperTrades.js';
 import { getWallet, type WatchlistWallet } from '../db/repositories/watchlistWallets.js';
 import { insertRealtimeEntrySkip } from '../db/repositories/realtimeEntrySkips.js';
+import { getWalletScore, recordWalletTokenBuy, tokenConsensus } from '../db/repositories/walletScores.js';
+import { thompsonLive, WALLET_SCORE_LIVE_GATE } from '../decision/walletScore.js';
+import type { LiveFallbackReason } from '../live/liveEntryExecution.js';
 import { logicVersion, PHASE1_THRESHOLDS } from '../decision/gateConfig.js';
 import { applyEntrySlippage } from '../decision/pnl.js';
 import {
@@ -258,6 +261,13 @@ export async function handleRealtimeEntryEvent(
     recordEntrySkip(event, 'wallet_bot', { avg_holding_sec: wallet.avgHoldingSec ?? null });
     return null;
   }
+  // 2026-10-09: κάθε αγορά ενός ενεργού wallet μας (και οι μικρές) → wallet_token_buys, για το
+  // «2+ wallets στο ίδιο token» (consensus). Fire-and-forget: δεν καθυστερεί την είσοδο.
+  if (wallet !== null && wallet.active) {
+    recordWalletTokenBuy(event.mint, wallet.address, event.solAmount).catch((error) =>
+      console.error(`[wallet-token-buys] ${error instanceof Error ? error.message : String(error)}`),
+    );
+  }
   const smallBuy = wallet !== null && wallet.active && isWalletBuyTooSmall(event);
   // 2026-10-06: με το paper πείραμα η μικρή αγορά συνεχίζει (ετικέτα small_buy, μόνο paper).
   if (smallBuy && !(PAPER_EXPERIMENT_ENABLED && PAPER_EXPERIMENT_SMALL_BUY)) {
@@ -469,7 +479,14 @@ async function enterClaimedSignal(
   // κατευθείαν paper, χωρίς καν να αγγίξουμε κεφάλαιο/risk gate/swap.
   const claimMs = Date.now() - claimStartedAt;
   const liveStartedAt = Date.now();
-  const paperOnly = paperOnlyReason(decision.graduated, gateSource, undefined, experiment);
+  // 2026-10-09 — βαθμολογία wallet (Thompson sampling) + consensus: τι ξέραμε τη στιγμή της εισόδου.
+  const [walletScore, consensus] = await Promise.all([
+    getWalletScore(wallet.address).catch(() => null),
+    tokenConsensus(event.mint, CONSENSUS_WINDOW_MIN).catch(() => null),
+  ]);
+  const scoreGate = thompsonLive(walletScore);
+  let paperOnly: LiveFallbackReason | null = paperOnlyReason(decision.graduated, gateSource, undefined, experiment);
+  if (paperOnly === null && WALLET_SCORE_LIVE_GATE && !scoreGate.allowed) paperOnly = 'wallet_score_paper';
   const live = paperOnly !== null ? fallbackOutcomeFor(paperOnly) : await attemptLiveEntry(event.mint);
   // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #3): το live.entryPrice είναι ΗΔΗ η πραγματική,
   // εκτελεσμένη τιμή — καμία προσομοίωση δε χρειάζεται ή πρέπει να εφαρμοστεί εκεί. Η
@@ -483,6 +500,8 @@ async function enterClaimedSignal(
     ...buildEntryTiming(event, decision, gateSource, timeline, claimMs, liveAttemptMs, live),
     holder_risk: holderRisk === null ? null : holderRiskJson(holderRisk.snapshot, holderRisk.ms, holderRiskMode),
     ...experimentTimingJson(experiment, gateFailReason, entry.onDemandOutcome),
+    wallet_score: walletScoreJson(walletScore, scoreGate),
+    consensus: consensus === null ? null : { window_min: CONSENSUS_WINDOW_MIN, ...consensus },
   };
   logEntryTiming(event.mint, entryTiming);
 
@@ -633,5 +652,25 @@ export function holderRiskJson(snapshot: HolderRiskSnapshot, ms: number, mode: H
     checked: snapshot.checked,
     mode,
     ms,
+  };
+}
+
+/** 2026-10-09: παράθυρο για το consensus (πόσα wallets μας αγόρασαν το ίδιο token). */
+export const CONSENSUS_WINDOW_MIN = 10;
+
+export function walletScoreJson(
+  score: { mean: number; sd: number; lcb: number; status: string; trades: number } | null,
+  gate: { allowed: boolean; sample: number | null; reason: string },
+): Record<string, unknown> {
+  return {
+    mean: score?.mean ?? null,
+    sd: score?.sd ?? null,
+    lcb: score?.lcb ?? null,
+    status: score?.status ?? null,
+    trades: score?.trades ?? 0,
+    sample: gate.sample,
+    live_allowed: gate.allowed,
+    reason: gate.reason,
+    gate_enabled: WALLET_SCORE_LIVE_GATE,
   };
 }

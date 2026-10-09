@@ -50,6 +50,8 @@ import { MIRROR_ENABLED } from './mirror/mirrorConfig.js';
 import { SignatureDedupe, startHeliusSignalSource } from './realtime/heliusSignalSource.js';
 import { WALLET_DISCOVERY_ENABLED } from './collectors/walletDiscovery.js';
 import { runWinnerWalletsCycle, WINNER_WALLETS_ENABLED } from './collectors/winnerWallets.js';
+import { computeWalletScores } from './decision/walletScore.js';
+import { deactivateBlockedWallets, listTradesForScoring, upsertWalletScores } from './db/repositories/walletScores.js';
 import type { PumpPortalTradeEvent } from './realtime/pumpportalEvents.js';
 import { expireMirrorShadows, handleMirrorShadowTick, hasActiveShadow, refreshMirrorShadows } from './mirror/mirrorShadow.js';
 import { runScheduler, SharedCooldown, type LoopDefinition } from './scheduler.js';
@@ -498,6 +500,26 @@ const loops: LoopDefinition[] = [
           `fallback=${result.fallbackActivated} failures=${result.failures}`,
       );
       for (const alert of result.alerts) await notify(alert);
+    },
+  },
+  // 2026-10-09 — βαθμολογία wallets (decision/walletScore.ts): μόνο DB, κανένα GMGN. Μπλοκαρισμένα → εκτός.
+  {
+    name: 'wallet-scores',
+    intervalMs: 5 * 60_000,
+    initialDelayMs: 60_000,
+    run: async () => {
+      const scores = computeWalletScores(await listTradesForScoring());
+      await upsertWalletScores(scores);
+      const blocked = await deactivateBlockedWallets();
+      const by = (st: string) => scores.filter((x) => x.status === st).length;
+      console.log(`[wallet-scores] wallets=${scores.length} proven=${by('proven')} exploring=${by('exploring')} blocked=${by('blocked')} νέα_εκτός=${blocked.length}`);
+      if (blocked.length > 0) {
+        const lines = blocked.map((a) => {
+          const sc = scores.find((x) => x.wallet === a);
+          return `${a} — ${sc?.reason ?? ''}`;
+        });
+        await notify(`🚫 Wallets εκτός (σίγουρα αρνητικά με τα δικά μας trades):\n${lines.join('\n')}`);
+      }
     },
   },
   // 2026-10-04 — συνδρομές wallets = βάση (ενεργά μη-bot + mirror + όσα έχουν ανοιχτό trade).
