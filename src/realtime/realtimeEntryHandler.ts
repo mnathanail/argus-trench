@@ -1,3 +1,5 @@
+import { config } from '../config.js';
+import { heliusChaseRpc, measurePriceRun, priceRunAllowsLive } from '../live/chaseGuard.js';
 import { findPassedTokens, recordTrigger, recordExperimentTrigger, linkTrade } from '../db/repositories/decisionLog.js';
 import { isRealtimeSignalWallet } from './walletSubscriptionSync.js';
 import {
@@ -492,6 +494,17 @@ async function enterClaimedSignal(
   const entryMcapSol = applyEntrySlippage(decision.entryPrice, PAPER_ASSUMED_SLIPPAGE_PCT) * PUMP_TOKEN_SUPPLY;
   const mcapAllowsLive = entryMcapAllowsLive(walletScore?.status, entryMcapSol);
   if (paperOnly === null && WALLET_SCORE_LIVE_GATE && !mcapAllowsLive) paperOnly = 'wallet_mcap_paper';
+  // 2026-10-09: μην κυνηγάς — αν η καμπύλη έχει ήδη τρέξει > MAX_ENTRY_PRICE_RUN από το σήμα, paper.
+  // Μόνο όταν θα δοκιμάζαμε live (1 credit Helius ανά live απόπειρα). Άγνωστο = paper.
+  let priceRun: number | null = null;
+  const heliusKey = config.heliusApiKey();
+  if (paperOnly === null && heliusKey !== undefined) {
+    priceRun =
+      event.bondingCurve === undefined
+        ? null
+        : await measurePriceRun(heliusChaseRpc(heliusKey), event.bondingCurve, decision.entryPrice).catch(() => null);
+    if (!priceRunAllowsLive(priceRun)) paperOnly = 'price_ran_paper';
+  }
   const live = paperOnly !== null ? fallbackOutcomeFor(paperOnly) : await attemptLiveEntry(event.mint);
   // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #3): το live.entryPrice είναι ΗΔΗ η πραγματική,
   // εκτελεσμένη τιμή — καμία προσομοίωση δε χρειάζεται ή πρέπει να εφαρμοστεί εκεί. Η
@@ -506,6 +519,7 @@ async function enterClaimedSignal(
     holder_risk: holderRisk === null ? null : holderRiskJson(holderRisk.snapshot, holderRisk.ms, holderRiskMode),
     ...experimentTimingJson(experiment, gateFailReason, entry.onDemandOutcome),
     wallet_score: { ...walletScoreJson(walletScore, scoreGate), entry_mcap_sol: entryMcapSol, mcap_allows_live: mcapAllowsLive },
+    price_run: priceRun,
     consensus: consensus === null ? null : { window_min: CONSENSUS_WINDOW_MIN, ...consensus },
   };
   logEntryTiming(event.mint, entryTiming);

@@ -166,3 +166,9 @@ test('buySlippageArgs: σταθερό 15% (όχι auto) — null γυρνάει 
   assert.deepEqual(buySlippageArgs(), ['--slippage', '15']);
   assert.deepEqual(buySlippageArgs(null), ['--auto-slippage']);
 });
+
+test('parseSwapResponse: τιμή εκτέλεσης και ως αριθμός· μη θετική → null', () => {
+  assert.equal(parseSwapResponse({ status: 'successful', report: { price: 0.00000012 } }).executedPrice, 0.00000012);
+  assert.equal(parseSwapResponse({ status: 'successful', report: { price: '0' } }).executedPrice, null);
+  assert.equal(parseSwapResponse({ status: 'confirmed' }).executedPrice, null);
+});

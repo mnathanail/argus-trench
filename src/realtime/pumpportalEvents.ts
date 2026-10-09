@@ -44,6 +44,9 @@ export interface PumpPortalTradeEvent {
   signalSource?: 'helius';
   /** Helius: δευτερόλεπτα από το block της συναλλαγής ως την επεξεργασία της. */
   signalLagSec?: number | null;
+  /** 2026-10-09: ο λογαριασμός της bonding curve (Helius σήμα) — για τον έλεγχο «η τιμή έτρεξε»
+   * ακριβώς πριν από μια live αγορά (live/chaseGuard.ts). */
+  bondingCurve?: string;
 }
 
 /**

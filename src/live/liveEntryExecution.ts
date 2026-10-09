@@ -12,6 +12,8 @@ import { decideTradeMode } from '../decision/tradeMode.js';
 import { checkLiveRiskGate } from '../decision/liveRiskGate.js';
 import { LIVE_MAX_OPEN_POSITIONS, LIVE_POSITION_SIZE_SOL, LIVE_SOL_RESERVE_SOL, liveExitConditionOrders } from '../decision/paperTradingConfig.js';
 import { countOpenLiveTrades } from '../db/repositories/paperTrades.js';
+import { config } from '../config.js';
+import { heliusChaseRpc, onchainFillPrice } from './chaseGuard.js';
 import { recordExecutionError } from '../db/repositories/tradeExecutionErrors.js';
 import { reserveLiveCapital, releaseLiveCapital } from '../db/repositories/liveTradingState.js';
 import type { TradeMode } from '../db/types.js';
@@ -73,6 +75,8 @@ export interface LiveEntryTiming {
   reportInputSol: number | null;
   reportGasSol: number | null;
   balanceDiffSol: number | null;
+  /** 2026-10-09: από πού ήρθε η τιμή εκτέλεσης (gmgn_report | onchain | unknown). */
+  fillPriceSource?: 'gmgn_report' | 'onchain' | 'unknown';
   priorityFeeSol: number;
   tipFeeSol: number;
 }
@@ -127,6 +131,8 @@ export type LiveFallbackReason =
   | 'wallet_mcap_paper'
   /** 2026-10-09: ήδη LIVE_MAX_OPEN_POSITIONS ανοιχτές live θέσεις. */
   | 'live_positions_cap'
+  /** 2026-10-09: η τιμή έτρεξε > MAX_ENTRY_PRICE_RUN από το σήμα ως τη στιγμή της αγοράς (live/chaseGuard.ts). */
+  | 'price_ran_paper'
   | 'wallet_unavailable'
   | 'insufficient_capital'
   | 'risk_gate_blocked'
@@ -353,10 +359,20 @@ export async function attemptLiveEntry(tokenAddress: string): Promise<LiveEntryO
         errorMessage: `native strategy order ${result.strategyOrderId} δεν επιβεβαιώθηκε υγιές μετά το entry — fallback στο δικό μας realtime tracking`,
       });
     }
+    // 2026-10-09: το GMGN δίνει τιμή εκτέλεσης μόνο σε status successful (3/4 πρώτα live trades
+    // χωρίς) — τότε η πραγματική τιμή από την ίδια τη συναλλαγή αγοράς (Helius, 1 credit).
+    let executedPrice = result.executedPrice;
+    const heliusKey = config.heliusApiKey();
+    if (executedPrice === null && result.txHash !== null && heliusKey !== undefined) {
+      executedPrice = await onchainFillPrice(heliusChaseRpc(heliusKey), result.txHash, wallet.address).catch(() => null);
+      timing.fillPriceSource = executedPrice === null ? 'unknown' : 'onchain';
+    } else {
+      timing.fillPriceSource = executedPrice === null ? 'unknown' : 'gmgn_report';
+    }
     return withTiming({
       mode: 'live',
       actualEntryAmountSol: liveEntryAmountSol(timing.balanceDiffSol, result.reportInputAmount, result.reportGasNative, LIVE_POSITION_SIZE_SOL),
-      entryPrice: result.executedPrice,
+      entryPrice: executedPrice,
       liveStrategyOrderId: nativeOrderVerified ? result.strategyOrderId : null,
       nativeOrderVerified,
       killSwitchJustTriggered: false, // επιτυχές live trade — δεν πυροδότησε τίποτα

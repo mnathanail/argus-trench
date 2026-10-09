@@ -95,7 +95,7 @@ function parsedTokenOwner(data: unknown): string | null {
   return typeof owner === 'string' ? owner : null;
 }
 
-function base64Data(data: unknown): Buffer | null {
+export function base64Data(data: unknown): Buffer | null {
   return Array.isArray(data) && typeof data[0] === 'string' ? Buffer.from(data[0], 'base64') : null;
 }
 

@@ -169,7 +169,10 @@ export function parseSwapResponse(raw: unknown): SwapExecutionResult {
   const orderId = typeof obj['order_id'] === 'string' ? obj['order_id'] : null;
   const txHash = typeof obj['hash'] === 'string' ? obj['hash'] : null;
   const report = typeof obj['report'] === 'object' && obj['report'] !== null ? (obj['report'] as Record<string, unknown>) : null;
-  const executedPrice = report !== null && typeof report['price'] === 'string' ? Number(report['price']) : null;
+  // 2026-10-09: δεκτό και ως αριθμός (όχι μόνο string)· μη θετικό/μη αριθμός → null.
+  const rawPrice = report === null ? null : report['price'];
+  const priceNum = typeof rawPrice === 'string' || typeof rawPrice === 'number' ? Number(rawPrice) : NaN;
+  const executedPrice = Number.isFinite(priceNum) && priceNum > 0 ? priceNum : null;
   const reportNum = (key: string): number | null => {
     const v = report?.[key];
     const n = typeof v === 'string' || typeof v === 'number' ? Number(v) : NaN;

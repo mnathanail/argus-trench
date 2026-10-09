@@ -168,7 +168,7 @@ export function withPoolPrice(
       const spot = vSol / vTokens;
       if (sane(spot)) {
         return {
-          event: { ...event, vSolInBondingCurve: vSol, vTokensInBondingCurve: vTokens, marketCapSol: spot * PUMP_TOKEN_SUPPLY },
+          event: { ...event, vSolInBondingCurve: vSol, vTokensInBondingCurve: vTokens, marketCapSol: spot * PUMP_TOKEN_SUPPLY, bondingCurve: owner },
           priceFallback: false,
         };
       }
@@ -187,7 +187,13 @@ export function withPoolPrice(
   logPriceFallback(event, owner, lastSpot, avg);
   if (event.pool === 'pump') {
     return {
-      event: { ...event, vSolInBondingCurve: avg * PUMP_TOKEN_SUPPLY, vTokensInBondingCurve: PUMP_TOKEN_SUPPLY, marketCapSol: avg * PUMP_TOKEN_SUPPLY },
+      event: {
+        ...event,
+        vSolInBondingCurve: avg * PUMP_TOKEN_SUPPLY,
+        vTokensInBondingCurve: PUMP_TOKEN_SUPPLY,
+        marketCapSol: avg * PUMP_TOKEN_SUPPLY,
+        ...(owner !== null ? { bondingCurve: owner } : {}),
+      },
       priceFallback: true,
     };
   }
