@@ -50,6 +50,8 @@ const base: TokenInfo = {
   ratTraderVolumeRate: 0,
   smartWallets: 0,
   migrationMarketCap: 410,
+  creatorAddress: null,
+  creatorOpenCount: null,
 };
 
 /** Ο κανόνας bundler (≤ 0.3) αφαιρέθηκε από το PHASE1 στις 2026-10-07 — η λογική του μένει. */
@@ -82,4 +84,10 @@ test('2026-10-07: χωρίς κανόνα bundler — bundler 0.63 ή άγνωσ
 
 test('evaluateOnDemandGate: GMGN smart-wallet count 0 does NOT block — the trigger wallet is the smart money', () => {
   assert.equal(evaluateOnDemandGate({ ...base, smartWallets: 0 }, null).passed, true);
+});
+
+test('parseTokenInfo: dev του token από το πραγματικό δείγμα (dev.creator_address / creator_open_count)', () => {
+  const info = parseTokenInfo(fixture('token-info.pump.json'));
+  assert.equal(info.creatorAddress, '8TL3rhoL2bw5iER8sddTKAwUPBQBvc8D6Bk7o615CGGs');
+  assert.equal(info.creatorOpenCount, 17);
 });

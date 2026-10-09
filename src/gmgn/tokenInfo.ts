@@ -30,6 +30,10 @@ export interface TokenInfo {
   smartWallets: number | null;
   /** Σε SOL (`migration_market_cap_quote`), για αναφορά. */
   migrationMarketCap: number | null;
+  /** 2026-10-09: ο dev του token (`dev.creator_address`) — για να ξέρουμε αν το wallet που αντιγράφουμε είναι ο ίδιος ο dev. */
+  creatorAddress: string | null;
+  /** Πόσα tokens έχει φτιάξει ο dev (`dev.creator_open_count`). */
+  creatorOpenCount: number | null;
 }
 
 export interface TokenSecurity {
@@ -63,6 +67,8 @@ export function parseTokenInfo(raw: unknown): TokenInfo {
     ratTraderVolumeRate: n(stat, 'top_rat_trader_percentage', 'token info.stat.top_rat_trader_percentage'),
     smartWallets: n(tags, 'smart_wallets', 'token info.wallet_tags_stat.smart_wallets'),
     migrationMarketCap: n(root, 'migration_market_cap', 'token info.migration_market_cap'),
+    creatorAddress: toStringOrNull(sub(root, 'dev')['creator_address']),
+    creatorOpenCount: n(sub(root, 'dev'), 'creator_open_count', 'token info.dev.creator_open_count'),
   };
 }
 

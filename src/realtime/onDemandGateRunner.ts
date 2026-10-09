@@ -96,6 +96,9 @@ async function runOnce(mint: string, version: string, deps: OnDemandGateDeps): P
         source: 'on_demand',
         created_timestamp: info.creationTimestamp,
         holder_count: info.holderCount,
+        // 2026-10-09: dev του token — σύγκριση με το trigger wallet (αντιγράφουμε τον ίδιο τον dev;).
+        creator_address: info.creatorAddress,
+        creator_open_count: info.creatorOpenCount,
         checked_at: new Date(now).toISOString(),
         unavailable: result.unavailable,
         ...result.metrics,
