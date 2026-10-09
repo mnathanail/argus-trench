@@ -122,6 +122,8 @@ export type LiveFallbackReason =
   | 'experiment_paper_only'
   /** 2026-10-09: το Thompson sampling της βαθμολογίας του wallet είπε όχι (decision/walletScore.ts). */
   | 'wallet_score_paper'
+  /** 2026-10-09: μη proven wallet και mcap εισόδου ≥ MAX_UNPROVEN_ENTRY_MCAP_SOL (decision/walletScore.ts). */
+  | 'wallet_mcap_paper'
   | 'wallet_unavailable'
   | 'insufficient_capital'
   | 'risk_gate_blocked'

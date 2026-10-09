@@ -6,6 +6,8 @@ import {
   BLOCK_MIN_WEIGHT,
   CLEAN_SINCE,
   computeWalletScores,
+  entryMcapAllowsLive,
+  MAX_UNPROVEN_ENTRY_MCAP_SOL,
   DEFAULT_SLIPPAGE,
   HALF_LIFE_DAYS,
   slippageFor,
@@ -90,4 +92,15 @@ test('Thompson: σίγουρα καλό → σχεδόν πάντα live, κακ
   assert.equal(thompsonLive(null).reason, 'no_score');
   assert.equal(thompsonLive({ mean: 0.5, sd: 0.01, status: 'exploring', trades: 2 }).reason, 'too_few_trades');
   assert.equal(thompsonLive({ mean: 0.5, sd: 0.01, status: 'blocked', trades: 30 }).allowed, false);
+});
+
+test('όριο mcap: τα proven περνούν πάντα, τα υπόλοιπα μόνο κάτω από 40 SOL', () => {
+  assert.equal(MAX_UNPROVEN_ENTRY_MCAP_SOL, 40);
+  assert.equal(entryMcapAllowsLive('proven', 220), true);
+  assert.equal(entryMcapAllowsLive('exploring', 33), true);
+  assert.equal(entryMcapAllowsLive('exploring', 40), false);
+  assert.equal(entryMcapAllowsLive('exploring', 82), false);
+  assert.equal(entryMcapAllowsLive(null, 30), true, 'χωρίς βαθμό: το mcap αρκεί (το Thompson κόβει ξεχωριστά)');
+  assert.equal(entryMcapAllowsLive(undefined, Number.NaN), false);
+  assert.equal(entryMcapAllowsLive('blocked', 30), true, 'το blocked το κόβει το Thompson, όχι αυτό');
 });

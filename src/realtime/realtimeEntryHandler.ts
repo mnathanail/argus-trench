@@ -10,7 +10,7 @@ import {
 import { getWallet, type WatchlistWallet } from '../db/repositories/watchlistWallets.js';
 import { insertRealtimeEntrySkip } from '../db/repositories/realtimeEntrySkips.js';
 import { getWalletScore, recordWalletTokenBuy, tokenConsensus } from '../db/repositories/walletScores.js';
-import { thompsonLive, WALLET_SCORE_LIVE_GATE } from '../decision/walletScore.js';
+import { entryMcapAllowsLive, thompsonLive, WALLET_SCORE_LIVE_GATE } from '../decision/walletScore.js';
 import type { LiveFallbackReason } from '../live/liveEntryExecution.js';
 import { logicVersion, PHASE1_THRESHOLDS } from '../decision/gateConfig.js';
 import { applyEntrySlippage } from '../decision/pnl.js';
@@ -43,6 +43,7 @@ import {
   isGraduatedEvent,
   priceFromTradeEvent,
   priceSourceOf,
+  PUMP_TOKEN_SUPPLY,
   REALTIME_SOURCE_CHANNEL,
   type PumpPortalTradeEvent,
 } from './pumpportalEvents.js';
@@ -487,6 +488,10 @@ async function enterClaimedSignal(
   const scoreGate = thompsonLive(walletScore);
   let paperOnly: LiveFallbackReason | null = paperOnlyReason(decision.graduated, gateSource, undefined, experiment);
   if (paperOnly === null && WALLET_SCORE_LIVE_GATE && !scoreGate.allowed) paperOnly = 'wallet_score_paper';
+  // 2026-10-09: μη proven wallets πάνε live μόνο νωρίς στην καμπύλη (mcap όπως το μετράει το paper).
+  const entryMcapSol = applyEntrySlippage(decision.entryPrice, PAPER_ASSUMED_SLIPPAGE_PCT) * PUMP_TOKEN_SUPPLY;
+  const mcapAllowsLive = entryMcapAllowsLive(walletScore?.status, entryMcapSol);
+  if (paperOnly === null && WALLET_SCORE_LIVE_GATE && !mcapAllowsLive) paperOnly = 'wallet_mcap_paper';
   const live = paperOnly !== null ? fallbackOutcomeFor(paperOnly) : await attemptLiveEntry(event.mint);
   // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #3): το live.entryPrice είναι ΗΔΗ η πραγματική,
   // εκτελεσμένη τιμή — καμία προσομοίωση δε χρειάζεται ή πρέπει να εφαρμοστεί εκεί. Η
@@ -500,7 +505,7 @@ async function enterClaimedSignal(
     ...buildEntryTiming(event, decision, gateSource, timeline, claimMs, liveAttemptMs, live),
     holder_risk: holderRisk === null ? null : holderRiskJson(holderRisk.snapshot, holderRisk.ms, holderRiskMode),
     ...experimentTimingJson(experiment, gateFailReason, entry.onDemandOutcome),
-    wallet_score: walletScoreJson(walletScore, scoreGate),
+    wallet_score: { ...walletScoreJson(walletScore, scoreGate), entry_mcap_sol: entryMcapSol, mcap_allows_live: mcapAllowsLive },
     consensus: consensus === null ? null : { window_min: CONSENSUS_WINDOW_MIN, ...consensus },
   };
   logEntryTiming(event.mint, entryTiming);

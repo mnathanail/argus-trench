@@ -174,3 +174,20 @@ export function thompsonLive(
 
 /** 2026-10-09: true = το Thompson sampling αποφασίζει ποια σήματα πάνε live. false = όπως πριν. */
 export const WALLET_SCORE_LIVE_GATE = true;
+
+/**
+ * 2026-10-09 (ρητή απόφαση χρήστη) — όριο mcap εισόδου για ΜΗ proven wallets.
+ * Καθαρά δεδομένα (311 on-demand trades): μη proven wallets κάτω από 40 SOL → 45 trades, 0 stops,
+ * +8.2%/trade · 40–50 → +1.5%, 55% stops · 50+ → −7.2%/trade, −0.65 SOL σε 179 trades.
+ * Τα proven κερδίζουν και πιο ψηλά (50+: +37.8%/trade), οπότε δεν κόβονται. Ο λόγος: μια καμπύλη
+ * Pump.fun ξεκινά στα ~28 SOL και δεν πέφτει κάτω από εκεί — όσο πιο νωρίς μπαίνεις, τόσο μικρότερη
+ * η χειρότερη ζημιά (κάτω από ~40 SOL το −30% stop δεν μπορεί καν να πιαστεί).
+ * Πάνω από το όριο η είσοδος γίνεται paper (συνεχίζουμε να μετράμε), όχι skip.
+ */
+export const MAX_UNPROVEN_ENTRY_MCAP_SOL = 40;
+
+/** true = το mcap εισόδου επιτρέπει live για ένα wallet με αυτή την κατάσταση. */
+export function entryMcapAllowsLive(status: WalletScoreStatus | string | null | undefined, entryMcapSol: number): boolean {
+  if (status === 'proven') return true;
+  return Number.isFinite(entryMcapSol) && entryMcapSol < MAX_UNPROVEN_ENTRY_MCAP_SOL;
+}
