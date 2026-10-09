@@ -1,3 +1,4 @@
+import type { ExitReason } from '../db/types.js';
 import {
   closeTrade,
   deactivateNativeOrder,
@@ -196,9 +197,12 @@ export async function closeFromOwnSell(
   strategy: StrategyOrderInfo | null,
   ownSell: OwnSellResult,
   realtimeConnection: PumpPortalConnection | undefined,
+  /** 2026-10-09: όταν το κλείσιμο ξεκίνησε από ΔΙΚΗ μας απόφαση (stop/trailing/time_limit) αλλά
+   * πούλησε κάτι άλλο πρώτο — ο λόγος είναι ο δικός μας, όχι «exit_signal». */
+  override?: { exitReason?: ExitReason; extraDetail?: Record<string, unknown> },
 ): Promise<{ outcome: 'none' | 'closed'; alert: string | null }> {
   const byStrategy = strategy !== null && soldByStrategy(strategy);
-  const exitReason = byStrategy && strategy !== null ? exitReasonFromStrategy(strategy) : 'exit_signal';
+  const exitReason = byStrategy && strategy !== null ? exitReasonFromStrategy(strategy) : (override?.exitReason ?? 'exit_signal');
   const actualExitAmountSol = trade.actualEntryAmountSol !== null ? trade.actualEntryAmountSol * ownSell.ratio : null;
   const pnlSol = actualExitAmountSol !== null && trade.actualEntryAmountSol !== null ? actualExitAmountSol - trade.actualEntryAmountSol : null;
   const pnlPct = ownSell.ratio - 1;
@@ -212,6 +216,7 @@ export async function closeFromOwnSell(
       sell_tx: ownSell.sellTxHash,
       ratio: ownSell.ratio,
       ratio_source: ownSell.source,
+      ...(override?.extraDetail ?? {}),
     },
     simulatedExitPrice: (trade.simulatedEntryPrice ?? 0) * ownSell.ratio,
     pnlSol,

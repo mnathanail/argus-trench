@@ -559,13 +559,23 @@ async function executeLiveCloseAndFinalize(
   if (verdict.kind === 'gone_elsewhere' && pending.ownSellSearched !== true) {
     const ownSell = await findOwnSellWithRetry(wallet.address, tokenAddress, pending.entryAt);
     if (ownSell !== null) {
+      // Καταγραφή του αρχικού σφάλματος (πριν χανόταν — 0 rows στο trade_execution_errors).
+      await recordExecutionError({
+        paperTradeId: pending.tradeId,
+        tokenAddress,
+        action: 'sell',
+        amountSol: pending.actualEntryAmountSol,
+        errorMessage: `η δική μας πώληση απέτυχε, τα tokens είχαν ήδη πουληθεί αλλού (πιθανόν native order) — κλείσιμο από την on-chain πώληση ${ownSell.sellTxHash}. Αρχικό error: ${errorText(firstError)}`,
+        errorDetail: firstError,
+      });
       await closeFromOwnSell(
         { id: pending.tradeId, tokenAddress, actualEntryAmountSol: pending.actualEntryAmountSol, simulatedEntryPrice: pending.simulatedEntryPrice },
         null,
         ownSell,
         connection,
+        { exitReason: pending.exitReason, extraDetail: { our_decision: pending.exitReason, our_sell_error: errorText(firstError).slice(0, 300) } },
       );
-      return { type: 'closed', tokenAddress, exitReason: 'exit_signal', pnlPct: ownSell.ratio - 1 };
+      return { type: 'closed', tokenAddress, exitReason: pending.exitReason, pnlPct: ownSell.ratio - 1 };
     }
   }
 
