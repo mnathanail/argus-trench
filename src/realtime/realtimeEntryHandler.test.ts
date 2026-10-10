@@ -293,3 +293,14 @@ test('experimentTimingJson: πεδία ΜΟΝΟ στα πειραματικά tr
 test('PAPER_EXPERIMENT_ENABLED: τέλος πειράματος 2026-10-07 (−2.77 SOL σε 418 trades)', () => {
   assert.equal(PAPER_EXPERIMENT_ENABLED, false);
 });
+
+test('realisticPaperEntryPrice: τωρινή τιμή καμπύλης + 2% όταν μετρήθηκε, αλλιώς σήμα + 3%', async () => {
+  const { realisticPaperEntryPrice } = await import('./realtimeEntryHandler.js');
+  const r = realisticPaperEntryPrice(1e-8, 0.25);
+  assert.equal(r.basis, 'curve_now');
+  assert.ok(Math.abs(r.price - 1e-8 * 1.25 * 1.02) < 1e-20);
+  const s = realisticPaperEntryPrice(1e-8, null);
+  assert.equal(s.basis, 'signal');
+  assert.ok(Math.abs(s.price - 1e-8 * 1.03) < 1e-20);
+  assert.equal(realisticPaperEntryPrice(1e-8, Number.NaN).basis, 'signal');
+});

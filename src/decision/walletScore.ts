@@ -44,6 +44,8 @@ export interface ScoringTrade {
   mode: string;
   /** Μόνο live: εκτελεσμένη τιμή / τιμή σήματος − 1. */
   liveSlippage: number | null;
+  /** 2026-10-10: paper που άνοιξε στην τωρινή τιμή καμπύλης (ρεαλιστικό) — όχι επιπλέον κόστος εισόδου. */
+  realisticEntry?: boolean;
 }
 
 export type WalletScoreStatus = 'proven' | 'exploring' | 'blocked';
@@ -79,7 +81,7 @@ export function slippageFor(walletLive: readonly number[], globalLive: readonly 
 
 /** Απόδοση όπως θα ήταν σε live: paper → με το κόστος εισόδου, live → ως έχει. */
 export function adjustedReturn(t: ScoringTrade, slippage: number): number {
-  return t.mode === 'live' ? t.netRet : (1 + t.netRet) / (1 + slippage) - 1;
+  return t.mode === 'live' || t.realisticEntry === true ? t.netRet : (1 + t.netRet) / (1 + slippage) - 1;
 }
 
 export function computeWalletScores(trades: readonly ScoringTrade[], now: Date = new Date()): WalletScore[] {

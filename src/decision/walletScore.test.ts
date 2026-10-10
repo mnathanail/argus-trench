@@ -104,3 +104,8 @@ test('όριο mcap: τα proven περνούν πάντα, τα υπόλοιπ�
   assert.equal(entryMcapAllowsLive(undefined, Number.NaN), false);
   assert.equal(entryMcapAllowsLive('blocked', 30), true, 'το blocked το κόβει το Thompson, όχι αυτό');
 });
+
+test('ρεαλιστικό paper (τιμή καμπύλης τη στιγμή της εισόδου) μετράει ως έχει, χωρίς ξανά κόστος εισόδου', () => {
+  assert.equal(adjustedReturn({ ...t('w', 0.5), realisticEntry: true }, 0.05), 0.5);
+  assert.ok(adjustedReturn(t('w', 0.5), 0.05) < 0.5);
+});

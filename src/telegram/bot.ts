@@ -2,7 +2,7 @@ import { config } from '../config.js';
 import { fetchWalletStats } from '../gmgn/walletStats.js';
 import { insertScore, recentScores } from '../db/repositories/walletScoreHistory.js';
 import { getWalletLeaderboard, listRecentTrades } from '../db/repositories/paperTrades.js';
-import { getLiveHaltState, clearLiveHalt } from '../db/repositories/liveTradingState.js';
+import { getLiveHaltState, clearLiveHalt, setLiveHalted } from '../db/repositories/liveTradingState.js';
 import { runDailyDigestCycle } from '../collectors/dailyDigest.js';
 import {
   getWallet,
@@ -32,6 +32,7 @@ export function createCommandDeps(): CommandDeps {
     getWalletLeaderboard: (limit) => getWalletLeaderboard(limit),
     getLiveHaltState: () => getLiveHaltState(),
     clearLiveHalt: () => clearLiveHalt(),
+    setLiveHalted: (reason) => setLiveHalted(reason),
     runDigest: () => runDailyDigestCycle(),
     setCopyMode: (address, mode) => setCopyMode(address, mode),
     onMirrorChanged: (address, mode) => onMirrorWalletChanged(address, mode),

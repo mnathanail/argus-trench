@@ -494,24 +494,23 @@ async function enterClaimedSignal(
   const entryMcapSol = applyEntrySlippage(decision.entryPrice, PAPER_ASSUMED_SLIPPAGE_PCT) * PUMP_TOKEN_SUPPLY;
   const mcapAllowsLive = entryMcapAllowsLive(walletScore?.status, entryMcapSol);
   if (paperOnly === null && WALLET_SCORE_LIVE_GATE && !mcapAllowsLive) paperOnly = 'wallet_mcap_paper';
-  // 2026-10-09: μην κυνηγάς — αν η καμπύλη έχει ήδη τρέξει > MAX_ENTRY_PRICE_RUN από το σήμα, paper.
-  // Μόνο όταν θα δοκιμάζαμε live (1 credit Helius ανά live απόπειρα). Άγνωστο = paper.
+  // 2026-10-10 (ρητή απόφαση χρήστη): ρεαλιστικό paper — σε ΚΑΘΕ σήμα καμπύλης διαβάζουμε την τωρινή
+  // τιμή (1 credit Helius) τη στιγμή που θα αγοράζαμε. Το paper ανοίγει σε αυτή την τιμή (+2% για
+  // το ~1″ ως την πραγματική αγορά), όχι στην τιμή του wallet + 3% — αυτό το κενό ήταν η διαφορά
+  // paper (+) ↔ live (−) τα πρώτα live trades. Μην κυνηγάς: αν έτρεξε > MAX_ENTRY_PRICE_RUN, όχι live.
   let priceRun: number | null = null;
   const heliusKey = config.heliusApiKey();
-  if (paperOnly === null && heliusKey !== undefined) {
-    priceRun =
-      event.bondingCurve === undefined
-        ? null
-        : await measurePriceRun(heliusChaseRpc(heliusKey), event.bondingCurve, decision.entryPrice).catch(() => null);
-    if (!priceRunAllowsLive(priceRun)) paperOnly = 'price_ran_paper';
+  if (heliusKey !== undefined && event.bondingCurve !== undefined) {
+    priceRun = await measurePriceRun(heliusChaseRpc(heliusKey), event.bondingCurve, decision.entryPrice).catch(() => null);
   }
+  if (paperOnly === null && heliusKey !== undefined && !priceRunAllowsLive(priceRun)) paperOnly = 'price_ran_paper';
   const live = paperOnly !== null ? fallbackOutcomeFor(paperOnly) : await attemptLiveEntry(event.mint);
   // ΔΙΟΡΘΩΣΗ 2026-09-17 (review εύρημα #3): το live.entryPrice είναι ΗΔΗ η πραγματική,
   // εκτελεσμένη τιμή — καμία προσομοίωση δε χρειάζεται ή πρέπει να εφαρμοστεί εκεί. Η
   // ωμή, παρατηρημένη τιμή του σήματος (decision.entryPrice) εφαρμόζεται ΜΟΝΟ όταν η
   // θέση είναι paper/log_only — βλ. applyEntrySlippage στο pnl.ts.
-  const finalEntryPrice =
-    live.entryPrice ?? applyEntrySlippage(decision.entryPrice, PAPER_ASSUMED_SLIPPAGE_PCT);
+  const paperEntry = realisticPaperEntryPrice(decision.entryPrice, priceRun);
+  const finalEntryPrice = live.entryPrice ?? paperEntry.price;
   const liveAttemptMs = Date.now() - liveStartedAt;
   const holderRisk = await holderRiskPromise;
   const entryTiming = {
@@ -520,6 +519,7 @@ async function enterClaimedSignal(
     ...experimentTimingJson(experiment, gateFailReason, entry.onDemandOutcome),
     wallet_score: { ...walletScoreJson(walletScore, scoreGate), entry_mcap_sol: entryMcapSol, mcap_allows_live: mcapAllowsLive },
     price_run: priceRun,
+    paper_entry_basis: live.entryPrice !== null ? 'live_fill' : paperEntry.basis,
     consensus: consensus === null ? null : { window_min: CONSENSUS_WINDOW_MIN, ...consensus },
   };
   logEntryTiming(event.mint, entryTiming);
@@ -692,4 +692,18 @@ export function walletScoreJson(
     reason: gate.reason,
     gate_enabled: WALLET_SCORE_LIVE_GATE,
   };
+}
+
+/** 2026-10-10: extra πάνω στην τωρινή τιμή καμπύλης για το ~1″ ως την πραγματική αγορά. */
+export const REALISTIC_PAPER_EXTRA_PCT = 0.02;
+
+/**
+ * Τιμή εισόδου paper: τωρινή τιμή καμπύλης (σήμα × (1 + run)) + REALISTIC_PAPER_EXTRA_PCT όταν
+ * μετρήθηκε· αλλιώς όπως πριν (σήμα + PAPER_ASSUMED_SLIPPAGE_PCT). `basis` καταγράφεται στο trade.
+ */
+export function realisticPaperEntryPrice(signalPrice: number, priceRun: number | null): { price: number; basis: 'curve_now' | 'signal' } {
+  if (priceRun !== null && Number.isFinite(priceRun) && priceRun > -0.9) {
+    return { price: signalPrice * (1 + priceRun) * (1 + REALISTIC_PAPER_EXTRA_PCT), basis: 'curve_now' };
+  }
+  return { price: applyEntrySlippage(signalPrice, PAPER_ASSUMED_SLIPPAGE_PCT), basis: 'signal' };
 }

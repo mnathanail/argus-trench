@@ -514,6 +514,19 @@ test('/resume_live: clears the halt and confirms when it was active', async () =
   assert.match(reply, /καθαρίστηκε/);
 });
 
+test('/halt: σταματά το live (γράφει halt) και το λέει· δεύτερη φορά «ήδη»', async () => {
+  const deps = stubDeps();
+  let reason: string | null = null;
+  deps.setLiveHalted = (r) => {
+    reason = r;
+    return Promise.resolve(true);
+  };
+  assert.match(await handleCommand('/halt', deps), /Live σταμάτησε/);
+  assert.match(String(reason), /manual \/halt/);
+  deps.setLiveHalted = () => Promise.resolve(false);
+  assert.match(await handleCommand('/halt', deps), /ήδη σταματημένο/);
+});
+
 function stubDeps(statsOverride: Partial<WalletStats> = {}): CommandDeps {
   const stats: WalletStats = {
     walletAddress: ADDRESS,
@@ -542,6 +555,7 @@ function stubDeps(statsOverride: Partial<WalletStats> = {}): CommandDeps {
     getWalletLeaderboard: () => Promise.resolve([]),
     getLiveHaltState: () => Promise.resolve({ haltedAt: null, haltedReason: null }),
     clearLiveHalt: () => Promise.resolve(),
+    setLiveHalted: () => Promise.resolve(true),
     runDigest: () => Promise.resolve('digest placeholder'),
     setCopyMode: () => Promise.resolve(true),
     onMirrorChanged: () => Promise.resolve(),

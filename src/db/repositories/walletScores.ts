@@ -6,16 +6,23 @@ import { CLEAN_SINCE, type ScoringTrade, type WalletScore, type WalletScoreStatu
 
 /** Όλα τα κλειστά trades από CLEAN_SINCE (χωρίς πείραμα) με το wallet που έδωσε το σήμα. */
 export async function listTradesForScoring(conn?: Queryable): Promise<ScoringTrade[]> {
-  const { rows } = await db(conn).query<{ wallet: string; net: string; closed_at: Date; mode: string; slip: string | null }>(
+  const { rows } = await db(conn).query<{ wallet: string; net: string; closed_at: Date; mode: string; slip: string | null; basis: string | null }>(
     `SELECT d.trigger_wallet_address AS wallet, p.pnl_net_pct AS net, p.exit_at AS closed_at, p.mode,
-            p.entry_timing_json->>'slippage_vs_signal' AS slip
+            p.entry_timing_json->>'slippage_vs_signal' AS slip, p.entry_timing_json->>'paper_entry_basis' AS basis
        FROM paper_trades p JOIN decision_log d ON d.id = p.decision_log_id
       WHERE p.status = 'closed' AND p.pnl_net_pct IS NOT NULL AND p.exit_at IS NOT NULL
         AND p.entry_at >= $1 AND d.trigger_wallet_address IS NOT NULL
         AND p.entry_timing_json IS NOT NULL AND NOT (p.entry_timing_json ? 'experiment')`,
     [CLEAN_SINCE],
   );
-  return rows.map((r) => ({ wallet: r.wallet, netRet: toNum(r.net), closedAt: r.closed_at, mode: r.mode, liveSlippage: toNumOrNull(r.slip) }));
+  return rows.map((r) => ({
+    wallet: r.wallet,
+    netRet: toNum(r.net),
+    closedAt: r.closed_at,
+    mode: r.mode,
+    liveSlippage: toNumOrNull(r.slip),
+    realisticEntry: r.basis === 'curve_now',
+  }));
 }
 
 export async function upsertWalletScores(scores: readonly WalletScore[], conn?: Queryable): Promise<void> {

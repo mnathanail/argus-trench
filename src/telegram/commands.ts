@@ -101,6 +101,8 @@ export interface CommandDeps {
   getWalletLeaderboard(limit: number): Promise<WalletLeaderboardEntry[]>;
   getLiveHaltState(): Promise<{ haltedAt: Date | null; haltedReason: string | null }>;
   clearLiveHalt(): Promise<void>;
+  /** 2026-10-09: χειροκίνητο halt από Telegram. true = μόλις σταμάτησε, false = ήταν ήδη. */
+  setLiveHalted(reason: string): Promise<boolean>;
   /** Ίδιο μήνυμα με τη βραδινή αναφορά (00:05 Αθήνας) — χειροκίνητο trigger, ώστε να
    * μη χρειάζεται να περιμένεις την προγραμματισμένη ώρα για να το ξαναδείς. */
   runDigest(): Promise<string>;
@@ -122,6 +124,7 @@ const HELP = [
   '/trades              τελευταία signal_logged trades (log_only, Φάση 1)',
   '/leaderboard [N]      ΔΙΚΟ ΜΑΣ αποτέλεσμα ανά wallet, ταξινομημένο (default 10)',
   '/live_status          kill-switch state για live trading',
+  '/halt                 σταματά ΝΕΕΣ live αγορές (οι ανοιχτές θέσεις κλείνουν κανονικά)',
   '/resume_live          χειροκίνητο reset του kill-switch (μόνο αφού το ελέγξεις)',
   '/digest               ξαναστείλε τη live βραδινή αναφορά τώρα, εκτός προγράμματος',
   '/mirror <address> [name]  ακριβής αντιγραφή θέσεων αυτού του wallet (paper, εκτός κανονικού argus)',
@@ -165,6 +168,8 @@ export async function handleCommand(text: string, deps: CommandDeps): Promise<st
       return leaderboard(argument, deps);
     case '/live_status':
       return liveStatus(deps);
+    case '/halt':
+      return haltLive(deps);
     case '/resume_live':
       return resumeLive(deps);
     case '/digest':
@@ -376,6 +381,13 @@ async function liveStatus(deps: CommandDeps): Promise<string> {
     `Λόγος: ${halt.haltedReason ?? '(άγνωστος)'}\n\n` +
     `Κανένα νέο live trade δεν θα εκτελεστεί μέχρι /resume_live.`
   );
+}
+
+async function haltLive(deps: CommandDeps): Promise<string> {
+  const changed = await deps.setLiveHalted('manual /halt (Telegram)');
+  return changed
+    ? '🔴 Live σταμάτησε: καμία νέα live αγορά (τα σήματα γίνονται paper). Οι ανοιχτές θέσεις κλείνουν κανονικά. /resume_live για επανεκκίνηση.'
+    : 'Το live ήταν ήδη σταματημένο — /live_status για λεπτομέρειες.';
 }
 
 async function resumeLive(deps: CommandDeps): Promise<string> {
