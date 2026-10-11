@@ -82,6 +82,29 @@ export async function recordWalletTokenBuy(tokenAddress: string, walletAddress: 
   );
 }
 
+export interface EarlyBuyers {
+  /** Η πρώτη αγορά ΟΠΟΙΟΥΔΗΠΟΤΕ wallet μας στο token (null = καμία). */
+  firstSeenAt: Date | null;
+  /** Τα wallets μας που αγόρασαν μέσα σε `minutes` από την πρώτη αγορά, με σειρά αγοράς. */
+  wallets: string[];
+}
+
+/** 2026-10-11 — για το consensus σήμα: ποια wallets μας μπήκαν στα πρώτα N λεπτά του token
+ * (ίδιος ορισμός με την ανάλυση consensus-clean: «το k-οστό wallet μέσα σε 10′ από το 1ο»). */
+export async function tokenEarlyBuyers(tokenAddress: string, minutes: number, conn?: Queryable): Promise<EarlyBuyers> {
+  const { rows } = await db(conn).query<{ t0: Date | null; wallets: string[] | null }>(
+    `WITH f AS (SELECT min(first_seen_at) AS t0 FROM wallet_token_buys WHERE token_address = $1)
+     SELECT f.t0,
+            array_agg(b.wallet_address ORDER BY b.first_seen_at)
+              FILTER (WHERE b.first_seen_at <= f.t0 + make_interval(mins => $2)) AS wallets
+       FROM f LEFT JOIN wallet_token_buys b ON b.token_address = $1
+      GROUP BY f.t0`,
+    [tokenAddress, minutes],
+  );
+  const r = rows[0];
+  return { firstSeenAt: r?.t0 ?? null, wallets: r?.wallets ?? [] };
+}
+
 export interface Consensus {
   /** Διαφορετικά wallets μας που αγόρασαν το token στα τελευταία N λεπτά (μαζί με αυτό του σήματος). */
   wallets: number;

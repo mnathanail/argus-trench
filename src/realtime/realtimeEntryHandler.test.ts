@@ -304,3 +304,22 @@ test('realisticPaperEntryPrice: τωρινή τιμή καμπύλης + 2% ότ
   assert.ok(Math.abs(s.price - 1e-8 * 1.03) < 1e-20);
   assert.equal(realisticPaperEntryPrice(1e-8, Number.NaN).basis, 'signal');
 });
+
+test('consensusFires: 2ο wallet μέσα σε 10′ από το 1ο → ναι, αλλιώς όχι', async () => {
+  const { consensusFires } = await import('./realtimeEntryHandler.js');
+  const t0 = new Date('2026-10-11T12:00:00Z');
+  const at = (min: number) => t0.getTime() + min * 60_000;
+  assert.equal(consensusFires({ firstSeenAt: null, wallets: [] }, at(1)), false);
+  assert.equal(consensusFires({ firstSeenAt: t0, wallets: ['A'] }, at(1)), false);
+  assert.equal(consensusFires({ firstSeenAt: t0, wallets: ['A', 'A'] }, at(1)), false);
+  assert.equal(consensusFires({ firstSeenAt: t0, wallets: ['A', 'B'] }, at(3)), true);
+  assert.equal(consensusFires({ firstSeenAt: t0, wallets: ['A', 'B'] }, at(10)), true);
+  assert.equal(consensusFires({ firstSeenAt: t0, wallets: ['A', 'B'] }, at(11)), false);
+  assert.equal(consensusFires({ firstSeenAt: t0, wallets: ['A', 'B'] }, at(3), 3), false);
+});
+
+test('consensusLogicVersion: ξεχωριστό από το :exp αλλά τελειώνει σε :exp (εκτός reports)', async () => {
+  const { consensusLogicVersion, experimentLogicVersion } = await import('../db/repositories/decisionLog.js');
+  assert.notEqual(consensusLogicVersion('v1'), experimentLogicVersion('v1'));
+  assert.ok(consensusLogicVersion('v1').endsWith(':exp'));
+});

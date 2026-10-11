@@ -11,7 +11,7 @@ import {
 } from '../db/repositories/paperTrades.js';
 import { getWallet, type WatchlistWallet } from '../db/repositories/watchlistWallets.js';
 import { insertRealtimeEntrySkip } from '../db/repositories/realtimeEntrySkips.js';
-import { getWalletScore, recordWalletTokenBuy, tokenConsensus } from '../db/repositories/walletScores.js';
+import { getWalletScore, recordWalletTokenBuy, tokenConsensus, tokenEarlyBuyers, type EarlyBuyers } from '../db/repositories/walletScores.js';
 import { entryMcapAllowsLive, thompsonLive, WALLET_SCORE_LIVE_GATE } from '../decision/walletScore.js';
 import type { LiveFallbackReason } from '../live/liveEntryExecution.js';
 import { logicVersion, PHASE1_THRESHOLDS } from '../decision/gateConfig.js';
@@ -84,7 +84,7 @@ export interface RealtimeEntryResult {
 export type GateSource = 'discovery' | 'on_demand' | 'none';
 
 /** Ετικέτες του paper πειράματος (PAPER_EXPERIMENT_ENABLED) — βλ. paperTradingConfig.ts. */
-export type ExperimentTag = 'relaxed_gate' | 'small_buy' | 'graduated';
+export type ExperimentTag = 'relaxed_gate' | 'small_buy' | 'graduated' | 'consensus';
 
 /** Ποιες ετικέτες πειράματος παίρνει ένα σήμα (κενό = κανονικό σήμα, όπως πριν). */
 export function experimentTags(input: { relaxedGate: boolean; smallBuy: boolean; graduated: boolean }): ExperimentTag[] {
@@ -266,10 +266,12 @@ export async function handleRealtimeEntryEvent(
   }
   // 2026-10-09: κάθε αγορά ενός ενεργού wallet μας (και οι μικρές) → wallet_token_buys, για το
   // «2+ wallets στο ίδιο token» (consensus). Fire-and-forget: δεν καθυστερεί την είσοδο.
+  // 2026-10-11: μετά την καταγραφή → έλεγχος consensus (paper πείραμα, βλ. maybeEnterConsensus).
   if (wallet !== null && wallet.active) {
-    recordWalletTokenBuy(event.mint, wallet.address, event.solAmount).catch((error) =>
-      console.error(`[wallet-token-buys] ${error instanceof Error ? error.message : String(error)}`),
-    );
+    const activeWallet = wallet;
+    recordWalletTokenBuy(event.mint, wallet.address, event.solAmount)
+      .then(() => (CONSENSUS_PAPER_ENABLED ? maybeEnterConsensus(event, activeWallet, connection) : null))
+      .catch((error) => console.error(`[wallet-token-buys] ${error instanceof Error ? error.message : String(error)}`));
   }
   const smallBuy = wallet !== null && wallet.active && isWalletBuyTooSmall(event);
   // 2026-10-06: με το paper πείραμα η μικρή αγορά συνεχίζει (ετικέτα small_buy, μόνο paper).
@@ -576,6 +578,114 @@ async function enterClaimedSignal(
     onDemandGate: gateSource === 'on_demand',
     experiment,
   };
+}
+
+/**
+ * 2026-10-11 (ρητή απόφαση χρήστη) — paper πείραμα CONSENSUS. Η ανάλυση consensus-clean (χωρίς
+ * look-ahead) έδειξε: token που το αγοράζει 1 wallet μας γίνεται top (ATH ≥ $300k) στο 5.8%,
+ * όταν το 2ο wallet μπαίνει μέσα σε 10′ από το 1ο στο 32%, το 3ο στο 40%. Και τα φίλτρα μας
+ * (gate, holder risk, min buy, graduated) έκοβαν σχεδόν όλα αυτά τα top tokens.
+ *
+ * Κανόνας: όταν το k-οστό (CONSENSUS_MIN_WALLETS) διαφορετικό wallet μας αγοράσει ένα token
+ * καμπύλης μέσα σε CONSENSUS_WINDOW_MIN από την πρώτη αγορά → paper trade, στη ΡΕΑΛΙΣΤΙΚΗ
+ * τιμή (curve τώρα +2%), ΧΩΡΙΣ gate / holder risk / min buy. ΠΟΤΕ live. Ετικέτα experiment
+ * ['consensus'] → εκτός κανονικών στατιστικών, βαθμολογίας wallets και ορίου ανά token.
+ * Ένα trade ανά token: το decision_log row (consensusLogicVersion) είναι μοναδικό.
+ */
+export const CONSENSUS_PAPER_ENABLED = true;
+export const CONSENSUS_MIN_WALLETS = 2;
+
+/** Pure: πυροδοτεί τώρα; (≥ k wallets στο παράθυρο ΚΑΙ είμαστε ακόμα μέσα στο παράθυρο). */
+export function consensusFires(
+  buyers: EarlyBuyers,
+  now: number,
+  minWallets: number = CONSENSUS_MIN_WALLETS,
+  windowMin: number = CONSENSUS_WINDOW_MIN,
+): boolean {
+  if (buyers.firstSeenAt === null) return false;
+  if (new Set(buyers.wallets).size < minWallets) return false;
+  return now - buyers.firstSeenAt.getTime() <= windowMin * 60_000;
+}
+
+async function maybeEnterConsensus(
+  event: PumpPortalTradeEvent,
+  wallet: WatchlistWallet,
+  connection: PumpPortalConnection,
+): Promise<void> {
+  if (isGraduatedEvent(event)) return;
+  const signalPrice = priceFromTradeEvent(event);
+  if (signalPrice === null || !(signalPrice > 0)) return;
+  const buyers = await tokenEarlyBuyers(event.mint, CONSENSUS_WINDOW_MIN);
+  if (!consensusFires(buyers, Date.now())) return;
+
+  const version = logicVersion(PHASE1_THRESHOLDS);
+  const experiment: ExperimentTag[] = ['consensus'];
+  const claimed = await recordExperimentTrigger({
+    tokenAddress: event.mint,
+    logicVersion: version,
+    triggerType: 'smart_money_buy',
+    triggerWalletAddress: wallet.address,
+    triggerWalletSnapshot: {
+      source: wallet.source,
+      buy_cost_sol: event.solAmount,
+      buy_tx_hash: event.signature,
+      buy_timestamp: Math.floor(Date.now() / 1000),
+      source_channel: REALTIME_SOURCE_CHANNEL,
+      token_stage: 'bonding_curve',
+      gate_source: 'none',
+      experiment,
+      consensus_wallets: buyers.wallets,
+    },
+    graduated: false,
+    fallbackFailReason: 'consensus_bypass',
+    decisionReasonText: `paper consensus: ${buyers.wallets.length} wallets μας μέσα σε ${CONSENSUS_WINDOW_MIN}′`,
+    kind: 'consensus',
+  });
+  if (claimed === null) return; // ήδη πυροδοτήθηκε για αυτό το token
+
+  let priceRun: number | null = null;
+  const heliusKey = config.heliusApiKey();
+  if (heliusKey !== undefined && event.bondingCurve !== undefined) {
+    priceRun = await measurePriceRun(heliusChaseRpc(heliusKey), event.bondingCurve, signalPrice).catch(() => null);
+  }
+  const paperEntry = realisticPaperEntryPrice(signalPrice, priceRun);
+  const entryTiming = {
+    signal: { price: signalPrice, wallet: wallet.address, tx: event.signature },
+    experiment,
+    gate_fail_reason: claimed.gateFailReason,
+    consensus: {
+      window_min: CONSENSUS_WINDOW_MIN,
+      min_wallets: CONSENSUS_MIN_WALLETS,
+      n_wallets: buyers.wallets.length,
+      wallets: buyers.wallets,
+      first_buy_at: buyers.firstSeenAt?.toISOString() ?? null,
+      sec_since_first_buy: buyers.firstSeenAt === null ? null : Math.round((Date.now() - buyers.firstSeenAt.getTime()) / 1000),
+    },
+    price_run: priceRun,
+    paper_entry_basis: paperEntry.basis,
+    entry_mcap_sol: paperEntry.price * PUMP_TOKEN_SUPPLY,
+    fallback_reason: 'experiment_paper_only',
+  };
+  const tradeId = await openTrade({
+    decisionLogId: claimed.id,
+    tokenAddress: event.mint,
+    mode: 'paper',
+    intendedSizePct: PAPER_POSITION_SIZE_PCT,
+    bankrollAtEntry: PAPER_BANKROLL_SOL,
+    simulatedEntryPrice: paperEntry.price,
+    simulatedEntryAmountSol: PAPER_BANKROLL_SOL * PAPER_POSITION_SIZE_PCT,
+    assumedSlippagePct: PAPER_ASSUMED_SLIPPAGE_PCT,
+    assumedLatencyMs: PAPER_ASSUMED_LATENCY_MS,
+    conditionOrders: conditionOrdersJson(),
+    entryAt: new Date(),
+    entryTiming,
+  });
+  await linkTrade(claimed.id, tradeId);
+  subscribeForNewTrade(connection, event.mint, wallet.address);
+  console.log(
+    `[consensus] paper trade ${event.mint.slice(0, 8)} wallets=${buyers.wallets.length} ` +
+      `run=${priceRun === null ? 'n/a' : (priceRun * 100).toFixed(1) + '%'}`,
+  );
 }
 
 /**

@@ -1146,3 +1146,8 @@ Independent code review of the live path after the Helius changes (two reviewers
 - Wallet scores: `realisticEntry` (basis curve_now) paper returns count as-is, like live — the 5% entry-cost charge applies only to old signal-based paper.
 - **`/halt` Telegram command** (did not exist — earlier advice to send it was wrong): `setLiveHalted('manual /halt (Telegram)')`; new live buys blocked by `checkLiveRiskGate`, open positions keep closing; `/resume_live` clears it.
 - Take-profit +20% question answered by SQL, no code: `peak_price_since_entry` is updated only while the trade is open, so `peak/entry ≥ 1.2` means +20% was reached before the real exit (scratch `tp20-sim.sql`: today's rules vs TP 15/20/30%, by basis, wallet group, mcap).
+
+## 2026-10-11 — paper πείραμα CONSENSUS (ρητή απόφαση χρήστη)
+- Ανάλυση χωρίς look-ahead (εξαιρούνται οι αγορές wallet_winner_hits): token που αγοράζει 1 wallet μας → top 5.8%· 2ο wallet μέσα σε 10′ από το 1ο → 32%· 3ο → 40%. Τα φίλτρα μας (gate, holder risk, min buy, graduated) έκοβαν σχεδόν όλα αυτά.
+- `maybeEnterConsensus` (realtimeEntryHandler.ts): μετά το `recordWalletTokenBuy`, αν ≥ `CONSENSUS_MIN_WALLETS` (2) διαφορετικά wallets μας αγόρασαν token καμπύλης μέσα σε `CONSENSUS_WINDOW_MIN` (10′) από την πρώτη αγορά (`tokenEarlyBuyers`) → **paper** trade στη ρεαλιστική τιμή (`measurePriceRun` → `realisticPaperEntryPrice`), χωρίς gate/holder risk/min buy. ΠΟΤΕ live. Διακόπτης: `CONSENSUS_PAPER_ENABLED`.
+- Ετικέτα `experiment: ['consensus']` → εκτός κανονικών stats/βαθμολογίας/ορίου ανά token. Ένα trade ανά token: decision_log row με `consensusLogicVersion` (`<v>:cons:exp`, ON CONFLICT DO NOTHING). Τα στοιχεία στο `entry_timing_json.consensus` (n_wallets, wallets, sec_since_first_buy).

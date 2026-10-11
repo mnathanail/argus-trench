@@ -445,11 +445,20 @@ export function experimentLogicVersion(logicVersion: string): string {
   return `${logicVersion}:exp`;
 }
 
+/** 2026-10-11 — paper πείραμα consensus: δικό του decision_log row ανά token (ξεχωριστό από το
+ * `:exp`, ώστε να μη συγκρούεται με το relaxed_gate). Τελειώνει σε ':exp' → τα reports που
+ * εξαιρούν τα πειράματα (`NOT LIKE '%:exp'`) το εξαιρούν κι αυτό. */
+export function consensusLogicVersion(logicVersion: string): string {
+  return `${logicVersion}:cons:exp`;
+}
+
 export interface ExperimentTriggerRecord extends Omit<TriggerRecord, 'decision'> {
   /** Graduated → category 'completed', αλλιώς 'new_creation'. */
   graduated: boolean;
   /** Όταν το token δεν αξιολογήθηκε ΚΑΘΟΛΟΥ (π.χ. on-demand rate limited) — ο λόγος. */
   fallbackFailReason: string;
+  /** 2026-10-11: 'consensus' → logic_version consensusLogicVersion (ένα row ανά token). */
+  kind?: 'relaxed_gate' | 'consensus';
 }
 
 /**
@@ -484,7 +493,7 @@ export async function recordExperimentTrigger(
      RETURNING id`,
     [
       input.tokenAddress,
-      experimentLogicVersion(input.logicVersion),
+      input.kind === 'consensus' ? consensusLogicVersion(input.logicVersion) : experimentLogicVersion(input.logicVersion),
       input.graduated ? 'completed' : 'new_creation',
       JSON.stringify(prior?.gate_snapshot_json ?? {}),
       failReason,
